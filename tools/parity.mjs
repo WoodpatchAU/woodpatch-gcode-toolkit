@@ -24,6 +24,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 const { characterise, canonicalPath, sha } = require('./golden-legacy.cjs');
 const { workerDollar } = require('./legacy-harness.cjs');
+const { cell } = require('./markdown.cjs');
 const { parse, interpret, LINUXCNC } = await import(join(root, 'packages/core/dist/index.js'));
 
 const RULES_PATH = join(root, 'tools/data/parity-ledger.json');
@@ -169,7 +170,6 @@ if (mode === 'explain') {
 }
 
 // ── Report ───────────────────────────────────────────────────────────────
-const cell = (s) => String(s).replace(/\|/g, '\\|');
 const out = [];
 // The report's own licence header. REUSE would read these lines as this file's.
 // REUSE-IgnoreStart
