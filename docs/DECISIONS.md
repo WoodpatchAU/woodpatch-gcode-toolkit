@@ -74,6 +74,11 @@ history carry through. `main` is cut from upstream `gh-pages` HEAD (`d315a359`),
 `upstream-2025-09-18`. Upstream's `gh-pages` and `master` are left untouched.
 `upstream` is kept as a git remote. History is never force-pushed.
 
+_Moved 2026-09-27:_ the repository now lives at `WoodpatchAU/woodpatch-gcode-toolkit`, a
+GitHub organization, after an owner transfer. It is still a fork of `nraynaud/webgcode`,
+with its history intact. Old URLs redirect for git, but not for GitHub Pages: the
+playground moved with it.
+
 ## ADR-0005: Park upstream under `legacy/`; licensing scope for it
 
 **Status:** Accepted, 2026-09-24.

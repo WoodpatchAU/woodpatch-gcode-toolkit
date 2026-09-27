@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
 # SPDX-License-Identifier: MIT
 #
-# CI for the toolkit. Deliberately uses NO `uses:` steps (ADR-0006): the repo's
-# Actions policy allows only chrisgrulau-defined actions, and plain shell with
-# pinned hashes is a smaller trust surface than any third-party action.
+# CI for the toolkit. Deliberately uses NO `uses:` steps (ADR-0006), not even
+# GitHub's own actions: the repo's Actions policy blocks third-party actions, and
+# plain shell with pinned hashes is a smaller trust surface than any action.
 #
 # GitHub-hosted runners only. This repository is public, so a self-hosted runner
 # would execute strangers' fork-PR code on Woodpatch infrastructure.
