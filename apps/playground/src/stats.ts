@@ -12,6 +12,8 @@ import type { GcodeViewer, RenderInfo } from '@woodpatch/gcode-viewer';
 export interface PlaygroundStats {
   /** Frames drawn in the last second. */
   fps: number;
+  /** Frames drawn since the page loaded. */
+  renders: number;
   /** The last frame's render call, CPU ms. */
   renderMs: number;
   drawCalls: number;
@@ -37,6 +39,7 @@ export function installStats(
   if (!new URLSearchParams(location.search).has('stats')) return null;
   const stats: PlaygroundStats = {
     fps: 0,
+    renders: 0,
     renderMs: 0,
     drawCalls: 0,
     segments: 0,
@@ -62,6 +65,7 @@ export function installStats(
   };
   viewer.onRender((info: RenderInfo) => {
     frames.push(performance.now());
+    stats.renders++;
     stats.renderMs = info.ms;
     stats.drawCalls = info.drawCalls;
     stats.segments = info.segments;

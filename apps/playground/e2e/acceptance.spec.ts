@@ -11,14 +11,17 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 //   the largest sample. 60 fps itself is measured by a person with `?stats`.
 
 // motionLine: an early line that CUTS in X/Y (a plunge would be invisible from above),
-// at least 2 mm, which is a few pixels at the fitted zoom. planRapids: whether any rapid
+// at least 2 mm, which is a few pixels at the fitted zoom. For Aztec it's null: its
+// first such line is line 150, and 149 cursor moves each re-render 226k segments in
+// the runner's software GL (minutes). It checks the other direction instead: a click
+// on its plan marks the line in the editor. planRapids: whether any rapid
 // moves in X/Y (Tux's only rapids are vertical, so its plan has none to show). Both
 // were computed from the programs themselves.
 const SAMPLES = [
   { file: 'tux.ngc', dialect: 'generic', motionLine: 11, planRapids: false },
   { file: 'webgcode.ngc', dialect: 'generic', motionLine: 53, planRapids: true },
   { file: 'test_pycam.ngc', dialect: 'generic', motionLine: 48, planRapids: true },
-  { file: 'aztec_calendar.ngc', dialect: 'generic', motionLine: 150, planRapids: true },
+  { file: 'aztec_calendar.ngc', dialect: 'generic', motionLine: null, planRapids: true },
   { file: 'masso-dialect-test-v1.nc', dialect: 'masso-g3-5.13', motionLine: 15, planRapids: true },
 ] as const;
 
@@ -31,6 +34,8 @@ interface PixelStats {
   yellow: number;
   /** The bounding box of every path-coloured pixel, or null if there are none. */
   box: { x0: number; y0: number; x1: number; y1: number } | null;
+  /** A feed-coloured pixel nearest the centre: somewhere a click will pick the path. */
+  feedAt: { x: number; y: number } | null;
 }
 
 /**
@@ -55,7 +60,9 @@ async function pixels(page: Page, el: Locator): Promise<PixelStats> {
       red: 0,
       yellow: 0,
       box: null as PixelStats['box'],
+      feedAt: null as PixelStats['feedAt'],
     };
+    let best = Infinity;
     let x0 = Infinity;
     let y0 = Infinity;
     let x1 = -1;
@@ -65,8 +72,16 @@ async function pixels(page: Page, el: Locator): Promise<PixelStats> {
       const g = d[i + 1] as number;
       const b = d[i + 2] as number;
       let hit = true;
-      if (r > 200 && g > 200 && b > 200) s.white++;
-      else if (r > 200 && g > 200 && b < 90) s.yellow++;
+      if (r > 200 && g > 200 && b > 200) {
+        s.white++;
+        const p = i / 4;
+        const dx = (p % bmp.width) - bmp.width / 2;
+        const dy = Math.floor(p / bmp.width) - bmp.height / 2;
+        if (dx * dx + dy * dy < best) {
+          best = dx * dx + dy * dy;
+          s.feedAt = { x: p % bmp.width, y: Math.floor(p / bmp.width) };
+        }
+      } else if (r > 200 && g > 200 && b < 90) s.yellow++;
       else if (r > 200 && g < 70 && b < 70) s.red++;
       else hit = false;
       if (!hit) continue;
@@ -141,8 +156,18 @@ for (const s of SAMPLES) {
     if (s.planRapids) expect(top.red, `${s.file} 2D: rapid moves`).toBeGreaterThan(2);
     else expect(top.red, `${s.file} 2D: no rapid moves in X/Y`).toBe(0);
 
-    // Editor → path: the cursor's line lights up in both views.
-    await cursorTo(page, s.motionLine);
+    if (s.motionLine !== null) {
+      // Editor → path: the cursor's line lights up in both views.
+      await cursorTo(page, s.motionLine);
+    } else {
+      // Path → editor: a click on a drawn cut marks its line in the editor.
+      const at = top.feedAt;
+      const box = await plan.boundingBox();
+      if (!at || !box) throw new Error(`${s.file}: nowhere to click`);
+      await expect(page.locator('.gc-path-line')).toHaveCount(0);
+      await page.mouse.click(box.x + at.x, box.y + at.y);
+      await expect(page.locator('.gc-path-line')).toHaveCount(1);
+    }
     await expect.poll(async () => (await pixels(page, plan)).yellow).toBeGreaterThan(0);
     await page.click('[data-view="iso"]');
     await expect.poll(async () => (await pixels(page, view)).yellow).toBeGreaterThan(0);
@@ -166,7 +191,9 @@ test('the largest sample stays within the performance proxies', async ({ page })
     .poll(() => page.evaluate(() => window.__gcodeStats?.segments ?? 0))
     .toBeGreaterThan(200_000);
 
-  // Orbit for a second, to measure frames drawn while moving.
+  // Orbit for a second. Under the runner's software GL a frame of 226k segments can
+  // take most of that, so the check is that it drew at all, not how often.
+  const rendersBefore = await page.evaluate(() => window.__gcodeStats?.renders ?? 0);
   const box = await page.locator('#view > canvas').boundingBox();
   if (!box) throw new Error('no 3D canvas');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -180,10 +207,16 @@ test('the largest sample stays within the performance proxies', async ({ page })
   console.log(
     `aztec: read ${Math.round(stats.readMs)} ms, build ${Math.round(stats.buildMs)} ms, ` +
       `${stats.drawCalls} draw calls, ${stats.segments} segments, ` +
-      `${stats.fps} frames in the last second of orbit (headless, software GL: not the fps target)`,
+      `${stats.renders - rendersBefore} frames drawn while orbiting, last ${stats.renderMs.toFixed(1)} ms ` +
+      '(headless, software GL: not the fps target)',
   );
-  expect(stats.drawCalls, 'draw calls per frame').toBeLessThanOrEqual(8);
-  expect(stats.readMs, 'worker read (parse, interpret, tessellate)').toBeLessThan(20_000);
-  expect(stats.buildMs, '3D geometry build on the page').toBeLessThan(3_000);
-  expect(stats.fps, 'the view drew while orbiting').toBeGreaterThan(0);
+  // Budgets: about 10x the runner's measurement on 2026-09-27 (read 474 ms, build 61 ms,
+  // 2 draw calls). They catch a regression of KIND (a quadratic step, a draw call per
+  // segment), not noise.
+  expect(stats.drawCalls, 'draw calls per frame').toBeLessThanOrEqual(4);
+  expect(stats.readMs, 'worker read (parse, interpret, tessellate)').toBeLessThan(5_000);
+  expect(stats.buildMs, '3D geometry build on the page').toBeLessThan(1_000);
+  await expect
+    .poll(() => page.evaluate(() => window.__gcodeStats?.renders ?? 0), { timeout: 10_000 })
+    .toBeGreaterThan(rendersBefore);
 });
