@@ -1375,3 +1375,48 @@ is real):
 **Not yet.** Prettier doesn't check `.svelte` files (that needs `prettier-plugin-svelte`,
 one more dependency). Browser tests of the components come with their first real host
 app, not a fixture app here.
+
+## ADR-0031: Phase 3 acceptance gates
+
+**Status:** Accepted, 2026-09-27. Parcel 3f. Operator decisions of 2026-09-27.
+
+Phase 3's acceptance: the playground renders all five reference files with editor sync,
+the 224k-line file orbits at 60 fps, Lighthouse performance is at least 90, and the
+bundle budget is met. Each is now a gate or a recorded measurement:
+
+- **Bundle budget, in the playground build:** page at most 300 kB and worker at most
+  40 kB, gzipped (`scripts/check-budget.mjs`; 257.8 + 24.0 kB at the time). Real growth
+  has to be a deliberate budget change in the same PR.
+- **Visual checks are structural, not pixel baselines.** A pixel baseline breaks when
+  the runner's GPU, driver or browser changes, with nothing wrong. So for each of the
+  five samples, in 3D and in the 2D plan, the test decodes a screenshot in the page and
+  checks:
+  - the path is framed: its pixels' box is centred (within 20%) and fills enough of the
+    view (at least 0.3 in 3D, 0.6 in 2D; measured 0.36 to 0.68 and 0.89 to 0.90);
+  - feed (white) and rapid (red) colours are present. A plan shows no red for Tux, whose
+    only rapids are vertical;
+  - editor and path are in sync. Moving the cursor to an early X/Y cut highlights it
+    (yellow) in both views. For the largest file, a click on a drawn cut marks its line
+    in the editor instead: 149 cursor moves, each re-rendering 226k segments in the
+    runner's software GL, took minutes.
+- **The checks found a real bug on their first run.** The 2D plan drew rapids first and
+  feeds over them, so every traverse across the cut area vanished: test_pycam's
+  8,430 mm of rapids showed no red at all. From above, rapids (at a safe height) are on
+  top, so the plan now draws them last.
+- **Performance proxies, on `aztec_calendar.ngc`** (223,857 lines, 226,632 vertices).
+  The runner's figures on 2026-09-27: worker read 474 to 551 ms, 3D geometry build 61
+  to 68 ms, 2 draw calls. The gates are about 10x those (read under 5 s, build under
+  1 s, at most 4 draw calls), plus "the view draws while orbiting". They catch a
+  regression of kind (a quadratic step, a draw call per segment), not noise.
+- **60 fps is measured by a person.** The CI runner renders in software, so its frame
+  rate says nothing about a real GPU. The playground's `?stats` overlay shows the
+  frames drawn in the last second while orbiting, the render call's CPU time, the draw
+  calls, and the read and build times. It's built on the viewer's new `onRender` hook.
+  The operator orbits the Aztec sample on his own machine, and the result is recorded
+  here. _Pending: see below._
+- **Lighthouse (at least 90)** comes in parcel 3f-2: the `lighthouse` package in CI,
+  median of 3 runs, on the runner's Chrome. It's a new dependency, so it gets its own
+  review.
+
+**60 fps measurement:** _to be recorded after the operator's run on the deployed
+playground (`/?stats`, Aztec sample, orbit continuously)._
