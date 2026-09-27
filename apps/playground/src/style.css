@@ -69,6 +69,14 @@ button:hover:not(:disabled) {
 .status {
   margin-left: auto;
   color: var(--muted);
+  /* Reserved space: the status fills in after load, and must not move the page
+     (Lighthouse's layout-shift score, ADR-0031). */
+  min-width: 14rem;
+  min-height: 1.4em;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .panes {
   display: grid;
@@ -97,7 +105,9 @@ button:hover:not(:disabled) {
   border-color: var(--accent);
 }
 .info {
-  max-height: 28vh;
+  /* A fixed height, not one that grows with the diagnostics: filling it in after load
+     must not shrink the panes above (layout shift). The list scrolls inside. */
+  height: min(28vh, 9rem);
   overflow: auto;
   border-top: 1px solid var(--line);
   background: var(--panel);
@@ -106,6 +116,7 @@ button:hover:not(:disabled) {
 .stats {
   color: var(--muted);
   margin-bottom: 0.3rem;
+  min-height: 1.4em;
 }
 .diagnostics {
   list-style: none;
@@ -141,6 +152,12 @@ button:hover:not(:disabled) {
   color: var(--muted);
 }
 @media (max-width: 800px) {
+  /* On a narrow screen the status gets a line of its own, reserved from the start. */
+  .status {
+    flex-basis: 100%;
+    min-width: 0;
+    text-align: left;
+  }
   .panes {
     grid-template-columns: 1fr;
     grid-template-rows: 40vh 50vh;

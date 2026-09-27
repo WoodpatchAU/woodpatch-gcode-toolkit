@@ -87,6 +87,10 @@ try {
       `run ${i}: performance ${score(r, 'performance')}, accessibility ${score(r, 'accessibility')}, ` +
         `best practices ${score(r, 'best-practices')} (Lighthouse ${r.lighthouseVersion}; ${m})`,
     );
+    // Name what moved, so a layout-shift regression says where it is.
+    const shifts = r.audits['layout-shifts']?.details?.items ?? [];
+    for (const s of shifts.slice(0, 5))
+      console.log(`  layout shift ${Number(s.score ?? 0).toFixed(3)}: ${s.node?.selector ?? '?'}`);
   }
   reports.sort((a, b) => score(a, 'performance') - score(b, 'performance'));
   const median = reports[Math.floor(RUNS / 2)];
