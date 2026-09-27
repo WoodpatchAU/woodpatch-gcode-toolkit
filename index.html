@@ -18,8 +18,8 @@ SPDX-License-Identifier: MIT
     />
     <!-- An empty inline favicon: without one the browser's automatic request 404s. -->
     <link rel="icon" href="data:," />
-    <script type="module" crossorigin src="./assets/index-Ck1t-a6i.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-C-rZin2N.css">
+    <script type="module" crossorigin src="./assets/index-Dkjzq0V2.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CKgZcUzB.css">
   </head>
   <body>
     <header class="bar">
@@ -53,40 +53,19 @@ SPDX-License-Identifier: MIT
       <span id="status" class="status" role="status" aria-live="polite"></span>
     </header>
     <main class="panes">
-      <section id="editor" class="editor" aria-label="G-code"></section>
+      <div class="left">
+        <section id="summary-box" class="summary-box" aria-label="Program summary" tabindex="0">
+          <div id="summary" class="summary"></div>
+        </section>
+        <section id="editor" class="editor" aria-label="G-code"></section>
+      </div>
       <section id="view" class="view" aria-label="Toolpath">
         <div id="plan" class="plan" aria-label="2D plan" hidden></div>
       </section>
     </main>
     <section class="info">
-      <div class="info-head">
-        <span class="tabs" role="tablist" aria-label="Program details">
-          <button
-            role="tab"
-            id="tab-diagnostics"
-            aria-selected="true"
-            aria-controls="panel-diagnostics"
-          >
-            Diagnostics
-          </button>
-          <button
-            role="tab"
-            id="tab-summary"
-            aria-selected="false"
-            aria-controls="panel-summary"
-            tabindex="-1"
-          >
-            Summary
-          </button>
-        </span>
-        <div id="stats" class="stats"></div>
-      </div>
-      <div id="panel-diagnostics" role="tabpanel" aria-labelledby="tab-diagnostics" tabindex="0">
-        <ol id="diagnostics" class="diagnostics" aria-label="Diagnostics"></ol>
-      </div>
-      <div id="panel-summary" role="tabpanel" aria-labelledby="tab-summary" tabindex="0" hidden>
-        <div id="summary" class="summary"></div>
-      </div>
+      <div id="stats" class="stats"></div>
+      <ol id="diagnostics" class="diagnostics" aria-label="Diagnostics"></ol>
     </section>
     <footer class="foot">
       Drop a file anywhere, or paste into the editor. Everything runs in your browser; nothing is
