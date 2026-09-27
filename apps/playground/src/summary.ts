@@ -4,7 +4,7 @@
 import type { ProgramSummary, Range } from '@woodpatch/gcode-core';
 
 /**
- * The Summary tab: the program at a glance. Built with DOM nodes and
+ * The summary box, above the code: the program at a glance. Built with DOM nodes and
  * textContent only; nothing here is HTML.
  */
 
