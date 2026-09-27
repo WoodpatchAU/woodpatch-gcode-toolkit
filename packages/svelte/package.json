@@ -1,7 +1,70 @@
 {
   "name": "@woodpatch/gcode-svelte",
   "version": "0.0.0",
-  "private": true,
-  "description": "Svelte 5 components wrapping the viewer and editor, for use in consuming applications.",
-  "license": "MIT"
+  "description": "Svelte 5 components for G-code: the toolkit's viewer (3D and 2D) and editor, in sync. Ships as source.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": [
+    "./src/worker.js"
+  ],
+  "svelte": "./src/index.js",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "svelte": "./src/index.js",
+      "default": "./src/index.js"
+    },
+    "./worker": {
+      "types": "./src/worker.d.ts",
+      "default": "./src/worker.js"
+    }
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.*",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chrisgrulau/woodpatch-gcode-toolkit.git",
+    "directory": "packages/svelte"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@woodpatch/gcode-editor": "workspace:*",
+    "@woodpatch/gcode-viewer": "workspace:*"
+  },
+  "peerDependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/state": "^6.7.5",
+    "@codemirror/view": "^6.43.12",
+    "svelte": "^5.56.4",
+    "three": ">=0.186.0 <0.187.0"
+  },
+  "devDependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/language": "6.12.4",
+    "@codemirror/lint": "6.9.7",
+    "@codemirror/state": "6.7.5",
+    "@codemirror/view": "6.43.12",
+    "@sveltejs/vite-plugin-svelte": "7.3.0",
+    "@types/node": "^22.20.3",
+    "@types/three": "0.186.0",
+    "jsdom": "30.1.0",
+    "svelte": "5.56.4",
+    "svelte-check": "4.7.6",
+    "three": "0.186.0",
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.1"
+  }
 }

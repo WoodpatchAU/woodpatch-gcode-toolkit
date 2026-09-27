@@ -14,13 +14,21 @@
 //     preserved, which is the setting the consuming apps must use. Without this
 //     step, "we added a banner" would be a claim nobody had tested.
 //
+// A SOURCE package (shipped unbuilt, like @woodpatch/gcode-svelte: ADR-0030) has no
+// built entry. Instead, EVERY source file must carry the current banner, and each
+// .svelte file must keep it through the package's own Svelte compiler and then a
+// minified bundle.
+//
 // Exits non-zero, listing every failure, if anything is missing.
 
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { licenceBanner } from './licence-banner.mjs';
+import { sourceFiles } from './stamp-source-banners.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const packagesDir = join(repoRoot, 'packages');
@@ -63,9 +71,10 @@ for (const dir of readdirSync(packagesDir)) {
   }
 
   // ── What npm would actually publish ──
-  const entry = pkg.exports?.['.']?.import;
+  const source = !pkg.scripts?.build;
+  const entry = source ? pkg.exports?.['.']?.default : pkg.exports?.['.']?.import;
   if (!entry) {
-    fail(name, 'no exports["."].import entry point');
+    fail(name, `no exports["."].${source ? 'default' : 'import'} entry point`);
     continue;
   }
   const packed = JSON.parse(
@@ -77,6 +86,11 @@ for (const dir of readdirSync(packagesDir)) {
   )[0].files.map((f) => f.path);
   for (const f of ['LICENSE', 'NOTICE', entry.replace(/^\.\//, '')]) {
     if (!packed.includes(f)) fail(name, `npm pack would not include ${f}`);
+  }
+
+  if (source) {
+    await checkSourcePackage(name, pkgDir, packed);
+    continue;
   }
 
   // ── Banner on the built entry ──
@@ -109,6 +123,43 @@ for (const dir of readdirSync(packagesDir)) {
     for (const s of REQUIRED_IN_BUNDLE) {
       if (!text.includes(s))
         fail(name, `minified bundle (legalComments=${legalComments}) lost "${s}"`);
+    }
+  }
+}
+
+/** Every source file carries the current banner, and keeps it compiled and minified. */
+async function checkSourcePackage(name, pkgDir, packed) {
+  const banner = licenceBanner(name);
+  const files = sourceFiles(pkgDir);
+  if (files.length === 0) fail(name, 'no source files found');
+  const require = createRequire(join(pkgDir, 'package.json'));
+  const { compile } = require('svelte/compiler');
+  for (const file of files) {
+    const rel = file.slice(pkgDir.length + 1);
+    if (!packed.includes(rel)) fail(name, `npm pack would not include ${rel}`);
+    const text = readFileSync(file, 'utf8');
+    const indent = /^([ \t]*)\/\*!/m.exec(text)?.[1] ?? '';
+    if (!text.includes(banner.split('\n').join(`\n${indent}`)))
+      fail(name, `${rel}: banner missing or stale (node scripts/stamp-source-banners.mjs)`);
+    const code = file.endsWith('.svelte')
+      ? compile(text, { generate: 'client', filename: rel }).js.code
+      : text;
+    for (const legalComments of ['inline', 'eof']) {
+      const out = await build({
+        stdin: { contents: code, resolveDir: dirname(file), loader: 'js' },
+        bundle: true,
+        minify: true,
+        format: 'esm',
+        write: false,
+        legalComments,
+        external: ['*'],
+        logLevel: 'silent',
+      });
+      const bundled = out.outputFiles.map((f) => f.text).join('\n');
+      for (const s of REQUIRED_IN_BUNDLE) {
+        if (!bundled.includes(s))
+          fail(name, `${rel}: minified (legalComments=${legalComments}) lost "${s}"`);
+      }
     }
   }
 }

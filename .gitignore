@@ -2,7 +2,11 @@ node_modules/
 dist/
 coverage/
 *.tsbuildinfo
-# Copied from the repo root into each package at build time (scripts/sync-licence-files.mjs).
+# Copied from the repo root into each package at build time (scripts/build-package.mjs).
 packages/*/LICENSE
 packages/*/NOTICE
+# A source package has no build, so its copies are committed. The licence check fails
+# CI if they ever differ from the root's (ADR-0030).
+!packages/svelte/LICENSE
+!packages/svelte/NOTICE
 legacy/.idea/workspace.xml

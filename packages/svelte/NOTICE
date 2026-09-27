@@ -1,0 +1,31 @@
+Woodpatch G-code Toolkit
+Copyright (c) 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
+
+This product is a hard fork of webgcode by Nicolas Raynaud.
+
+    Upstream:    https://github.com/nraynaud/webgcode
+    Fork point:  gh-pages @ d315a359 ("add visucam link", 2025-09-18)
+                 tagged in this repository as `upstream-2025-09-18`
+    Author:      Nicolas Raynaud
+    Copyright:   (c) 2016 Nicolas Raynaud
+
+Upstream is DUAL-LICENSED: MIT *or* GNU Affero General Public License v3. Its
+licence file is present in this repository, unmodified and at its original path,
+as `LICENSE.txt` — it arrived with the fork's history and MUST NOT be edited,
+moved or deleted. It is upstream's text, not ours.
+
+  LICENSE.txt   upstream's own file: MIT *or* AGPL-3.0, as Nicolas Raynaud
+                published it. Untouched.
+  LICENSE       this fork's licence: MIT.
+
+ELECTION: this fork is distributed under the MIT option (decided 2026-09-22;
+see docs/DECISIONS.md, ADR-0001). Electing one arm of a dual licence does not
+remove the other from upstream's own work — anyone may still obtain webgcode
+from Nicolas Raynaud under either licence.
+
+Substantial portions of this work are derived from upstream and remain subject
+to MIT's notice requirement: the copyright notice and permission notice must be
+included in all copies or substantial portions of the Software. This applies to
+BUILT ARTEFACTS as well as source — a bundled or minified JavaScript build that
+drops the notice does not satisfy it. The GitHub "forked from" relationship is
+not a substitute either: it is attribution, and MIT asks for a notice.

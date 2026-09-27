@@ -24,23 +24,11 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { licenceBanner } from './licence-banner.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const pkgDir = process.cwd();
 const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
-
-/** The `/*! … *\/` banner: package name, upstream credit, and the full LICENSE text. */
-function licenceBanner(packageName) {
-  const licence = readFileSync(join(repoRoot, 'LICENSE'), 'utf8').trimEnd();
-  if (licence.includes('*/')) throw new Error('LICENSE text would terminate the banner comment');
-  const body = [
-    `${packageName}: Woodpatch G-code Toolkit`,
-    'Based on webgcode by Nicolas Raynaud (https://github.com/nraynaud/webgcode).',
-    '',
-    ...licence.split('\n'),
-  ];
-  return ['/*!', ...body.map((l) => (l ? ` * ${l}` : ' *')), ' */'].join('\n');
-}
 
 rmSync(join(pkgDir, 'dist'), { recursive: true, force: true });
 

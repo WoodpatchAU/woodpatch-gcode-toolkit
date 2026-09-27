@@ -25,6 +25,7 @@ path = [
   ".nvmrc",
   "tools/data/*.json",
   "NOTICE",
+  "packages/*/NOTICE",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden"
