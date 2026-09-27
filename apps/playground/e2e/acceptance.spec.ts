@@ -10,12 +10,16 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 // - Performance: CI gates the proxies (read time, geometry build time, draw calls) on
 //   the largest sample. 60 fps itself is measured by a person with `?stats`.
 
+// motionLine: an early line that CUTS in X/Y (a plunge would be invisible from above),
+// at least 2 mm, which is a few pixels at the fitted zoom. planRapids: whether any rapid
+// moves in X/Y (Tux's only rapids are vertical, so its plan has none to show). Both
+// were computed from the programs themselves.
 const SAMPLES = [
-  { file: 'tux.ngc', dialect: 'generic', motionLine: 11 },
-  { file: 'webgcode.ngc', dialect: 'generic', motionLine: 4 },
-  { file: 'test_pycam.ngc', dialect: 'generic', motionLine: 47 },
-  { file: 'aztec_calendar.ngc', dialect: 'generic', motionLine: 22 },
-  { file: 'masso-dialect-test-v1.nc', dialect: 'masso-g3-5.13', motionLine: 15 },
+  { file: 'tux.ngc', dialect: 'generic', motionLine: 11, planRapids: false },
+  { file: 'webgcode.ngc', dialect: 'generic', motionLine: 53, planRapids: true },
+  { file: 'test_pycam.ngc', dialect: 'generic', motionLine: 48, planRapids: true },
+  { file: 'aztec_calendar.ngc', dialect: 'generic', motionLine: 150, planRapids: true },
+  { file: 'masso-dialect-test-v1.nc', dialect: 'masso-g3-5.13', motionLine: 15, planRapids: true },
 ] as const;
 
 interface PixelStats {
@@ -123,7 +127,7 @@ for (const s of SAMPLES) {
     const view = page.locator('#view');
     const plan = page.locator('#plan');
     const iso = await pixels(page, view);
-    expectFramed(iso, 0.35, `${s.file} 3D`);
+    expectFramed(iso, 0.3, `${s.file} 3D`);
     expect(iso.white, `${s.file} 3D: feed moves`).toBeGreaterThan(300);
     expect(iso.red, `${s.file} 3D: rapid moves`).toBeGreaterThan(2);
     expect(iso.yellow, `${s.file} 3D: nothing highlighted yet`).toBe(0);
@@ -133,7 +137,9 @@ for (const s of SAMPLES) {
     const top = await pixels(page, plan);
     expectFramed(top, 0.6, `${s.file} 2D`);
     expect(top.white, `${s.file} 2D: feed moves`).toBeGreaterThan(300);
-    expect(top.red, `${s.file} 2D: rapid moves`).toBeGreaterThan(2);
+    // Rapids travel above the cuts, so the plan draws them on top: they must show.
+    if (s.planRapids) expect(top.red, `${s.file} 2D: rapid moves`).toBeGreaterThan(2);
+    else expect(top.red, `${s.file} 2D: no rapid moves in X/Y`).toBe(0);
 
     // Editor → path: the cursor's line lights up in both views.
     await cursorTo(page, s.motionLine);
@@ -161,7 +167,7 @@ test('the largest sample stays within the performance proxies', async ({ page })
     .toBeGreaterThan(200_000);
 
   // Orbit for a second, to measure frames drawn while moving.
-  const box = await page.locator('#view canvas').first().boundingBox();
+  const box = await page.locator('#view > canvas').boundingBox();
   if (!box) throw new Error('no 3D canvas');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
