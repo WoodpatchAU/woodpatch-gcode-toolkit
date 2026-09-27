@@ -35,11 +35,18 @@ test('a value stays in its own cell, whatever it contains', () => {
   }
 });
 
-test('escaping | alone breaks rows (the CodeQL finding this fixes)', () => {
-  const old = (s) => String(s).replace(/\|/g, '\\|');
+// What the OLD escape (`|` only, no backslashes first) produced, as fixed strings. Kept
+// as data rather than re-implemented: an executable copy of the bug is exactly what
+// the code scanner flags.
+const OLD_OUTPUT = {
+  'ends in \\': 'ends in \\', // a trailing backslash, left unescaped
+  'x\\|y': 'x\\\\|y', // `\|` became `\\|`: a literal backslash, then a break
+};
+
+test('the old escape broke rows (the CodeQL finding this fixes)', () => {
   // A trailing backslash escapes the delimiter after it: two cells become one.
-  assert.equal(cells(row(old, 'ends in \\')).length, 1);
-  // An escaped pipe in the value: `\|` becomes `\\|`, a literal backslash, then a break.
-  assert.equal(cells(row(old, 'x\\|y')).length, 3);
-  for (const v of ['ends in \\', 'x\\|y']) assert.equal(cells(row(cell, v)).length, 2);
+  assert.equal(cells(`|${OLD_OUTPUT['ends in \\']}|next|`).length, 1);
+  // An escaped pipe in the value splits the cell.
+  assert.equal(cells(`|${OLD_OUTPUT['x\\|y']}|next|`).length, 3);
+  for (const v of Object.keys(OLD_OUTPUT)) assert.equal(cells(row(cell, v)).length, 2);
 });
