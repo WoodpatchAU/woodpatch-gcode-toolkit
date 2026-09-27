@@ -110,7 +110,7 @@ const PLANE_INDEX: Readonly<Record<Plane, readonly [number, number, number]>> = 
 };
 
 /** The angle of an arc's start point about its centre, in its plane. */
-function startAngle(arc: Arc): number {
+export function startAngle(arc: Arc): number {
   const [a, b] = PLANES[arc.plane];
   return Math.atan2(arc.from[b] - arc.centre[b], arc.from[a] - arc.centre[a]);
 }
@@ -119,7 +119,7 @@ function startAngle(arc: Arc): number {
  * Writes the point at fraction t of an arc's sweep into out[at..at+2] as x, y, z.
  * The radius and the normal axis change evenly with t (spiral, helix).
  */
-function arcPoint(arc: Arc, start: number, t: number, out: Float64Array, at: number): void {
+export function arcPoint(arc: Arc, start: number, t: number, out: Float64Array, at: number): void {
   const [a, b, n] = PLANES[arc.plane];
   const [ia, ib, inorm] = PLANE_INDEX[arc.plane];
   const angle = start + arc.sweep * t;
@@ -257,7 +257,7 @@ class BoxBuilder {
  * error is about (radius change per radian)² / 2r, well under 1 µm at any tolerance a
  * controller accepts.
  */
-function cardinalFractions(start: number, sweep: number): number[] {
+export function cardinalFractions(start: number, sweep: number): number[] {
   const out: number[] = [];
   if (sweep === 0) return out;
   const dir = Math.sign(sweep);
