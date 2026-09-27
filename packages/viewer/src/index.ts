@@ -7,7 +7,7 @@
  * Framework-free. three.js is a peer dependency: the host app provides it, so a page
  * never carries two copies.
  */
-export { GcodeViewer, type PickEvent, type ViewerOptions } from './viewer.js';
+export { GcodeViewer, type PickEvent, type RenderInfo, type ViewerOptions } from './viewer.js';
 export { GcodeView2D, type View2DOptions } from './view2d.js';
 export {
   fitTransform,

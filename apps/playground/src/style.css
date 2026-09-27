@@ -150,3 +150,17 @@ button:hover:not(:disabled) {
     border-bottom: 1px solid var(--line);
   }
 }
+.stats-overlay {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  z-index: 2;
+  margin: 0;
+  padding: 0.3rem 0.5rem;
+  background: #000000b0;
+  color: var(--text);
+  font:
+    12px/1.3 ui-monospace,
+    monospace;
+  pointer-events: none;
+}
