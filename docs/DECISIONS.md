@@ -1532,8 +1532,11 @@ approximation.
   quarter turn must not rename the axis being homed. Each axis they move becomes
   _untransformed_: a later move while an axis the op changes is still untransformed
   (not yet given again in G90) is refused. A Z-only retract taints only Z, so the usual
-  tool-change retract doesn't stop an XY transform. A Z translation of such a program
-  IS refused: the XY travel after the retract runs at the untransformed machine height.
+  tool-change retract doesn't stop an XY transform. After a Z-only retract, **rapids with no Z word are allowed**: they travel at the
+  retract height in both programs, which is what's intended (review of #33; strict
+  refusal made Z translation unusable, since every real job retracts for tool changes).
+  A feed move, a canned cycle (whose Z is the hole bottom, not a new height) or any Z
+  word before Z is given again absolutely is still refused.
   - It's refused where the position is unknown (before the first X/Y, or after a G53 or
     G28 move).
 - **Which words are coordinates** follows each line's modal state:

@@ -75,6 +75,40 @@ function untouchedLines(src: string): Map<number, readonly ('X' | 'Y' | 'Z')[]> 
   return out;
 }
 
+/**
+ * Lines that run between a machine/home move of Z and the next absolute Z (outside a
+ * canned cycle): rapids there travel at the retract height, left as it is by design.
+ */
+function retractTravelLines(
+  src: string,
+  untouched: ReadonlyMap<number, readonly ('X' | 'Y' | 'Z')[]>,
+): Set<number> {
+  const out = new Set<number>();
+  let stale = false;
+  let absolute = true;
+  for (const line of parse(src).lines) {
+    let cycle = false;
+    let z = false;
+    for (const tok of line.tokens) {
+      if (tok.kind !== 'word') continue;
+      if (tok.letter === 'Z') z = true;
+      if (tok.letter === 'G' && tok.value?.kind === 'number') {
+        const g = tok.value.value;
+        if (g === 90) absolute = true;
+        if (g === 91) absolute = false;
+        if ((g >= 81 && g <= 89) || g === 73) cycle = true;
+      }
+    }
+    if (untouched.get(line.lineNo)?.includes('Z')) {
+      stale = true;
+      continue;
+    }
+    if (stale && z && absolute && !cycle) stale = false;
+    else if (stale) out.add(line.lineNo);
+  }
+  return out;
+}
+
 type Motion = Extract<Step, { kind: 'linear' | 'arc' }>;
 const motions = (src: string, dialect: Dialect) =>
   interpret(parse(src), { dialect }).steps.filter(
@@ -125,6 +159,7 @@ export function corpusSuite(entries: [string, Dialect][]): void {
     const before = motions(src, dialect);
     const first = firstCommanded(src, new Set(before.map((s) => s.line)));
     const untouched = untouchedLines(src);
+    const retractTravel = retractTravelLines(src, untouched);
 
     // The 224k-line sample takes several seconds per op (parse, transform, re-parse,
     // interpret twice), so it runs the most telling op, a quarter turn about a point
@@ -154,12 +189,16 @@ export function corpusSuite(entries: [string, Dialect][]): void {
           expect(a.kind, `step ${i} (line ${b.line})`).toBe(b.kind);
           // A machine or home move is left as written: the axes it names go where they
           // always went; its other axes are wherever the (transformed) tool already was.
+          // (A G28/G30 goes via an intermediate point first; in G91 that's relative to
+          // where the transformed tool is, so only the final, home step is compared.)
           const moved = untouched.get(b.line);
           if (moved) {
-            for (const k of moved)
-              expect(Math.abs(a.to[k] - b.to[k]), `line ${b.line}: untouched ${k}`).toBeLessThan(
-                1e-9,
-              );
+            const last = (before[i + 1] as Motion | undefined)?.line !== b.line;
+            if (last)
+              for (const k of moved)
+                expect(Math.abs(a.to[k] - b.to[k]), `line ${b.line}: untouched ${k}`).toBeLessThan(
+                  1e-9,
+                );
             continue;
           }
           const want = apply(m, work(b.to, b.offset));
@@ -169,8 +208,13 @@ export function corpusSuite(entries: [string, Dialect][]): void {
           const comparable = [
             (m.a === 0 || known.X) && (m.b === 0 || known.Y),
             (m.c === 0 || known.X) && (m.d === 0 || known.Y),
-            known.Z,
+            known.Z && !retractTravel.has(b.line),
           ];
+          // A rapid travelling at a machine/home Z retract height keeps that height.
+          if (retractTravel.has(b.line))
+            expect(Math.abs(a.to.Z - b.to.Z), `line ${b.line}: retract travel Z`).toBeLessThan(
+              1e-9,
+            );
           for (let k = 0; k < 3; k++)
             if (comparable[k])
               expect(
