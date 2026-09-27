@@ -1422,6 +1422,16 @@ bundle budget is met. Each is now a gate or a recorded measurement:
     Lighthouse's defaults are used (mobile emulation, simulated throttling), which is what
     PageSpeed Insights reports. Accessibility and best practices are printed, not gated.
     The keyless PageSpeed API was ruled out: its shared quota was already exhausted.
+  - **First run: 87, three times.** The page shifted as late content arrived
+    (cumulative layout shift 0.149): the status, the stats line, the info panel, and
+    the controller list (filled by script, so its select grew and re-wrapped the
+    header on a phone-width screen). They now have reserved sizes, and the gate prints
+    the elements that shifted.
+  - **Now: 94, three times** (2026-09-27, layout shift 0.009, total blocking time
+    about 300 ms). Accessibility 97, best practices 100.
+  - What's left is the blocking time from evaluating the one page bundle at load. If
+    the score slips, the lever is loading the 3D viewer (three.js) lazily, after the
+    editor.
 
 **60 fps measurement:** the operator measured **99 to 109 fps** orbiting the Aztec sample
 (223,857 lines, 226,631 segments) on the deployed playground with `?stats`,
