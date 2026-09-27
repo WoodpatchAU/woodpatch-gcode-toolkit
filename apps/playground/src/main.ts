@@ -22,6 +22,7 @@ import {
   type ViewName,
 } from '@woodpatch/gcode-viewer';
 import { installStats } from './stats.js';
+import { renderSummary } from './summary.js';
 
 /**
  * The public playground (parcel 3c, ADR-0028): the viewer and the editor in sync.
@@ -161,6 +162,7 @@ async function reload(): Promise<void> {
   recordLoad?.(ms, buildMs);
   const hidden = showDiagnostics(editor, program.diagnostics);
   renderDiagnostics(program.diagnostics);
+  renderSummary($('summary'), program.summary, goToLine);
   renderStats(program, ms, hidden);
 }
 
@@ -259,6 +261,19 @@ for (const b of viewButtons)
       viewer.setView(name as ViewName);
     }
     for (const x of viewButtons) x.setAttribute('aria-pressed', String(x === b));
+  });
+
+// Diagnostics / Summary tabs under the panes.
+const tabs = [
+  [$<HTMLButtonElement>('tab-diagnostics'), $('diagnostics')],
+  [$<HTMLButtonElement>('tab-summary'), $('summary')],
+] as const;
+for (const [tab] of tabs)
+  tab.addEventListener('click', () => {
+    for (const [t, panel] of tabs) {
+      t.setAttribute('aria-selected', String(t === tab));
+      panel.hidden = t !== tab;
+    }
   });
 
 // Drop a file anywhere on the page, the editor included. The listener runs in the

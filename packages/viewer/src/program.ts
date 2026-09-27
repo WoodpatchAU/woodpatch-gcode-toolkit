@@ -7,11 +7,13 @@ import {
   interpret,
   parse,
   pathBounds,
+  summarise,
   tessellate,
   type Diagnostic,
   type InterpretLimits,
   type PathBounds,
   type PathOptions,
+  type ProgramSummary,
 } from '@woodpatch/gcode-core';
 
 /**
@@ -33,6 +35,12 @@ export interface LoadedProgram {
    */
   readonly vertexLine: Uint32Array;
   readonly bounds: PathBounds;
+  /**
+   * The program at a glance: per-axis extents for cut and rapid moves (work
+   * coordinates), feeds, spindle speeds, tools, distances and Z levels. Computed here,
+   * in the worker, so the page gets it for free.
+   */
+  readonly summary: ProgramSummary;
   readonly diagnostics: readonly Diagnostic[];
   /** The path was coarsened or truncated to fit the vertex budget (core tessellate). */
   readonly coarsened: boolean;
@@ -81,6 +89,7 @@ export function loadProgram(text: string, options: LoadOptions = {}): LoadedProg
     kind: buffers.kind,
     vertexLine,
     bounds,
+    summary: summarise(result.steps),
     // Syntax findings live on the parsed program, the interpreter's on its result.
     diagnostics,
     coarsened: buffers.coarsened,

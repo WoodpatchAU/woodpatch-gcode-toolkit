@@ -1436,3 +1436,36 @@ bundle budget is met. Each is now a gate or a recorded measurement:
 **60 fps measurement:** the operator measured **99 to 109 fps** orbiting the Aztec sample
 (223,857 lines, 226,631 segments) on the deployed playground with `?stats`,
 2026-09-27. The target was 60. Met.
+
+## ADR-0032: The program summary
+
+**Status:** Accepted, 2026-09-27. Operator request, taken ahead of Phase 4a.
+
+**Decision.** `summarise(steps)` in the core reports a program at a glance, from the
+interpreter's steps:
+
+- min/max per axis, for cutting and rapid moves separately (exact for arcs);
+- cutting and plunge feeds, and the distance fed at each feed;
+- spindle speeds and directions, and the distance cut at each speed;
+- **cutting with the spindle off** (with its first line);
+- tools, and the distance cut with each;
+- cut, plunge and rapid distances, move counts, the Z levels cut at, dwells, stops and
+  coolant.
+
+The viewer computes it in the worker (`LoadedProgram.summary`), and the playground
+shows it in a Summary tab beside the diagnostics.
+
+- **Work coordinates and millimetres, always.** The interpreter keeps machine
+  coordinates and the work offset in force (ADR-0019). The summary reports what the
+  program says, in the frame each move was commanded in. Feeds are in mm/min,
+  whatever units the program uses.
+- **A plunge** is a feed move straight down (no X/Y travel). Its feed is reported apart
+  from cutting feeds, because it's usually deliberately slower. **A Z level** is the
+  height of a level cutting move (horizontal, or an XY-plane arc without a helix). The
+  50 highest are listed and the rest counted.
+- **Speed.** A summary of the 224k-line sample takes about 50 ms warm (130 ms cold) in
+  the worker. That's after caching each total's current entry (the key rarely changes
+  between moves) and plain square roots instead of `Math.hypot`, which is several
+  times slower in V8. It started at 200 to 330 ms.
+- **Not here:** time estimates (Phase 5), and concern checks beyond the spindle-off one
+  (plan §4.5).

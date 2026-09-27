@@ -188,3 +188,66 @@ button:hover:not(:disabled) {
     monospace;
   pointer-events: none;
 }
+.info-head {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  margin-bottom: 0.3rem;
+}
+.info-head .stats {
+  margin-bottom: 0;
+}
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+.tabs button {
+  font-size: 0.85em;
+}
+.tabs button[aria-selected='true'] {
+  border-color: var(--accent);
+}
+.summary[hidden],
+.diagnostics[hidden] {
+  display: none;
+}
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  align-items: flex-start;
+}
+.summary-warning {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--warning);
+}
+.summary-extent {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.summary-extent th,
+.summary-extent td {
+  padding: 0.05rem 0.6rem;
+  text-align: right;
+}
+.summary-extent tr:first-child th {
+  color: var(--muted);
+  font-weight: normal;
+}
+.summary-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.05rem 0.75rem;
+  margin: 0;
+}
+.summary-facts dt {
+  color: var(--muted);
+}
+.summary-facts dd {
+  margin: 0;
+}
+.summary-note {
+  margin: 0;
+  color: var(--muted);
+}

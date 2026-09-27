@@ -58,8 +58,24 @@ SPDX-License-Identifier: MIT
       </section>
     </main>
     <section class="info">
-      <div id="stats" class="stats"></div>
-      <ol id="diagnostics" class="diagnostics" aria-label="Diagnostics"></ol>
+      <div class="info-head">
+        <span class="tabs" role="tablist" aria-label="Program details">
+          <button role="tab" id="tab-diagnostics" aria-selected="true" aria-controls="diagnostics">
+            Diagnostics
+          </button>
+          <button role="tab" id="tab-summary" aria-selected="false" aria-controls="summary">
+            Summary
+          </button>
+        </span>
+        <div id="stats" class="stats"></div>
+      </div>
+      <ol
+        id="diagnostics"
+        class="diagnostics"
+        role="tabpanel"
+        aria-labelledby="tab-diagnostics"
+      ></ol>
+      <div id="summary" class="summary" role="tabpanel" aria-labelledby="tab-summary" hidden></div>
     </section>
     <footer class="foot">
       Drop a file anywhere, or paste into the editor. Everything runs in your browser; nothing is

@@ -181,3 +181,28 @@ test('the 2D plan draws, picks a line, and keeps its zoom when hidden', async ({
   expect(drawn).toBeGreaterThan(empty * 1.3);
   expect(problems).toEqual([]);
 });
+
+test('the Summary tab shows extents, feeds and spindle, and a spindle-off warning jumps to its line', async ({
+  page,
+}) => {
+  const problems = watch(page);
+  await page.goto('/');
+  await expect(status(page)).toContainText('Read in', { timeout: 30_000 });
+  await expect(page.locator('#summary')).toBeHidden();
+  await page.click('#tab-summary');
+  await expect(page.locator('#summary')).toBeVisible();
+  await expect(page.locator('#diagnostics')).toBeHidden();
+  await expect(page.locator('#tab-summary')).toHaveAttribute('aria-selected', 'true');
+
+  // Tux cuts X 0..10 at 200 mm/min, and never starts the spindle.
+  const x = page.locator('.summary-extent tr', { hasText: /^X/ });
+  await expect(x.locator('td').nth(0)).toHaveText('0.000');
+  await expect(x.locator('td').nth(1)).toHaveText('10.000');
+  await expect(page.locator('.summary-facts')).toContainText('200 mm/min');
+  await expect(page.locator('.summary-facts')).toContainText('never on while cutting');
+  const warning = page.locator('.summary-warning');
+  await expect(warning).toContainText('Cuts with the spindle off');
+  await warning.getByRole('button', { name: 'line 11' }).click();
+  await expect(page.locator('.cm-lineNumbers .cm-activeLineGutter')).toHaveText('11');
+  expect(problems).toEqual([]);
+});
