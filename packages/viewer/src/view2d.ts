@@ -297,7 +297,8 @@ export class GcodeView2D {
     const [sx, sy] = this.local(e);
     const [x, y] = toWorld(this.t, this.w, this.h, sx, sy);
     const radius = (this.options.pickRadius ?? 6) / this.t.scale;
-    const segment = nearestSegment(this.program, x, y, radius);
+    // Within a pixel of the nearest, what's drawn on top wins (a rapid over a cut).
+    const segment = nearestSegment(this.program, x, y, radius, 1 / this.t.scale);
     if (segment < 0) return;
     const event = { segment, line: this.index.lineOf(segment) };
     for (const l of this.pickListeners) l(event);

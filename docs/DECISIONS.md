@@ -1412,11 +1412,27 @@ bundle budget is met. Each is now a gate or a recorded measurement:
   rate says nothing about a real GPU. The playground's `?stats` overlay shows the
   frames drawn in the last second while orbiting, the render call's CPU time, the draw
   calls, and the read and build times. It's built on the viewer's new `onRender` hook.
-  The operator orbits the Aztec sample on his own machine, and the result is recorded
-  here. _Pending: see below._
-- **Lighthouse (at least 90)** comes in parcel 3f-2: the `lighthouse` package in CI,
-  median of 3 runs, on the runner's Chrome. It's a new dependency, so it gets its own
-  review.
+  The operator orbited the Aztec sample on their own machine: 99 to 109 fps (below).
+- **Lighthouse performance of at least 90 (parcel 3f-2).** CI runs the `lighthouse`
+  package (13.5.0, exact-pinned; about 105 packages of dev dependencies, none with
+  install scripts):
+  - against the built playground, served by `vite preview` as it will be deployed;
+  - on the runner's preinstalled Chrome;
+  - three times, gating the median. One run is noisy.
+    Lighthouse's defaults are used (mobile emulation, simulated throttling), which is what
+    PageSpeed Insights reports. Accessibility and best practices are printed, not gated.
+    The keyless PageSpeed API was ruled out: its shared quota was already exhausted.
+  - **First run: 87, three times.** The page shifted as late content arrived
+    (cumulative layout shift 0.149): the status, the stats line, the info panel, and
+    the controller list (filled by script, so its select grew and re-wrapped the
+    header on a phone-width screen). They now have reserved sizes, and the gate prints
+    the elements that shifted.
+  - **Now: 94, three times** (2026-09-27, layout shift 0.009, total blocking time
+    about 300 ms). Accessibility 97, best practices 100.
+  - What's left is the blocking time from evaluating the one page bundle at load. If
+    the score slips, the lever is loading the 3D viewer (three.js) lazily, after the
+    editor.
 
-**60 fps measurement:** _to be recorded after the operator's run on the deployed
-playground (`/?stats`, Aztec sample, orbit continuously)._
+**60 fps measurement:** the operator measured **99 to 109 fps** orbiting the Aztec sample
+(223,857 lines, 226,631 segments) on the deployed playground with `?stats`,
+2026-09-27. The target was 60. Met.

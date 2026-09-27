@@ -52,13 +52,16 @@ plan.onPick(({ line }) => editor.showPathLine(line));
 - The grid adapts to the zoom (1, 2 or 5 × 10ⁿ mm) and is labelled in mm. The
   machine's X and Y axes are drawn through the origin.
 - A click picks the nearest segment within `pickRadius` CSS px (default 6), in plan.
-  Where segments overlap in plan (a pocket's depth passes), the later one wins.
+  Rapids are drawn on top of cuts (they travel above them). Among segments within a
+  pixel of the nearest, the one drawn on top is picked: a rapid over a cut, then the
+  later segment. So a click picks what it lands on.
 - It doesn't import three.js, so a bundler drops the 3D view if you only use this one.
   three.js is still a peer dependency of the package.
 
 ## Frame statistics
 
-`viewer.onRender(info => …)` reports each frame drawn: `ms` (the CPU time of three.js's
+`viewer.onRender(info => …)` on the 3D view (`GcodeViewer`; the 2D plan has none) reports
+each frame drawn: `ms` (the CPU time of three.js's
 render call; the GPU finishes asynchronously), `drawCalls` and `segments`. The view
 draws on demand, so frames arrive only while something changes. Count them while
 orbiting to get a frame rate. The playground's `?stats` overlay is built on it

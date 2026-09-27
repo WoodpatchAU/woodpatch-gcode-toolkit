@@ -9,7 +9,8 @@
     "dev": "vite",
     "build": "node scripts/copy-samples.mjs && vite build && node scripts/check-notice.mjs && node scripts/check-budget.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "lighthouse": "node scripts/lighthouse.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
@@ -25,6 +26,7 @@
   "devDependencies": {
     "@playwright/test": "1.63.0",
     "@types/three": "0.186.0",
+    "lighthouse": "13.5.0",
     "typescript": "~6.0.3",
     "vite": "8.3.0"
   }

@@ -10,6 +10,9 @@ export default defineConfig({
     // Maps are built for local debugging but not referenced from the bundles, and the
     // deploy leaves them out: no dangling sourceMappingURL on the public site.
     sourcemap: 'hidden',
+    // dist/.vite/manifest.json: which chunks the page loads, for the bundle budget's
+    // page/worker split (scripts/check-budget.mjs). A dot-directory, so it isn't deployed.
+    manifest: true,
     // Keep /*! legal comments: MIT's notice must travel with the built bundle
     // (ADR-0009). scripts/check-notice.mjs proves it did.
     rolldownOptions: { output: { comments: { legal: true } } },
