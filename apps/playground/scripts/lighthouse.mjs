@@ -60,6 +60,10 @@ function runOnce() {
       '--output-path=stdout',
       '--only-categories=performance,accessibility,best-practices',
       '--chrome-flags=--headless=new --no-sandbox',
+      // Lighthouse bundles an error reporter (Sentry). It's off in CI today only because
+      // CI is non-interactive; say so explicitly, so no environment change can turn on
+      // telemetry from this public repo's pipeline (review of toolkit #31).
+      '--no-enable-error-reporting',
       '--quiet',
     ],
     { cwd: app, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
