@@ -5,7 +5,7 @@ import { defineConfig } from '@playwright/test';
 /**
  * Real-browser tests of the built playground (parcel 3c, ADR-0028). They drive the
  * Chrome already installed on the CI runner (`channel: 'chrome'`), so no browser is
- * downloaded (operator decision, #1171). Run after `pnpm build`.
+ * downloaded (operator decision, Phase 3). Run after `pnpm build`.
  */
 export default defineConfig({
   testDir: 'e2e',

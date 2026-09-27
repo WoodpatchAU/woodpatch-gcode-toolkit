@@ -282,7 +282,7 @@ describe('lineSpans is guarded itself (it is public)', () => {
     expect(() => lineSpans('X' + '-'.repeat(100_000))).not.toThrow();
     expect(lineSpans('X' + '-'.repeat(100_000))).toBeInstanceOf(Array);
     expect(lineSpans('G0 X1 Y2', 5).map((s) => s.cls)).toEqual(['gc-g', 'gc-axis']);
-    // With no cap, the core overflows its stack on this line (#1506): the guard catches it.
+    // With no cap, the core overflows its stack on this line (a tracked tokenizer-hardening follow-up): the guard catches it.
     expect(lineSpans('X' + '-'.repeat(100_000), Infinity)).toEqual([]);
   });
 });

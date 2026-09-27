@@ -68,7 +68,7 @@ function spansOf(t: Token): StyleSpan[] {
  * Public, so it's bounded and guarded itself (reviewer, toolkit #21): only the first
  * `maxChars` characters are tokenized, and a tokenizer failure returns no spans rather
  * than throwing. A pathological line (e.g. "X" and 100,000 "-") would otherwise
- * overflow the core tokenizer's stack; core issue #1506.
+ * overflow the core tokenizer's stack; a tracked follow-up in the core.
  */
 export function lineSpans(text: string, maxChars = 2000): StyleSpan[] {
   try {
