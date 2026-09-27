@@ -1453,7 +1453,9 @@ interpreter's steps:
   coolant.
 
 The viewer computes it in the worker (`LoadedProgram.summary`), and the playground
-shows it in a Summary tab beside the diagnostics.
+shows it in a box above the code, always in view (operator request, 2026-09-28; it started
+as a tab beside the diagnostics). The box has a fixed height and scrolls inside, so filling it
+in after load can't shift the layout.
 
 - **Work coordinates and millimetres, always.** The interpreter keeps machine
   coordinates and the work offset in force (ADR-0019). The summary reports what the

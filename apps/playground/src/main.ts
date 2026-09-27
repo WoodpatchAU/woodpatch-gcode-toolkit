@@ -263,40 +263,6 @@ for (const b of viewButtons)
     for (const x of viewButtons) x.setAttribute('aria-pressed', String(x === b));
   });
 
-// Diagnostics / Summary tabs under the panes, per the WAI-ARIA tabs pattern: one tab
-// in the tab order (roving tabindex), Left/Right/Home/End move between them.
-const tabs = [
-  [$<HTMLButtonElement>('tab-diagnostics'), $('panel-diagnostics')],
-  [$<HTMLButtonElement>('tab-summary'), $('panel-summary')],
-] as const;
-function selectTab(index: number, focus: boolean): void {
-  tabs.forEach(([tab, panel], k) => {
-    const on = k === index;
-    tab.setAttribute('aria-selected', String(on));
-    tab.tabIndex = on ? 0 : -1;
-    panel.hidden = !on;
-    if (on && focus) tab.focus();
-  });
-}
-tabs.forEach(([tab], k) => {
-  tab.addEventListener('click', () => selectTab(k, false));
-  tab.addEventListener('keydown', (e) => {
-    const next =
-      e.key === 'ArrowRight'
-        ? (k + 1) % tabs.length
-        : e.key === 'ArrowLeft'
-          ? (k + tabs.length - 1) % tabs.length
-          : e.key === 'Home'
-            ? 0
-            : e.key === 'End'
-              ? tabs.length - 1
-              : -1;
-    if (next < 0) return;
-    e.preventDefault();
-    selectTab(next, true);
-  });
-});
-
 // Drop a file anywhere on the page, the editor included. The listener runs in the
 // capture phase and stops the event, so CodeMirror's own drop handler never sees a file
 // (it would read it uncapped, and the file would open twice). Dragging text within the
