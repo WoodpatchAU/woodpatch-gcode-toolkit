@@ -58,21 +58,57 @@ export interface AffineMap {
   readonly axisAligned: boolean;
 }
 
-/** Why an op can't be applied, or null if it can. */
+/** Why an op can't be applied, or null if it can. Every field is checked: an op with a
+ *  missing or misspelt field is refused, never read as zero (review of toolkit #33). */
 export function invalidOp(op: TransformOp): string | null {
-  const finite = (...v: (number | undefined)[]) =>
-    v.every((x) => x === undefined || Number.isFinite(x));
-  switch (op.op) {
+  const o = op as unknown as Record<string, unknown>;
+  const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+  const optional = (v: unknown) => v === undefined || num(v);
+  const only = (...keys: string[]) => {
+    const extra = Object.keys(o).filter((k) => k !== 'op' && !keys.includes(k));
+    return extra.length ? `unknown field${extra.length > 1 ? 's' : ''} ${extra.join(', ')}` : null;
+  };
+  const point = (v: unknown, keys: string[], required: boolean) => {
+    if (v === undefined) return true;
+    if (typeof v !== 'object' || v === null) return false;
+    const p = v as Record<string, unknown>;
+    if (Object.keys(p).some((k) => !keys.includes(k))) return false;
+    return keys.every((k) => (required ? num(p[k]) : optional(p[k])));
+  };
+  switch (o['op']) {
     case 'translate':
-      return finite(op.x, op.y, op.z) ? null : 'a translation must be finite';
+      return (
+        only('x', 'y', 'z') ??
+        (optional(o['x']) && optional(o['y']) && optional(o['z'])
+          ? null
+          : 'a translation must be finite numbers x, y, z')
+      );
     case 'rotate':
-      return finite(op.degrees, op.about?.x, op.about?.y) ? null : 'a rotation must be finite';
+      return (
+        only('degrees', 'about') ??
+        (!num(o['degrees'])
+          ? 'a rotation needs a finite number of degrees'
+          : !point(o['about'], ['x', 'y'], true)
+            ? "a rotation's about must be a point {x, y}"
+            : null)
+      );
     case 'mirror':
-      if (op.axis !== 'x' && op.axis !== 'y') return "a mirror's axis is 'x' or 'y'";
-      return finite(op.about) ? null : 'a mirror line must be finite';
+      return (
+        only('axis', 'about') ??
+        (o['axis'] !== 'x' && o['axis'] !== 'y'
+          ? "a mirror's axis is 'x' or 'y'"
+          : !optional(o['about'])
+            ? 'a mirror line must be a finite number'
+            : null)
+      );
     case 'scale': {
-      const f = [op.x, op.y ?? op.x, op.z ?? 1];
-      if (!finite(...f, op.about?.x, op.about?.y, op.about?.z)) return 'a scale must be finite';
+      const bad = only('x', 'y', 'z', 'about');
+      if (bad) return bad;
+      if (!num(o['x']) || !optional(o['y']) || !optional(o['z']))
+        return 'a scale needs a finite x factor (y and z optional)';
+      if (!point(o['about'], ['x', 'y', 'z'], false))
+        return "a scale's about must be a point {x, y, z}";
+      const f = [o['x'], o['y'] ?? o['x'], o['z'] ?? 1] as number[];
       if (f.some((v) => v <= 0))
         return 'scale factors must be positive (a negative factor is a mirror: use mirror)';
       return null;

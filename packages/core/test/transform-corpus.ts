@@ -24,8 +24,15 @@ import {
 
 // ── The corpus: every transform is either refused cleanly or geometrically right ──
 
+/** A fixture: `transform/…` from this package's own test fixtures, else the repo's. */
 export const read = (p: string) =>
-  readFileSync(new URL(`../../../fixtures/${p}`, import.meta.url), 'utf8');
+  readFileSync(
+    new URL(
+      p.startsWith('transform/') ? `./fixtures/${p}` : `../../../fixtures/${p}`,
+      import.meta.url,
+    ),
+    'utf8',
+  );
 export const CORPUS: [string, Dialect][] = [
   ...['tux', 'webgcode', 'test_pycam', 'aztec_calendar'].map((f): [string, Dialect] => [
     `upstream/${f}.ngc`,
@@ -35,7 +42,38 @@ export const CORPUS: [string, Dialect][] = [
   ...readdirSync(new URL('../../../fixtures/synthetic/', import.meta.url))
     .filter((f) => f.endsWith('.ngc'))
     .map((f): [string, Dialect] => [`synthetic/${f}`, GENERIC]),
+  // Programs the transform should ACCEPT, exercising what the review of #33 found:
+  // incremental after absolute, machine/home retracts around tool changes, and a
+  // Masso job with cycles and K repeats.
+  ['transform/abs-then-inc.ngc', GENERIC],
+  ['transform/toolchange-retracts.ngc', GENERIC],
+  ['transform/masso-job.nc', MASSO_G3],
 ];
+
+/** Lines a transform leaves as written by design: machine-coordinate and home moves. */
+/**
+ * Lines a transform leaves as written by design (machine-coordinate and home moves),
+ * with the axes each one moves: its axis words, or all three for a bare G28/G30.
+ */
+function untouchedLines(src: string): Map<number, readonly ('X' | 'Y' | 'Z')[]> {
+  const out = new Map<number, readonly ('X' | 'Y' | 'Z')[]>();
+  for (const line of parse(src).lines) {
+    let home = false;
+    let machine = false;
+    const axes: ('X' | 'Y' | 'Z')[] = [];
+    for (const tok of line.tokens) {
+      if (tok.kind !== 'word') continue;
+      if (tok.letter === 'X' || tok.letter === 'Y' || tok.letter === 'Z') axes.push(tok.letter);
+      if (tok.letter === 'G' && tok.value?.kind === 'number') {
+        if (tok.value.value === 53) machine = true;
+        if (tok.value.value === 28 || tok.value.value === 30) home = true;
+      }
+    }
+    if (machine) out.set(line.lineNo, axes);
+    else if (home) out.set(line.lineNo, axes.length ? axes : ['X', 'Y', 'Z']);
+  }
+  return out;
+}
 
 type Motion = Extract<Step, { kind: 'linear' | 'arc' }>;
 const motions = (src: string, dialect: Dialect) =>
@@ -86,6 +124,7 @@ export function corpusSuite(entries: [string, Dialect][]): void {
     const src = read(file);
     const before = motions(src, dialect);
     const first = firstCommanded(src, new Set(before.map((s) => s.line)));
+    const untouched = untouchedLines(src);
 
     // The 224k-line sample takes several seconds per op (parse, transform, re-parse,
     // interpret twice), so it runs the most telling op, a quarter turn about a point
@@ -113,6 +152,16 @@ export function corpusSuite(entries: [string, Dialect][]): void {
           const b = before[i] as Motion;
           const a = after[i] as Motion;
           expect(a.kind, `step ${i} (line ${b.line})`).toBe(b.kind);
+          // A machine or home move is left as written: the axes it names go where they
+          // always went; its other axes are wherever the (transformed) tool already was.
+          const moved = untouched.get(b.line);
+          if (moved) {
+            for (const k of moved)
+              expect(Math.abs(a.to[k] - b.to[k]), `line ${b.line}: untouched ${k}`).toBeLessThan(
+                1e-9,
+              );
+            continue;
+          }
           const want = apply(m, work(b.to, b.offset));
           const got = work(a.to, a.offset);
           // An output axis is comparable once every input axis it depends on is commanded.

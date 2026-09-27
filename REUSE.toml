@@ -43,7 +43,12 @@ SPDX-License-Identifier = "MIT OR AGPL-3.0-only"
 # test. A comment line would alter what the parser sees, and some cases test
 # the first bytes, line endings or byte-order marks.
 [[annotations]]
-path = ["fixtures/synthetic/**", "fixtures/golden/legacy/synthetic/**", "fixtures/machine/**"]
+path = [
+  "fixtures/synthetic/**",
+  "fixtures/golden/legacy/synthetic/**",
+  "fixtures/machine/**",
+  "packages/core/test/fixtures/**",
+]
 precedence = "override"
 SPDX-FileCopyrightText = "2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden"
 SPDX-License-Identifier = "MIT"

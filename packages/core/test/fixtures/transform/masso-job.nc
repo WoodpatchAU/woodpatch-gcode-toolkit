@@ -1,0 +1,26 @@
+( Transform fixture: a Masso-style job with drilling cycles and K repeats )
+G21 G90 G17 G94
+G53 G0 Z0
+T3 M6
+M3 S18000
+G0 X5 Y5
+G0 Z5
+G81 X5 Y5 Z-3 R2 F300
+X15 Y5
+X25 Y10 K2
+G80
+G0 Z5
+G0 X40 Y40
+G1 Z-1.5 F300
+G1 X60 F1000
+G3 X60 Y60 I0 J10
+G1 X40
+G0 Z5
+G91
+G81 X10 Y0 Z-3 R2 K3 F300
+G80
+G90
+G0 Z5
+M5
+G53 G0 Z0
+M30

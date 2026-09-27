@@ -1510,14 +1510,33 @@ approximation.
   - Rotations by multiples of 90° use exact 0/±1 entries. So rotating four times gives
     the file back byte-for-byte, and so does mirroring twice about an axis through the
     origin. Both are tested on every fixture.
-- **Other angles** need both X and Y on every line, so the transform tracks the
-  commanded position and inserts the missing word after its partner.
+- **Other angles** need both X and Y on every line. The transform tracks the commanded
+  position and inserts the missing word after its partner. An absent component of an
+  incremental move is 0, never the absolute position (corrected in review).
+- **Incremental words carry their rounding.** Each is written as the exact transformed
+  total so far minus what the earlier incremental words on that output axis have
+  already written. 10,000 steps of 0.1 mm rotated 10° end within a micrometre, not 6 mm
+  off (review of #33). An absolute word resets the carry. A canned cycle repeated in
+  G91 multiplies its step only where the controller does (LinuxCNC L; Masso's K repeats
+  in place).
+- **Only modelled codes.** An allowlist of G codes whose words the transform
+  understands; any other G code refuses the op. Refused as a result: G5.x, G7/8,
+  G15/16, G33, G38.x, G43.1, G50/51, G68/69, G76, G87/88. G52 and G92.x refuse as
+  offsets. G10 L20 refuses except on Masso, where L20 means something else.
+- **Control flow refuses every op:** O-word subs, calls and loops, M98 and M99. A line
+  may run many times, out of order, or from another file, so transforming text in order
+  is wrong (review of #33). A bare O-number program line is fine.
+- **G53, G28 and G30 lines are left as written.** The machine's home can't move, and a
+  quarter turn must not rename the axis being homed. Each axis they move becomes
+  _untransformed_: a later move while an axis the op changes is still untransformed
+  (not yet given again in G90) is refused. A Z-only retract taints only Z, so the usual
+  tool-change retract doesn't stop an XY transform. A Z translation of such a program
+  IS refused: the XY travel after the retract runs at the untransformed machine height.
   - It's refused where the position is unknown (before the first X/Y, or after a G53 or
     G28 move).
-  - It's refused wherever O-word flow or M98 makes the position before a line unknowable.
 - **Which words are coordinates** follows each line's modal state:
   - X/Y/Z are points under G90 and vectors under G91 (translation doesn't apply to
-    vectors).
+    vectors). Not on G10, G53, G28 or G30 lines, which are left as written.
   - I/J/K are arc centres only under G2/G3, including a full circle with no axis words.
     They're vectors under G91.1 and points under G90.1. Masso's K is a canned-cycle
     repeat count, so it's left alone.
@@ -1532,14 +1551,12 @@ approximation.
     them into another plane).
   - Uneven scaling of an arc's plane is refused: it would make an ellipse.
   - G41 and G42 swap in a mirror image.
-- **Refused:**
-  - an expression or parameter in a word the op would change (operator decision:
-    rewritten expressions can't be trusted);
-  - G92 and its variants;
-  - a line that repeats a coordinate word, which the controller rejects anyway.
+- **Also refused:** an expression or parameter in a word the op would change (operator
+  decision: rewritten expressions can't be trusted); a line that repeats a coordinate
+  word, which the controller rejects anyway; an op with a missing, misspelt or extra
+  field (it's never read as zero).
 - **Left alone, with a warning:**
-  - G53 and G10 lines (machine terms);
-  - home positions (G28/G30 intermediate points are transformed; the homes aren't);
+  - G53, G10, G28 and G30 lines (machine terms and homes);
   - rotary axes;
   - a program that moves incrementally before any absolute X/Y: that part is placed by
     where the machine starts, so it transforms about that point, and translation can't
@@ -1562,7 +1579,13 @@ approximation.
   `bb-horizontal.nc`: geometrically, and byte-for-byte apart from one file's final
   newline. The two "swapped" variants are a quarter turn followed by a mirror, and carry
   the cut-direction warning. The fixtures repo's CI will pin this check once it's merged.
-- The corpus found three bugs before review:
+- **The first review found six ways a transform came back ok with a wrong toolpath**
+  (the fixes above), by interpreting both programs and comparing positions. Each is now
+  a unit test. Accepted fixtures in `packages/core/test/fixtures/transform/` exercise
+  them in the corpus property: absolute then incremental with arcs, tool-change
+  retracts, and a Masso job with cycles and K repeats. Lines left as written are checked
+  against the original's machine positions (the axes they name).
+- The corpus found three bugs before the first review:
   - a full-circle arc (`G2 I5`) had its centre left untransformed;
   - an unchanged `Z-0.0000` was rewritten as `Z0.0000`;
   - a repeated word was guessed at instead of refused.

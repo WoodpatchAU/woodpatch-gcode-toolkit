@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest';
 import {
   formatLike,
   GENERIC,
+  interpret,
   MASSO_G3,
+  mapOf,
+  parse,
   transformText,
   type Dialect,
   type TransformOp,
@@ -152,6 +155,106 @@ describe('scale', () => {
 });
 
 describe('what a transform leaves alone, and what stops it', () => {
+  // ── Review of #33: each of these came back ok with a silently wrong toolpath ──
+
+  it("fills an incremental move's missing axis with 0, not the absolute position", () => {
+    const r = t('G90 G0 X10 Y20\nG91 G1 X5 F100', [{ op: 'rotate', degrees: 30 }]);
+    expect(r.ok).toBe(true);
+    // The vector (5, 0) rotated 30°: (4.330, 2.500). Not X-5.670 Y19.821.
+    expect(r.text.split('\n')[1]).toBe('G91 G1 X4.330 Y2.500 F100');
+  });
+
+  it('carries rounding between incremental words: no drift over 10,000 steps', () => {
+    const src = [
+      'G21 G90 G0 X0 Y0',
+      'G91 G1 F100',
+      ...Array.from({ length: 10_000 }, () => 'G1 X0.1'),
+    ];
+    for (const op of [
+      { op: 'rotate', degrees: 30 },
+      { op: 'rotate', degrees: 10 },
+      { op: 'scale', x: 1 / 3, z: 1 / 3 },
+    ] as TransformOp[]) {
+      const r = t(src.join('\n'), [op]);
+      expect(r.ok).toBe(true);
+      const steps = interpret(parse(r.text)).steps.filter((s) => s.kind === 'linear');
+      const end = steps[steps.length - 1]?.to;
+      const m = mapOf(op);
+      // The exact end: (1000, 0) mapped as a vector from the origin (the start is 0,0).
+      expect(Math.abs((end?.X ?? 0) - m.a * 1000)).toBeLessThan(0.001);
+      expect(Math.abs((end?.Y ?? 0) - m.c * 1000)).toBeLessThan(0.001);
+    }
+  });
+
+  it('refuses G10 L20 except on Masso, where L20 means something else', () => {
+    expect(codes(t('G10 L20 P1 X0\nG1 X1', [{ op: 'translate', x: 1 }]))).toContain(
+      'TRANSFORM_UNSUPPORTED_CODE',
+    );
+    expect(t('G10 L20 P1 X0\nG1 X1', [{ op: 'translate', x: 1 }], MASSO_G3).ok).toBe(true);
+  });
+
+  it.each([
+    'G68 X0 Y0 R30',
+    'G5 X1 Y1 I1 J0 P1 Q0',
+    'G43.1 Z2',
+    'G87 X1 Y1 Z-1 R1 I1 J1 K1',
+    'G38.2 Z-10 F10',
+  ])("refuses a code it doesn't model: %s", (line) => {
+    const r = t(`G21 G90 G0 X0 Y0\n${line}\nG1 X1 F10`, [{ op: 'mirror', axis: 'x' }]);
+    expect(r.ok).toBe(false);
+    expect(codes(r)).toContain('TRANSFORM_UNSUPPORTED_CODE');
+  });
+
+  it('refuses control flow under every op, but not a bare program number', () => {
+    const sub = 'G0 X0 Y0\no100 sub\nG91 G1 X1 F10\no100 endsub\no100 call';
+    for (const op of [
+      { op: 'rotate', degrees: 90 },
+      { op: 'translate', x: 1 },
+    ] as TransformOp[])
+      expect(codes(t(sub, [op]))).toContain('TRANSFORM_CONTROL_FLOW');
+    expect(
+      codes(t('G0 X0 Y0\nM98 P100\nG1 X1 F10', [{ op: 'rotate', degrees: 90 }], MASSO_G3)),
+    ).toContain('TRANSFORM_CONTROL_FLOW');
+    expect(t('O1234\nG0 X1 Y1', [{ op: 'rotate', degrees: 90 }], MASSO_G3).ok).toBe(true);
+  });
+
+  it('refuses a move from a machine position the transform left as written', () => {
+    // G53 X50 Y70 is untouched; G0 X30 alone would leave Y at the machine's 70.
+    const r = t('G21 G90\nG53 G0 X50 Y70\nG0 X30\nG1 Z-1 F100', [{ op: 'rotate', degrees: 90 }]);
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics.find((d) => d.code === 'TRANSFORM_UNKNOWN_POSITION')?.line).toBe(3);
+    // Re-commanding both axes absolutely is fine.
+    expect(
+      t('G21 G90\nG53 G0 X50 Y70\nG0 X30 Y5\nG1 Z-1 F100', [{ op: 'rotate', degrees: 90 }]).ok,
+    ).toBe(true);
+    // A Z-only retract taints only Z: an XY-only transform carries on.
+    expect(
+      t('G21 G90\nG0 X1 Y1\nG53 G0 Z0\nG0 X2 Y2\nG0 Z5', [{ op: 'rotate', degrees: 90 }]).ok,
+    ).toBe(true);
+    expect(t('G21 G90\nG0 X1 Y1\nG28 G91 Z0\nG90 G0 X2 Y2', [{ op: 'mirror', axis: 'x' }]).ok).toBe(
+      true,
+    );
+  });
+
+  it('leaves G28/G30 as written: a quarter turn must not home a different axis', () => {
+    const r = t('G21 G90 G0 X1 Y1\nG28 G91 X0\nG90 G0 X2 Y2', [{ op: 'rotate', degrees: 90 }]);
+    expect(r.ok).toBe(true);
+    expect(r.text.split('\n')[1]).toBe('G28 G91 X0');
+    expect(codes(r)).toContain('TRANSFORM_HOME');
+  });
+
+  it('refuses ops with missing, misspelt or extra fields', () => {
+    for (const op of [
+      { op: 'rotate', deg: 90 },
+      { op: 'rotate', degrees: 90, about: { x: 1 } },
+      { op: 'translate', x: 1, w: 2 },
+      { op: 'scale' },
+      { op: 'mirror', axis: 'z' },
+      { op: 'spin', degrees: 90 },
+    ])
+      expect(codes(t('G1 X1', [op as unknown as TransformOp]))).toContain('TRANSFORM_BAD_OP');
+  });
+
   it('refuses expressions and parameters in words it would change', () => {
     const r = t('#1=5\nG1 X[#1+2] Y3', [{ op: 'rotate', degrees: 90 }]);
     expect(r.ok).toBe(false);
@@ -160,10 +263,11 @@ describe('what a transform leaves alone, and what stops it', () => {
     expect(t('G1 X1 Y[#1]', [{ op: 'translate', x: 1 }]).text).toBe('G1 X2 Y[#1]');
   });
 
-  it('refuses G92, leaves G53 and G10 alone with warnings', () => {
-    expect(codes(t('G92 X0\nG1 X1', [{ op: 'translate', x: 1 }]))).toContain('TRANSFORM_G92');
-    const r = t('G53 G0 Z0\nG10 L2 P1 X5\nG1 X1', [{ op: 'translate', x: 1 }]);
-    expect(r.text).toBe('G53 G0 Z0\nG10 L2 P1 X5\nG1 X2');
+  it('refuses G92 and G52, leaves G53 and G10 alone with warnings', () => {
+    expect(codes(t('G92 X0\nG1 X1', [{ op: 'translate', x: 1 }]))).toContain('TRANSFORM_OFFSET');
+    expect(codes(t('G52 X10\nG1 X1', [{ op: 'translate', x: 1 }]))).toContain('TRANSFORM_OFFSET');
+    const r = t('G53 G0 X0 Y0\nG10 L2 P1 X5\nG1 X1 Y1', [{ op: 'translate', x: 1 }]);
+    expect(r.text).toBe('G53 G0 X0 Y0\nG10 L2 P1 X5\nG1 X2 Y1');
     expect(codes(r)).toEqual(expect.arrayContaining(['TRANSFORM_G53', 'TRANSFORM_G10']));
   });
 
