@@ -4,10 +4,10 @@
 #
 # Installs Node and pnpm for CI without any third-party GitHub Action.
 #
-# Why not actions/setup-node or pnpm/action-setup: the repository's Actions policy
-# allows only actions defined in chrisgrulau repositories (ADR-0006). A plain
-# download is also a smaller supply-chain surface than an action we would
-# have to trust on every run.
+# Why not actions/setup-node or pnpm/action-setup: this CI uses no actions at all,
+# not even GitHub's own (ADR-0006), and the repository's Actions policy blocks
+# third-party ones. A plain download, checked against a pinned hash, is a smaller
+# supply-chain surface than an action we would have to trust on every run.
 #
 # Every download is checked against a hash PINNED IN THIS FILE, not against a
 # checksum fetched from the same server, so a compromised mirror or registry

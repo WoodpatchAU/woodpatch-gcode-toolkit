@@ -74,6 +74,11 @@ history carry through. `main` is cut from upstream `gh-pages` HEAD (`d315a359`),
 `upstream-2025-09-18`. Upstream's `gh-pages` and `master` are left untouched.
 `upstream` is kept as a git remote. History is never force-pushed.
 
+_Moved 2026-09-27:_ the repository now lives at `WoodpatchAU/woodpatch-gcode-toolkit`, a
+GitHub organization, after an owner transfer. It is still a fork of `nraynaud/webgcode`,
+with its history intact. Old URLs redirect for git, but not for GitHub Pages: the
+playground moved with it, to https://woodpatchau.github.io/woodpatch-gcode-toolkit/.
+
 ## ADR-0005: Park upstream under `legacy/`; licensing scope for it
 
 **Status:** Accepted, 2026-09-24.
@@ -150,6 +155,14 @@ owner's own repositories, pinned to full commit SHAs, so `actions/checkout` and
   anything else consumes.
 - The jobs (`checks`, `reuse`, `provenance`) are the required status checks on `main`.
   Renaming a job means updating branch protection.
+
+_Policy changed 2026-09-27:_ since the move to the WoodpatchAU organization, the Actions
+policy also allows actions created by GitHub (still SHA-pinned, and third-party
+actions are still blocked), so `actions/checkout` and `actions/setup-node` would now be
+permitted. The decision stands, but **no actions is now a choice, not a constraint**:
+plain `git` and hash-pinned downloads keep the trust surface to files we can read and
+hashes we pin, and they don't depend on the policy staying as it is. The CodeQL default
+setup GitHub runs on this repository is GitHub's own, not part of this CI.
 
 ## ADR-0007: Dependency supply-chain safeguards
 
