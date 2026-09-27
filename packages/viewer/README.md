@@ -55,3 +55,11 @@ plan.onPick(({ line }) => editor.showPathLine(line));
   Where segments overlap in plan (a pocket's depth passes), the later one wins.
 - It doesn't import three.js, so a bundler drops the 3D view if you only use this one.
   three.js is still a peer dependency of the package.
+
+## Frame statistics
+
+`viewer.onRender(info => …)` reports each frame drawn: `ms` (the CPU time of three.js's
+render call; the GPU finishes asynchronously), `drawCalls` and `segments`. The view
+draws on demand, so frames arrive only while something changes. Count them while
+orbiting to get a frame rate. The playground's `?stats` overlay is built on it
+(ADR-0031).

@@ -166,11 +166,14 @@ export class GcodeView2D {
     const p = this.program;
     if (!p || p.count < 2) return;
     // One path per colour: three strokes for the whole program, not one per segment.
+    // Rapids go LAST, on top. This is a view from above, and rapids travel at a safe
+    // height above the cuts. Drawn first, every traverse that crossed the cut area was
+    // painted over and vanished from the plan (found by the Phase 3 acceptance checks).
     const width = this.options.lineWidth ?? 1;
     for (const [kind, colour] of [
-      [VERTEX_RAPID, palette.rapid],
-      [VERTEX_ARC, palette.arc],
       [-1, palette.feed], // feed: anything that isn't a rapid or an arc
+      [VERTEX_ARC, palette.arc],
+      [VERTEX_RAPID, palette.rapid],
     ] as const) {
       ctx.beginPath();
       for (let i = 0; i + 1 < p.count; i++) {

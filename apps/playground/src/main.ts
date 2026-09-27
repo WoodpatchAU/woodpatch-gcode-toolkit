@@ -21,6 +21,7 @@ import {
   type LoadedProgram,
   type ViewName,
 } from '@woodpatch/gcode-viewer';
+import { installStats } from './stats.js';
 
 /**
  * The public playground (parcel 3c, ADR-0028): the viewer and the editor in sync.
@@ -45,6 +46,7 @@ for (const d of [GENERIC, ...DIALECTS.filter((x) => x !== GENERIC)]) {
 dialectSel.value = GENERIC.id;
 
 const viewer = new GcodeViewer($('view'));
+const recordLoad = installStats(viewer, $('view'));
 // The 2D plan (parcel 3d, ADR-0029) sits over the 3D view and is shown by the "2D"
 // button. Both views get every program and highlight, so switching is instant.
 const planEl = $('plan');
@@ -152,8 +154,11 @@ async function reload(): Promise<void> {
     return;
   }
   const ms = performance.now() - t0;
-  viewer.setProgram(program);
+  const t1 = performance.now();
+  viewer.setProgram(program); // builds the 3D geometry on this thread
+  const buildMs = performance.now() - t1;
   plan.setProgram(program);
+  recordLoad?.(ms, buildMs);
   const hidden = showDiagnostics(editor, program.diagnostics);
   renderDiagnostics(program.diagnostics);
   renderStats(program, ms, hidden);

@@ -37,6 +37,20 @@ export interface PickEvent {
 }
 
 /**
+ * One frame drawn (parcel 3f, ADR-0031), for a stats overlay or a performance gate.
+ * `ms` is the CPU time to issue the frame; the GPU works asynchronously after that, so
+ * sustained frame RATE (frames per second while orbiting) is the measure of smoothness.
+ */
+export interface RenderInfo {
+  /** CPU milliseconds spent in three.js's render call. */
+  readonly ms: number;
+  /** WebGL draw calls issued for the frame. */
+  readonly drawCalls: number;
+  /** Line segments in the current path (0 before a program is set). */
+  readonly segments: number;
+}
+
+/**
  * The 3D view (parcel 3a, ADR-0026). Framework-free: give it a container element,
  * then `setProgram()` with a {@link LoadedProgram} (from `loadProgram` or the worker).
  *
@@ -57,6 +71,7 @@ export class GcodeViewer {
   private readonly observer: ResizeObserver;
   private readonly raycaster = new Raycaster();
   private readonly pickListeners = new Set<(e: PickEvent) => void>();
+  private readonly renderListeners = new Set<(info: RenderInfo) => void>();
   private path: LineSegments2 | null = null;
   private highlight: LineSegments2 | null = null;
   private grid: GridHelper | null = null;
@@ -157,6 +172,12 @@ export class GcodeViewer {
     return () => this.pickListeners.delete(listener);
   }
 
+  /** Listens for frames drawn (ADR-0031). Returns a function that stops listening. */
+  onRender(listener: (info: RenderInfo) => void): () => void {
+    this.renderListeners.add(listener);
+    return () => this.renderListeners.delete(listener);
+  }
+
   /** Points the camera along a standard direction, framing the whole path. */
   setView(view: ViewName): void {
     if (this.disposed) return;
@@ -210,6 +231,7 @@ export class GcodeViewer {
     this.renderer.dispose();
     el.remove();
     this.pickListeners.clear();
+    this.renderListeners.clear();
     this.disposed = true;
   }
 
@@ -219,7 +241,15 @@ export class GcodeViewer {
     if (this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
+      const t0 = performance.now();
       this.renderer.render(this.scene, this.camera);
+      if (this.renderListeners.size === 0) return;
+      const info: RenderInfo = {
+        ms: performance.now() - t0,
+        drawCalls: this.renderer.info.render.calls,
+        segments: this.program ? Math.max(0, this.program.count - 1) : 0,
+      };
+      for (const l of this.renderListeners) l(info);
     });
   }
 
