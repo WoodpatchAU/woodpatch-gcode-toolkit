@@ -63,6 +63,13 @@ button {
   padding: 0.2rem 0.5rem;
   font: inherit;
 }
+/* Fixed widths: the controller list is filled by script after load, and a select that
+   grows then re-wraps the header and moves the page (layout shift, ADR-0031). */
+#sample,
+#dialect {
+  width: 12rem;
+  max-width: 100%;
+}
 button:hover:not(:disabled) {
   border-color: var(--accent);
 }
