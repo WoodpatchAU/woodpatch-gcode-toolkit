@@ -1484,3 +1484,114 @@ in after load can't shift the layout.
   times slower in V8. It started at 200 to 330 ms.
 - **Not here:** time estimates (Phase 5), and concern checks beyond the spindle-off one
   (plan §4.5).
+
+## ADR-0033: Transforms: translate, rotate, mirror, scale
+
+**Status:** Accepted, 2026-09-28. Parcel 4a. Operator decisions of 2026-09-27.
+
+**Decision.** `transform(program, ops)` in the core applies a recipe of operations, in
+order, by editing the program's words in place (`editLine` span edits, ADR-0017):
+
+- `translate {x, y, z}`
+- `rotate {degrees, about}`: counter-clockwise, about any point
+- `mirror {axis: 'x' | 'y', about}`
+- `scale {x, y, z, about}`: y defaults to x; z defaults to 1, so depths are kept
+
+Lengths in ops are millimetres, converted to each line's units. Every line the
+transform doesn't change stays byte-for-byte, and so does every part of a changed line
+it doesn't touch. A transform that can't be done faithfully is **refused**: the result
+is the original program, with an error naming each line that stopped it. It's never an
+approximation.
+
+- **Each op is an affine map** of XY (x' = a·x + b·y + tx, y' = c·x + d·y + ty) and Z.
+  - Translations, mirrors, scales and rotations by multiples of 90° are **axis-aligned**:
+    each output axis takes exactly one input axis, so each word maps to one word with
+    no position needed.
+  - On a quarter turn, a line with both X and Y keeps each letter where it is and swaps
+    the values (`X-8 Y98`, not `Y98 X-8`); a line with one of them renames it.
+  - Rotations by multiples of 90° use exact 0/±1 entries. So rotating four times gives
+    the file back byte-for-byte, and so does mirroring twice about an axis through the
+    origin. Both are tested on every fixture.
+- **Other angles** need both X and Y on every line. The transform tracks the commanded
+  position and inserts the missing word after its partner. An absent component of an
+  incremental move is 0, never the absolute position (corrected in review).
+- **Incremental words carry their rounding.** Each is written as the exact transformed
+  total so far minus what the earlier incremental words on that output axis have
+  already written. 10,000 steps of 0.1 mm rotated 10° end within a micrometre, not 6 mm
+  off (review of #33). An absolute word resets the carry. A canned cycle repeated in
+  G91 multiplies its step only where the controller does (LinuxCNC L; Masso's K repeats
+  in place).
+- **Only modelled codes.** An allowlist of G codes whose words the transform
+  understands; any other G code refuses the op. Refused as a result: G5.x, G7/8,
+  G15/16, G33, G38.x, G43.1, G50/51, G68/69, G76, G87/88. G52 and G92.x refuse as
+  offsets. G10 L20 refuses except on Masso, where L20 means something else.
+- **Control flow refuses every op:** O-word subs, calls and loops, M98 and M99. A line
+  may run many times, out of order, or from another file, so transforming text in order
+  is wrong (review of #33). A bare O-number program line is fine.
+- **G53, G28 and G30 lines are left as written.** The machine's home can't move, and a
+  quarter turn must not rename the axis being homed. Each axis they move becomes
+  _untransformed_: a later move while an axis the op changes is still untransformed
+  (not yet given again in G90) is refused. A Z-only retract taints only Z, so the usual
+  tool-change retract doesn't stop an XY transform. A Z translation of such a program
+  IS refused: the XY travel after the retract runs at the untransformed machine height.
+  - It's refused where the position is unknown (before the first X/Y, or after a G53 or
+    G28 move).
+- **Which words are coordinates** follows each line's modal state:
+  - X/Y/Z are points under G90 and vectors under G91 (translation doesn't apply to
+    vectors). Not on G10, G53, G28 or G30 lines, which are left as written.
+  - I/J/K are arc centres only under G2/G3, including a full circle with no axis words.
+    They're vectors under G91.1 and points under G90.1. Masso's K is a canned-cycle
+    repeat count, so it's left alone.
+  - R is the arc radius (scaled with the plane) under G2/G3, and the retract height (a
+    Z) in canned cycles. Q is the peck depth.
+- **Arcs:**
+  - G2/G3 flip wherever the arc's plane is mirrored (XY if the map reverses
+    orientation; ZX if X is negated; YZ if Y is).
+  - An arc that inherits its G2/G3 from another plane needing different handling is
+    refused.
+  - XZ/YZ arcs are refused under any rotation but 0° or 180° (a quarter turn would move
+    them into another plane).
+  - Uneven scaling of an arc's plane is refused: it would make an ellipse.
+  - G41 and G42 swap in a mirror image.
+- **Also refused:** an expression or parameter in a word the op would change (operator
+  decision: rewritten expressions can't be trusted); a line that repeats a coordinate
+  word, which the controller rejects anyway; an op with a missing, misspelt or extra
+  field (it's never read as zero).
+- **Left alone, with a warning:**
+  - G53, G10, G28 and G30 lines (machine terms and homes);
+  - rotary axes;
+  - a program that moves incrementally before any absolute X/Y: that part is placed by
+    where the machine starts, so it transforms about that point, and translation can't
+    move it.
+  - **A mirror always warns** that climb milling becomes conventional and vice versa.
+    Reversing contours to keep the cut direction comes later, with §4.4's contour
+    detection.
+- **Numbers** keep their source decimals when the result is exact at them, and
+  otherwise get at least 3 (mm) or 4 (inch). No negative zero. An unchanged word is left
+  exactly as written.
+
+**Evidence.**
+
+- A corpus property: for every fixture and eight ops, the transform is either refused
+  with the file untouched, or every step of the result lands where the map sends the
+  original's (endpoints, arc centres, and arc direction flipped exactly when it should
+  be). Axes whose position the program never commanded are excluded, since no transform
+  can move them. The large fixtures run in separate test files, in parallel.
+- **The operator's four BB variants** (private fixtures) are reproduced **exactly** from
+  `bb-horizontal.nc`: geometrically, and byte-for-byte apart from one file's final
+  newline. The two "swapped" variants are a quarter turn followed by a mirror, and carry
+  the cut-direction warning. The fixtures repo's CI will pin this check once it's merged.
+- **The first review found six ways a transform came back ok with a wrong toolpath**
+  (the fixes above), by interpreting both programs and comparing positions. Each is now
+  a unit test. Accepted fixtures in `packages/core/test/fixtures/transform/` exercise
+  them in the corpus property: absolute then incremental with arcs, tool-change
+  retracts, and a Masso job with cycles and K repeats. Lines left as written are checked
+  against the original's machine positions (the axes they name).
+- The corpus found three bugs before the first review:
+  - a full-circle arc (`G2 I5`) had its centre left untransformed;
+  - an unchanged `Z-0.0000` was rewritten as `Z0.0000`;
+  - a repeated word was guessed at instead of refused.
+
+**Performance.** 2.2 s for a quarter turn of the 224k-line sample, mostly re-tokenizing
+217k changed lines. It's acceptable in a worker for now; a later parcel can avoid the
+re-tokenizing.

@@ -14,3 +14,4 @@ export * from './interp/index.js';
 export * from './path/index.js';
 export * from './dialect/index.js';
 export * from './analysis/index.js';
+export * from './transform/index.js';
