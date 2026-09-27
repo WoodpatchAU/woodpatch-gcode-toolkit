@@ -138,6 +138,19 @@ describe('nearestSegment', () => {
     expect(nearestSegment(p, 5, 5, 1)).toBe(-1);
   });
 
+  it('picks what is drawn on top where a rapid crosses a cut', () => {
+    // A rapid across X=5 from Y-5 to Y5, then LATER a feed along Y=0 from X0 to X10, so
+    // "the later segment wins" alone would pick the feed at the crossing.
+    const q = loadProgram('G21 G90 F100\nG0 X5 Y-5\nG0 Y5\nG1 X0 Y0\nG1 X10');
+    // Segments: 0 rapid (0,0)->(5,-5); 1 rapid (5,-5)->(5,5); 2 feed (5,5)->(0,0);
+    // 3 feed (0,0)->(10,0). At the crossing (5,0), segments 1 and 3 are both at 0.
+    expect(nearestSegment(q, 5, 0, 1, 0.1)).toBe(1); // the rapid, drawn on top
+    // Along the feed, beyond the tie allowance from the rapid, the feed wins.
+    expect(nearestSegment(q, 8, 0.05, 1, 0.1)).toBe(3);
+    // Even with no tie allowance, an EXACT tie goes to what is drawn on top.
+    expect(nearestSegment(q, 5, 0, 1)).toBe(1);
+  });
+
   it('is -1 for a program with no segments', () => {
     expect(nearestSegment(loadProgram(''), 0, 0, 100)).toBe(-1);
   });

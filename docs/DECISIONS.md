@@ -1414,9 +1414,15 @@ bundle budget is met. Each is now a gate or a recorded measurement:
   calls, and the read and build times. It's built on the viewer's new `onRender` hook.
   The operator orbits the Aztec sample on his own machine, and the result is recorded
   here. _Pending: see below._
-- **Lighthouse (at least 90)** comes in parcel 3f-2: the `lighthouse` package in CI,
-  median of 3 runs, on the runner's Chrome. It's a new dependency, so it gets its own
-  review.
+- **Lighthouse performance of at least 90 (parcel 3f-2).** CI runs the `lighthouse`
+  package (13.5.0, exact-pinned; about 105 packages of dev dependencies, none with
+  install scripts):
+  - against the built playground, served by `vite preview` as it will be deployed;
+  - on the runner's preinstalled Chrome;
+  - three times, gating the median. One run is noisy.
+    Lighthouse's defaults are used (mobile emulation, simulated throttling), which is what
+    PageSpeed Insights reports. Accessibility and best practices are printed, not gated.
+    The keyless PageSpeed API was ruled out: its shared quota was already exhausted.
 
 **60 fps measurement:** _to be recorded after the operator's run on the deployed
 playground (`/?stats`, Aztec sample, orbit continuously)._

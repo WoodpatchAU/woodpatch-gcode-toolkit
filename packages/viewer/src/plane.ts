@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
 // SPDX-License-Identifier: MIT
 
+import { VERTEX_ARC, VERTEX_RAPID } from '@woodpatch/gcode-core';
 import type { LoadedProgram } from './program.js';
 
 /**
@@ -81,30 +82,54 @@ export function gridSpacing(scale: number, minPixels = 40): number {
   return [1, 2, 5, 10].map((m) => m * p).find((s) => s >= raw * (1 - 1e-12)) ?? 10 * p;
 }
 
+/** Draw order in the plan (ADR-0029): feeds, then arcs, then rapids on top. */
+function layer(kind: number): number {
+  return kind === VERTEX_RAPID ? 2 : kind === VERTEX_ARC ? 1 : 0;
+}
+
 /**
- * The segment nearest world point (x, y) in plan (XY), within `radius` mm, or -1.
- * Segment i joins vertex i to vertex i + 1. A linear scan: 226k segments take a few
- * milliseconds, and it only runs on a click.
+ * The segment a click at world point (x, y) picks in plan (XY), within `radius` mm, or
+ * -1. Segment i joins vertex i to vertex i + 1.
+ *
+ * It picks what the user SEES there. Among the segments within `tie` mm of the nearest
+ * (the view passes one pixel), the one drawn on top wins: a rapid over an arc over a
+ * feed, then the later segment. Where a rapid crosses a cut, a click on the crossing
+ * picks the rapid, which is what's visible (review of toolkit #30).
+ *
+ * Two linear scans: 226k segments take a few milliseconds, and it only runs on a click.
  */
-export function nearestSegment(p: LoadedProgram, x: number, y: number, radius: number): number {
+export function nearestSegment(
+  p: LoadedProgram,
+  x: number,
+  y: number,
+  radius: number,
+  tie = 0,
+): number {
   const pos = p.positions;
-  let best = -1;
-  let bestD = radius * radius;
-  for (let i = 0; i + 1 < p.count; i++) {
+  const dist2 = (i: number): number => {
     const ax = pos[i * 3] as number;
     const ay = pos[i * 3 + 1] as number;
-    const bx = pos[i * 3 + 3] as number;
-    const by = pos[i * 3 + 4] as number;
-    const vx = bx - ax;
-    const vy = by - ay;
+    const vx = (pos[i * 3 + 3] as number) - ax;
+    const vy = (pos[i * 3 + 4] as number) - ay;
     const len2 = vx * vx + vy * vy;
     let t = len2 > 0 ? ((x - ax) * vx + (y - ay) * vy) / len2 : 0;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     const ex = ax + t * vx - x;
     const ey = ay + t * vy - y;
-    const d = ex * ex + ey * ey;
-    if (d <= bestD) {
-      bestD = d;
+    return ex * ex + ey * ey;
+  };
+  let nearest = Infinity;
+  for (let i = 0; i + 1 < p.count; i++) nearest = Math.min(nearest, dist2(i));
+  if (nearest > radius * radius) return -1;
+  const reach = Math.min(radius, Math.sqrt(nearest) + tie);
+  const reach2 = reach * reach;
+  let best = -1;
+  let bestLayer = -1;
+  for (let i = 0; i + 1 < p.count; i++) {
+    if (dist2(i) > reach2) continue;
+    const l = layer(p.kind[i + 1] as number);
+    if (l >= bestLayer) {
+      bestLayer = l;
       best = i;
     }
   }

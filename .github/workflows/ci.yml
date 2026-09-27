@@ -68,6 +68,12 @@ jobs:
       - name: Playground smoke tests (real browser, the runner's preinstalled Chrome)
         # The playground was built (and its MIT notice checked) by the Build step.
         run: pnpm --filter @woodpatch/gcode-playground e2e
+      - name: Lighthouse performance >= 90, median of 3 (ADR-0031)
+        # The runner's preinstalled Chrome, as for the smoke tests: no browser download.
+        run: |
+          CHROME_PATH="$(command -v google-chrome)"
+          export CHROME_PATH
+          pnpm --filter @woodpatch/gcode-playground lighthouse
       - name: Licence notice survives into packages and minified bundles
         run: pnpm licence:packages
       - name: Parity ledger (every difference from upstream explained, ADR-0025)
