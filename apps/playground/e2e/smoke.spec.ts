@@ -188,10 +188,10 @@ test('the Summary tab shows extents, feeds and spindle, and a spindle-off warnin
   const problems = watch(page);
   await page.goto('/');
   await expect(status(page)).toContainText('Read in', { timeout: 30_000 });
-  await expect(page.locator('#summary')).toBeHidden();
+  await expect(page.locator('#panel-summary')).toBeHidden();
   await page.click('#tab-summary');
-  await expect(page.locator('#summary')).toBeVisible();
-  await expect(page.locator('#diagnostics')).toBeHidden();
+  await expect(page.locator('#panel-summary')).toBeVisible();
+  await expect(page.locator('#panel-diagnostics')).toBeHidden();
   await expect(page.locator('#tab-summary')).toHaveAttribute('aria-selected', 'true');
 
   // Tux cuts X 0..10 at 200 mm/min, and never starts the spindle.
@@ -200,6 +200,15 @@ test('the Summary tab shows extents, feeds and spindle, and a spindle-off warnin
   await expect(x.locator('td').nth(1)).toHaveText('10.000');
   await expect(page.locator('.summary-facts')).toContainText('200 mm/min');
   await expect(page.locator('.summary-facts')).toContainText('never on while cutting');
+  // Keyboard: Left from Summary goes back to Diagnostics (roving tabindex).
+  await page.locator('#tab-summary').focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.locator('#tab-diagnostics')).toBeFocused();
+  await expect(page.locator('#panel-diagnostics')).toBeVisible();
+  await expect(page.locator('#tab-diagnostics')).toHaveAttribute('tabindex', '0');
+  await expect(page.locator('#tab-summary')).toHaveAttribute('tabindex', '-1');
+  await page.keyboard.press('End');
+  await expect(page.locator('#panel-summary')).toBeVisible();
   const warning = page.locator('.summary-warning');
   await expect(warning).toContainText('Cuts with the spindle off');
   await warning.getByRole('button', { name: 'line 11' }).click();

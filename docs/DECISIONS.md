@@ -1459,6 +1459,19 @@ shows it in a Summary tab beside the diagnostics.
   coordinates and the work offset in force (ADR-0019). The summary reports what the
   program says, in the frame each move was commanded in. Feeds are in mm/min,
   whatever units the program uses.
+- **Extents separate rapids from cuts honestly** (corrected in review):
+  - Z counts only where moves END, plus an arc's extremes. Counting starts made every
+    rapid reach the cut depth (a retract starts there) and every cut reach clearance
+    (a plunge starts there). That hid exactly the case a summary should show, a rapid
+    at depth: Aztec's rapids appeared to reach −12.885 mm, but they never go below
+    5.08.
+  - Cuts count X/Y over their whole path, so a ramp's start counts. Rapids count end
+    points only.
+  - The interpreter's assumed start, before the first move, is never counted. The
+    program never commanded it, and under a work offset it showed as a phantom point.
+- **The spindle:** S0 counts as off. M3 with no S is "on, speed not programmed" (a router
+  set by hand), not "never on". Cutting and plunge feeds are tallied separately, so the
+  most-used cutting feed is never a plunge feed.
 - **A plunge** is a feed move straight down (no X/Y travel). Its feed is reported apart
   from cutting feeds, because it's usually deliberately slower. **A Z level** is the
   height of a level cutting move (horizontal, or an XY-plane arc without a helix). The

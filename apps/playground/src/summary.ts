@@ -40,11 +40,15 @@ export function renderSummary(
   if (off) {
     const p = el('p', undefined, 'summary-warning');
     p.append(
-      `Cuts with the spindle off: ${n(off.moves)} moves, ${metres(off.distance)}, first at `,
+      `Cuts with the spindle off (or at S0): ${n(off.moves)} moves, ${metres(off.distance)}, first at `,
     );
-    const b = el('button', `line ${off.firstLine}`);
-    b.addEventListener('click', () => goToLine(off.firstLine));
-    p.append(b, '.');
+    if (off.file)
+      p.append(`line ${off.firstLine} of ${off.file}.`); // another file: no jump
+    else {
+      const b = el('button', `line ${off.firstLine}`);
+      b.addEventListener('click', () => goToLine(off.firstLine));
+      p.append(b, '.');
+    }
     host.append(p);
   }
 
@@ -79,10 +83,16 @@ export function renderSummary(
     row('Feed not set', `${n(s.feed.unspecified)} moves run at the machine's set rate`);
   if (s.feed.otherModes) row('Other feed modes', `${n(s.feed.otherModes)} moves (G93/G95)`);
   const dirs = s.spindle.directions.map((d) => d.toUpperCase()).join(', ');
+  // M3 with no S: on, at a speed set by hand (common on routers). Not "never on".
+  const unprogrammed = s.spindle.byRpm.some((u) => u.rpm === null);
+  const speeds = [
+    s.spindle.rpm ? range(s.spindle.rpm, 'RPM') : '',
+    unprogrammed ? 'speed not programmed (set on the machine)' : '',
+  ].filter(Boolean);
   row(
     'Spindle',
-    s.spindle.rpm
-      ? `${range(s.spindle.rpm, 'RPM')}${dirs ? ` (${dirs})` : ''}, ${n(s.spindle.changes)} commands`
+    speeds.length
+      ? `${speeds.join('; ')}${dirs ? ` (${dirs})` : ''}, ${n(s.spindle.changes)} commands`
       : 'never on while cutting',
   );
   row(

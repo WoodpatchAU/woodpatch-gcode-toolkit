@@ -48,9 +48,11 @@ describe('summarise', () => {
   it('reports cutting and plunge feeds separately, and the distance at each', () => {
     expect(s.feed.cut).toEqual({ min: 800, max: 800 });
     expect(s.feed.plunge).toEqual({ min: 200, max: 200 });
+    // Cutting and plunge feeds are tallied apart: "most used" is never a plunge feed.
+    expect(s.feed.byValue).toHaveLength(1);
     expect(s.feed.byValue[0]?.mmPerMinute).toBe(800);
     expect(s.feed.byValue[0]?.distance).toBeCloseTo(10 + 5 * Math.PI, 9);
-    expect(s.feed.byValue[1]).toEqual({ mmPerMinute: 200, distance: 7 });
+    expect(s.feed.plungeByValue).toEqual([{ mmPerMinute: 200, distance: 7 }]);
   });
 
   it('reports the spindle, tools, Z levels, dwells and stops', () => {
@@ -82,6 +84,71 @@ describe('summarise', () => {
     expect(t.extent.cut?.min.X).toBe(0);
     expect(t.extent.cut?.max.X).toBe(10);
     expect(t.extent.cut?.min.Y).toBe(0);
+    // Review of #32: the interpreter's assumed start (machine zero) is never counted,
+    // so no phantom point at minus the offset.
+    expect(t.extent.rapid).toEqual({ min: { X: 0, Y: 0, Z: 0 }, max: { X: 0, Y: 0, Z: 0 } });
+    expect(t.extent.all?.min.X).toBe(0);
+  });
+
+  it('separates rapid from cut extents on Z: a rapid at depth shows (review of #32)', () => {
+    // Normal: retract to Z5 before moving. Rapids never go below 5.
+    const ok = sum('G21 G90\nG0 Z5\nM3 S1000\nG1 Z-2 F100\nG1 X10\nG0 Z5\nG0 X20');
+    expect(ok.extent.rapid?.min.Z).toBe(5);
+    expect(ok.extent.cut?.max.Z).toBe(-2); // the plunge ENDS at -2: clearance isn't a cut
+    // Dangerous: a rapid across at cut depth. It must stand out.
+    const bad = sum('G21 G90\nG0 Z5\nM3 S1000\nG1 Z-2 F100\nG0 X10\nG0 Z5');
+    expect(bad.extent.rapid?.min.Z).toBe(-2);
+  });
+
+  it('measures full circles, turns, helixes and tolerated spirals', () => {
+    const circle = sum('G21 G90\nM3 S1000\nG0 X10 Y0\nG2 I-5 F100');
+    expect(circle.extent.cut?.min.X).toBeCloseTo(0, 9);
+    expect(circle.extent.cut?.max.Y).toBeCloseTo(5, 9);
+    expect(circle.extent.cut?.min.Y).toBeCloseTo(-5, 9);
+    expect(circle.distance.cut).toBeCloseTo(10 * Math.PI, 9);
+    const turns = sum('G21 G90\nM3 S1000\nG0 X10 Y0\nG2 I-5 P3 F100');
+    expect(turns.distance.cut).toBeCloseTo(30 * Math.PI, 9);
+    const helix = sum('G21 G90\nM3 S1000\nG0 X10 Y0 Z0\nG2 I-5 Z-4 F100');
+    expect(helix.distance.cut).toBeCloseTo(Math.hypot(10 * Math.PI, 4), 9);
+    expect(helix.zLevels).toEqual([]); // a helix is not a level
+    // A spiral the controller tolerates: radius 5 → 5.0004. Length at the mean radius.
+    const spiral = sum('G21 G90\nM3 S1000\nG0 X10 Y0\nG3 X-0.0004 Y0 I-5 J0 F100');
+    expect(spiral.distance.cut).toBeCloseTo(Math.PI * 5.0002, 6);
+  });
+
+  it('reports inch programs in mm and mm/min, and follows G91', () => {
+    const inch = sum('G20 G90\nM3 S1000\nG0 X1 Y0\nG1 X2 F10');
+    expect(inch.extent.cut?.max.X).toBeCloseTo(50.8, 9);
+    expect(inch.feed.cut).toEqual({ min: 254, max: 254 });
+    const inc = sum('G21 G90\nG0 X10 Y10\nG91\nM3 S1000\nG1 X5 F100\nG1 Y-20');
+    // X/Y over the cuts' whole path: from (10,10) to (15,10) to (15,-10).
+    expect(inc.extent.cut).toEqual({ min: { X: 10, Y: -10, Z: 0 }, max: { X: 15, Y: 10, Z: 0 } });
+  });
+
+  it('shifts an arc (and its extremes) into work coordinates under an offset', () => {
+    const t = summarise(
+      interpret(parse('G21 G90\nG10 L2 P1 X100 Y50\nG54\nM3 S1000\nG0 X10 Y0\nG2 I-5 F100')).steps,
+    );
+    expect(t.extent.cut?.min.X).toBeCloseTo(0, 9);
+    expect(t.extent.cut?.max.Y).toBeCloseTo(5, 9);
+  });
+
+  it('caps the Z levels at 50, counting the rest', () => {
+    const src = ['G21 G90', 'M3 S1000', 'G0 X0 Y0 Z1'];
+    for (let i = 1; i <= 60; i++) src.push(`G1 Z-${i} F100`, `G1 X${i % 2 ? 10 : 0}`);
+    const t = sum(src.join('\n'));
+    expect(t.zLevels).toHaveLength(50);
+    expect(t.zLevels[0]?.z).toBe(-1); // highest first
+    expect(t.zLevelsMore).toBe(10);
+  });
+
+  it('treats S0 as the spindle off, and M3 without S as on at an unprogrammed speed', () => {
+    const s0 = sum('G21 G90\nM3 S0\nG1 X10 F100');
+    expect(s0.spindle.cutWhileOff?.moves).toBe(1);
+    const noS = sum('G21 G90\nM3\nG1 X10 F100');
+    expect(noS.spindle.cutWhileOff).toBeNull();
+    expect(noS.spindle.rpm).toBeNull();
+    expect(noS.spindle.byRpm).toEqual([{ rpm: null, distance: 10 }]);
   });
 
   it('is empty-safe', () => {
@@ -102,15 +169,25 @@ describe('summarise on the corpus', () => {
     const st = interpret(parse(src)).steps;
     const s = summarise(st);
     // No work offsets in these: the extent is pathBounds's.
-    const b = pathBounds(st);
-    expect(s.extent).toEqual({ all: b.all, cut: b.feed, rapid: b.rapid });
+    // End points and arc extremes only: inside the path's full bounds (which also count
+    // every start), and the rapids never reach the cut floor of these programs.
+    const b = pathBounds(st).all;
+    const e = s.extent.all;
+    if (b && e)
+      for (const a of ['X', 'Y', 'Z'] as const) {
+        expect(e.min[a]).toBeGreaterThanOrEqual(b.min[a] - 1e-9);
+        expect(e.max[a]).toBeLessThanOrEqual(b.max[a] + 1e-9);
+      }
     // Distance fed at each per-minute feed adds up to the distance cut.
-    const fed = s.feed.byValue.reduce((a, b) => a + b.distance, 0);
+    const fed = [...s.feed.byValue, ...s.feed.plungeByValue].reduce((a, b) => a + b.distance, 0);
     if (s.feed.otherModes === 0 && s.feed.unspecified === 0)
       expect(fed).toBeCloseTo(s.distance.cut, 3);
     // Per-tool distances add up too.
     expect(s.tools.reduce((a, b) => a + b.cut, 0)).toBeCloseTo(s.distance.cut, 3);
     expect(s.moves.rapid + s.moves.linear + s.moves.arc).toBeGreaterThan(0);
     expect(s.zLevels.length).toBeLessThanOrEqual(50);
+    // No rapid in these programs goes below its clearance height (review of #32: with
+    // start points counted, Aztec's rapids appeared to reach -12.885).
+    if (f === 'aztec_calendar') expect(s.extent.rapid?.min.Z).toBeCloseTo(5.08, 9);
   });
 });

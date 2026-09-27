@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
 // SPDX-License-Identifier: MIT
 
-import type { Feed, Position, Step } from '../interp/types.js';
-import { pathBounds, type Box } from '../path/path.js';
+import type { Feed, Step } from '../interp/types.js';
+import { arcPoint, cardinalFractions, startAngle, type Box } from '../path/path.js';
 
 /**
  * A program at a glance (plan §4.2 item 8; operator request, 2026-09-27): where it
@@ -16,8 +16,15 @@ import { pathBounds, type Box } from '../path/path.js';
  */
 export interface ProgramSummary {
   /**
-   * Min/max per axis, exact for arcs (their extremes, not just their ends). `cut` is
-   * every feed move and arc, `rapid` every G0. Null where there are none.
+   * Min/max per axis, in work coordinates; `cut` is feed moves and arcs, `rapid` G0.
+   * Null where there are none. Z counts only where moves END (and an arc's extremes):
+   * a retract starts at cut depth and a plunge at clearance, so counting starts would
+   * make every rapid reach the cut depth (hiding a rapid that really does go deep) and
+   * every cut reach clearance.
+   * - Cuts: X/Y over their whole path (a ramp's start included); Z where they end.
+   * - Rapids: end points only.
+   * - The interpreter's assumed start, before the first move, is never counted: the
+   *   program never commanded it.
    */
   readonly extent: {
     readonly all: Box | null;
@@ -50,30 +57,41 @@ export interface FeedSummary {
   readonly cut: Range | null;
   /** Per-minute feeds of plunges (straight down), mm/min. Null if none. */
   readonly plunge: Range | null;
-  /** Each per-minute feed used, with the distance fed at it, most-used first. */
-  readonly byValue: readonly { readonly mmPerMinute: number; readonly distance: number }[];
+  /** Each cutting feed (not plunges), with the distance fed at it, most-used first. */
+  readonly byValue: readonly FeedUse[];
+  /** Each plunge feed, with the distance plunged at it, most-used first. */
+  readonly plungeByValue: readonly FeedUse[];
   /** Moves fed in inverse time (G93) or per revolution (G95): no single mm/min. */
   readonly otherModes: number;
   /** Moves with no feed ever given, run at the machine's set rate (Masso). */
   readonly unspecified: number;
 }
 
+export interface FeedUse {
+  readonly mmPerMinute: number;
+  readonly distance: number;
+}
+
 export interface SpindleSummary {
-  /** RPM range while cutting with the spindle on. Null if it never was. */
+  /** RPM range while cutting with the spindle on at a programmed speed. */
   readonly rpm: Range | null;
-  /** Each speed, with the distance cut at it, most-used first. */
+  /**
+   * Each speed cut at, with the distance, most-used first. `rpm: null` is cutting with
+   * the spindle on (M3/M4) but no S ever given: a router whose speed is set by hand.
+   */
   readonly byRpm: readonly { readonly rpm: number | null; readonly distance: number }[];
   readonly directions: readonly ('cw' | 'ccw')[];
   /** Spindle commands (M3/M4/M5 and speed changes). */
   readonly changes: number;
   /**
-   * Cutting with the spindle OFF: usually a missing M3. Null if never. `firstLine` is
-   * the first such move's line.
+   * Cutting with the spindle OFF or at S0: usually a missing M3. Null if never.
+   * `firstLine` (and `file`, for a subprogram) is the first such move's.
    */
   readonly cutWhileOff: {
     readonly moves: number;
     readonly distance: number;
     readonly firstLine: number;
+    readonly file?: string;
   } | null;
 }
 
@@ -87,20 +105,12 @@ export const MAX_Z_LEVELS = 50;
 const EPS = 1e-9;
 type Arc = Extract<Step, { kind: 'arc' }>;
 
-const sub = (a: Position, o: Position): Position => ({
-  X: a.X - o.X,
-  Y: a.Y - o.Y,
-  Z: a.Z - o.Z,
-  A: a.A - o.A,
-  B: a.B - o.B,
-  C: a.C - o.C,
-});
 // Plain square roots: Math.hypot is several times slower in V8, and runs per move.
 const len2 = (a: number, b: number) => Math.sqrt(a * a + b * b);
 const len3 = (a: number, b: number, c: number) => Math.sqrt(a * a + b * b + c * c);
-const zero = (o: Position) => o.X === 0 && o.Y === 0 && o.Z === 0;
 const widen = (r: Range | null, v: number): Range =>
   r ? { min: Math.min(r.min, v), max: Math.max(r.max, v) } : { min: v, max: v };
+
 /**
  * Totals by key. Consecutive moves almost always share a key (the same tool, speed,
  * feed and height for long runs), so the last entry is cached: one Map lookup per
@@ -121,12 +131,51 @@ class Tally<K> {
   }
   /** Most-used first. */
   ranked(): [K, number][] {
-    return [...this.totals.entries()]
-      .map(([k, e]): [K, number] => [k, e.total])
-      .sort((a, b) => b[1] - a[1]);
+    return this.entries().sort((a, b) => b[1] - a[1]);
   }
   entries(): [K, number][] {
     return [...this.totals.entries()].map(([k, e]): [K, number] => [k, e.total]);
+  }
+}
+
+/** Min/max, with X/Y and Z added separately (see ProgramSummary.extent). */
+class Extent {
+  minX = Infinity;
+  minY = Infinity;
+  minZ = Infinity;
+  maxX = -Infinity;
+  maxY = -Infinity;
+  maxZ = -Infinity;
+  xy(x: number, y: number): void {
+    if (x < this.minX) this.minX = x;
+    if (x > this.maxX) this.maxX = x;
+    if (y < this.minY) this.minY = y;
+    if (y > this.maxY) this.maxY = y;
+  }
+  z(z: number): void {
+    if (z < this.minZ) this.minZ = z;
+    if (z > this.maxZ) this.maxZ = z;
+  }
+  box(): Box | null {
+    if (this.minX === Infinity || this.minZ === Infinity) return null;
+    return {
+      min: { X: this.minX, Y: this.minY, Z: this.minZ },
+      max: { X: this.maxX, Y: this.maxY, Z: this.maxZ },
+    };
+  }
+  static union(a: Extent, b: Extent): Box | null {
+    const u = new Extent();
+    for (const e of [a, b]) {
+      if (e.minX !== Infinity) {
+        u.xy(e.minX, e.minY);
+        u.xy(e.maxX, e.maxY);
+      }
+      if (e.minZ !== Infinity) {
+        u.z(e.minZ);
+        u.z(e.maxZ);
+      }
+    }
+    return u.box();
   }
 }
 
@@ -140,12 +189,16 @@ function arcLength(s: Arc): number {
 
 /** Summarises a program from its steps (from `interpret`), in one pass. */
 export function summarise(steps: readonly Step[]): ProgramSummary {
-  const work: Step[] = []; // the motions in work coordinates, for the exact bounds
+  const cutBox = new Extent();
+  const rapidBox = new Extent();
+  let first = true; // the first motion starts from the interpreter's assumed start
+  const point = new Float64Array(3);
   const distance = { cut: 0, rapid: 0, plunge: 0 };
   const moves = { rapid: 0, linear: 0, arc: 0 };
   let cutFeed: Range | null = null;
   let plungeFeed: Range | null = null;
   const byFeed = new Tally<number>();
+  const byPlungeFeed = new Tally<number>();
   let otherModes = 0;
   let unspecified = 0;
 
@@ -158,7 +211,7 @@ export function summarise(steps: readonly Step[]): ProgramSummary {
   const byRpm = new Tally<number | null>();
   const directions = new Set<'cw' | 'ccw'>();
   let spindleChanges = 0;
-  let off: { moves: number; distance: number; firstLine: number } | null = null;
+  let off: { moves: number; distance: number; firstLine: number; file?: string } | null = null;
   const toolCut = new Tally<number | null>();
   let toolChanges = 0;
   const zLevel = new Tally<number>();
@@ -168,20 +221,26 @@ export function summarise(steps: readonly Step[]): ProgramSummary {
 
   const feedAt = (f: Feed | null, length: number, down: boolean) => {
     if (f?.mode === 'per-minute') {
-      if (down) plungeFeed = widen(plungeFeed, f.mmPerMinute);
-      else cutFeed = widen(cutFeed, f.mmPerMinute);
-      byFeed.add(Math.round(f.mmPerMinute * 100) / 100, length);
+      const key = Math.round(f.mmPerMinute * 100) / 100;
+      if (down) {
+        plungeFeed = widen(plungeFeed, f.mmPerMinute);
+        byPlungeFeed.add(key, length);
+      } else {
+        cutFeed = widen(cutFeed, f.mmPerMinute);
+        byFeed.add(key, length);
+      }
     } else if (f?.mode === 'unspecified') unspecified++;
     else if (f) otherModes++;
   };
-  const cutting = (length: number, line: number) => {
+  const cutting = (length: number, s: Step & { line: number }) => {
     distance.cut += length;
     toolCut.add(tool, length);
-    if (spindleOn) {
+    // On at S0 cuts nothing: count it with the spindle off.
+    if (spindleOn && rpm !== 0) {
       byRpm.add(rpm, length);
       if (rpm !== null) rpmRange = widen(rpmRange, rpm);
     } else {
-      off ??= { moves: 0, distance: 0, firstLine: line };
+      off ??= { moves: 0, distance: 0, firstLine: s.line, ...(s.file ? { file: s.file } : {}) };
       off.moves++;
       off.distance += length;
     }
@@ -191,47 +250,54 @@ export function summarise(steps: readonly Step[]): ProgramSummary {
   for (const s of steps) {
     switch (s.kind) {
       case 'linear': {
-        // Copy into work coordinates only when an offset is in force: most programs
-        // run without one, and a copy per step doubles the time on a large file.
-        const shifted = zero(s.offset)
-          ? s
-          : { ...s, from: sub(s.from, s.offset), to: sub(s.to, s.offset) };
-        work.push(shifted);
-        const { from, to } = shifted;
-        const dx = to.X - from.X;
-        const dy = to.Y - from.Y;
-        const dz = to.Z - from.Z;
+        const o = s.offset;
+        const x = s.to.X - o.X;
+        const y = s.to.Y - o.Y;
+        const z = s.to.Z - o.Z;
+        const dx = s.to.X - s.from.X;
+        const dy = s.to.Y - s.from.Y;
+        const dz = s.to.Z - s.from.Z;
         const length = len3(dx, dy, dz);
+        const fromHere = !first;
+        first = false;
         if (s.rapid) {
           moves.rapid++;
           distance.rapid += length;
+          rapidBox.xy(x, y);
+          rapidBox.z(z);
           break;
         }
         moves.linear++;
+        if (fromHere) cutBox.xy(s.from.X - o.X, s.from.Y - o.Y);
+        cutBox.xy(x, y);
+        cutBox.z(z);
         if (length < EPS) break;
         const horizontal = len2(dx, dy);
         const down = horizontal < EPS && dz < 0;
         if (down) distance.plunge += length;
-        if (horizontal >= EPS && Math.abs(dz) < EPS) level(from.Z, length);
-        cutting(length, s.line);
+        if (horizontal >= EPS && Math.abs(dz) < EPS) level(z, length);
+        cutting(length, s);
         feedAt(s.feed, length, down);
         break;
       }
       case 'arc': {
-        const shifted = zero(s.offset)
-          ? s
-          : {
-              ...s,
-              from: sub(s.from, s.offset),
-              to: sub(s.to, s.offset),
-              centre: sub(s.centre, s.offset),
-            };
-        work.push(shifted);
-        const { from } = shifted;
+        const o = s.offset;
         moves.arc++;
+        if (!first) cutBox.xy(s.from.X - o.X, s.from.Y - o.Y);
+        first = false;
+        cutBox.xy(s.to.X - o.X, s.to.Y - o.Y);
+        cutBox.z(s.to.Z - o.Z);
+        // The arc's extremes along the way (its start is the last move's end).
+        const a0 = startAngle(s);
+        for (const t of cardinalFractions(a0, s.sweep)) {
+          if (t <= 0) continue;
+          arcPoint(s, a0, t, point, 0);
+          cutBox.xy((point[0] as number) - o.X, (point[1] as number) - o.Y);
+          cutBox.z((point[2] as number) - o.Z);
+        }
         const length = arcLength(s);
-        if (s.plane === 'XY' && Math.abs(s.to.Z - s.from.Z) < EPS) level(from.Z, length);
-        cutting(length, s.line);
+        if (s.plane === 'XY' && Math.abs(s.to.Z - s.from.Z) < EPS) level(s.to.Z - o.Z, length);
+        cutting(length, s);
         feedAt(s.feed, length, false);
         break;
       }
@@ -261,15 +327,17 @@ export function summarise(steps: readonly Step[]): ProgramSummary {
   }
 
   const levels = zLevel.entries().sort((a, b) => b[0] - a[0]);
-  const bounds = pathBounds(work);
+  const uses = (t: Tally<number>) =>
+    t.ranked().map(([mmPerMinute, d]) => ({ mmPerMinute, distance: d }));
   return {
-    extent: { all: bounds.all, cut: bounds.feed, rapid: bounds.rapid },
+    extent: { all: Extent.union(cutBox, rapidBox), cut: cutBox.box(), rapid: rapidBox.box() },
     distance,
     moves,
     feed: {
       cut: cutFeed,
       plunge: plungeFeed,
-      byValue: byFeed.ranked().map(([mmPerMinute, d]) => ({ mmPerMinute, distance: d })),
+      byValue: uses(byFeed),
+      plungeByValue: uses(byPlungeFeed),
       otherModes,
       unspecified,
     },

@@ -4,6 +4,7 @@ export {
   MAX_Z_LEVELS,
   summarise,
   type FeedSummary,
+  type FeedUse,
   type ProgramSummary,
   type Range,
   type SpindleSummary,
