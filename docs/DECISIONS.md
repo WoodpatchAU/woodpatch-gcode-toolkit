@@ -1064,7 +1064,7 @@ framework-free class. Svelte wrapping comes later (3e).
 - **Diagnostics quote G-code:** the README tells hosts to render them as text, never
   HTML.
 
-**The operator's Phase 3 decisions (#1171), as they apply here:**
+**The operator's Phase 3 decisions, as they apply here:**
 
 - WebGL2 only; WebGPU is deferred.
 - The 60 fps target is measured on a real machine. CI gates proxies instead.
@@ -1110,7 +1110,7 @@ setup (keys, history, search).
   - Only the first 2,000 characters of a line are styled (`MAX_STYLED_CHARS`), and a
     tokenizer failure styles nothing rather than throwing. A pathological line can't
     stall typing, or take out highlighting and folding. The core's own recursion and
-    super-linear rescans on such lines are filed as #1506.
+    super-linear rescans on such lines are a tracked follow-up (tokenizer hardening).
   - Line 1's byte-order mark is skipped, as the core skips it.
 - **Diagnostics:** `showDiagnostics(view, diagnostics)` maps the core's line and span to
   document offsets for the lint gutter:
@@ -1172,7 +1172,7 @@ page. It's a private Vite app in plain TypeScript, with no framework.
 - **Re-reading:** edits are re-read 400 ms after typing stops, in the worker. A newer
   read cancels the old one.
 - **Controller:** GENERIC by default, with Masso and LinuxCNC one click away
-  (operator, #1171).
+  (operator, Phase 3).
 - **Line ↔ path both ways:** the cursor highlights its path; clicking the path marks its
   line; clicking a diagnostic moves the editor to its line.
 - **Nothing is uploaded.** Public input is capped at 20 MB (plan §4.8) on every path in:
@@ -1196,7 +1196,7 @@ page. It's a private Vite app in plain TypeScript, with no framework.
 - **Worker:** the app's `src/worker.ts` is a bare `import '@woodpatch/gcode-viewer/worker'`.
   That exercises the viewer's `sideEffects` declaration for real.
 
-**Publishing** (operator, #1171):
+**Publishing** (operator, Phase 3):
 
 - CI's `deploy-playground` job runs only on pushes to `main`, after `checks`, `reuse` and
   `provenance` pass. It's the only job with `contents: write`.
@@ -1221,7 +1221,7 @@ page. It's a private Vite app in plain TypeScript, with no framework.
   skipped, a change adds a commit, and a missing build fails clearly.
 
 **Testing:** Playwright drives the CI runner's preinstalled Chrome (`channel: 'chrome'`),
-with no browser download (operator, #1171). There's no Chrome on the development box,
+with no browser download (operator, Phase 3). There's no Chrome on the development box,
 so these run in CI only. The smoke tests cover:
 
 - the default sample loads, the stats appear, and the 3D view draws (its screenshot

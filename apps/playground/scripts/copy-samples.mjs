@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Copies the five reference programs into public/samples/ for the sample picker
-// (operator decision, #1171): upstream's four samples, which carry upstream's
+// (operator decision, Phase 3): upstream's four samples, which carry upstream's
 // licence, plus our own Masso machine-test program. Generated, so it's gitignored.
 import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

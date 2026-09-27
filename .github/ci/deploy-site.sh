@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Publishes the built playground to the `site` branch, which GitHub Pages serves
-# (operator decisions on #1171). Plain git, no third-party actions (ADR-0006).
+# (operator decisions for Phase 3). Plain git, no third-party actions (ADR-0006).
 #
 #   deploy-site.sh <dist-dir>        needs GITHUB_TOKEN (contents: write) and GITHUB_SHA
 #

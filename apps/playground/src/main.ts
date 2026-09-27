@@ -37,7 +37,7 @@ const diagList = $<HTMLOListElement>('diagnostics');
 const dialectSel = $<HTMLSelectElement>('dialect');
 const sampleSel = $<HTMLSelectElement>('sample');
 
-// Controllers: generic by default (operator decision, #1171), Masso one click away.
+// Controllers: generic by default (operator decision, Phase 3), Masso one click away.
 for (const d of [GENERIC, ...DIALECTS.filter((x) => x !== GENERIC)]) {
   const o = document.createElement('option');
   o.value = d.id;

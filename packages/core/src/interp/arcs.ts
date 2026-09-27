@@ -146,7 +146,7 @@ export function motionSweep(
   let angle = Math.atan2(Math.abs(cross), dot);
   const s = clockwise ? -1 : 1;
   if (s * cross < CART_FUZZ) angle = TAU - angle;
-  // Issues #1528/#2169: endpoints that (nearly) coincide in the plane are a full circle.
+  // LinuxCNC issues #1528/#2169: endpoints that (nearly) coincide in the plane are a full circle.
   if (Math.hypot(a2 - a1, b2 - b1) < CART_FUZZ) angle = TAU;
   angle += (turns - 1) * TAU;
   if (angle === 0) angle = CIRCLE_FUZZ / 2;
