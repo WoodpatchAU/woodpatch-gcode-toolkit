@@ -14,7 +14,10 @@
       "svelte": "./src/index.js",
       "default": "./src/index.js"
     },
-    "./worker": "./src/worker.js"
+    "./worker": {
+      "types": "./src/worker.d.ts",
+      "default": "./src/worker.js"
+    }
   },
   "files": [
     "src",

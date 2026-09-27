@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { licenceBanner } from '../../../scripts/licence-banner.mjs';
 
 // Parcel 3e (ADR-0030): the package's own guarantees, checked mechanically. The
-// reviewer's conditions on #1171 are the first three blocks.
+// three conditions of its review are the first three blocks.
 
 const pkgDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (f: string) => readFileSync(join(pkgDir, f), 'utf8');
@@ -115,8 +115,11 @@ describe('loads nothing heavy until mounted', () => {
   // three.js, CodeMirror and the toolkit's own packages must only be imported
   // dynamically, on mount. A static import would put them in a prerendered page's
   // shell, and run them during server rendering (plan §4.9).
+  // Static `import … from`, bare `import '…'`, and re-exports (`export … from`).
   const staticImports = (code: string) =>
-    [...code.matchAll(/^\s*import\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+    [...code.matchAll(/^\s*(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/gm)].map(
+      (m) => m[1],
+    );
 
   it.each(svelteFiles)('%s imports only svelte and sibling components statically', (f) => {
     const { js } = compile(read(`src/${f}`), { generate: 'client', filename: f });
@@ -125,8 +128,9 @@ describe('loads nothing heavy until mounted', () => {
   });
 
   it('index.js re-exports the components and nothing else', () => {
-    for (const spec of staticImports(read('src/index.js')))
-      expect(spec).toMatch(/^\.\/\w+\.svelte$/);
+    const specs = staticImports(read('src/index.js'));
+    expect(specs).toHaveLength(3); // the matcher really sees the re-exports
+    for (const spec of specs) expect(spec).toMatch(/^\.\/\w+\.svelte$/);
   });
 
   it('index.d.ts declares the same components as index.js', () => {

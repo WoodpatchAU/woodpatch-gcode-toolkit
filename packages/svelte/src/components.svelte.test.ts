@@ -167,6 +167,16 @@ describe('GcodeViewer', () => {
     expect(v2?.named('dispose')).toHaveLength(1);
   });
 
+  it('creates nothing if unmounted before the viewer package has loaded', async () => {
+    const { GcodeViewer } = await import('./index.js');
+    app = mount(GcodeViewer, { target, props: { program: program('a') } });
+    flushSync(); // onMount has run: its import is in flight
+    unmount(app);
+    app = undefined;
+    await settle();
+    expect(fx.state.views).toHaveLength(0);
+  });
+
   it('fit() frames the current view', async () => {
     const { GcodeViewer } = await import('./index.js');
     const props = $state({ program: program('a'), mode: 'plan' as '3d' | 'plan' });
@@ -205,9 +215,14 @@ describe('GcodeEditor', () => {
     expect(props.value).toBe('G1 Y2 F100\nM30');
   });
 
-  it('refuses an edit past maxLength', async () => {
+  it('refuses an edit past maxLength, and says so', async () => {
     const { GcodeEditor } = await import('./index.js');
-    const props = $state({ value: 'G0', maxLength: 10 });
+    const refused: number[] = [];
+    const props = $state({
+      value: 'G0',
+      maxLength: 10,
+      ontoolarge: (n: number) => refused.push(n),
+    });
     app = mount(GcodeEditor, { target, props });
     await vi.waitFor(() => expect(content()).toContain('G0'));
     const v = await view();
@@ -215,6 +230,80 @@ describe('GcodeEditor', () => {
     flushSync();
     expect(v.state.doc.toString()).toBe('G0');
     expect(props.value).toBe('G0');
+    await vi.waitFor(() => expect(refused).toEqual([13]));
+  });
+
+  it('refuses an oversized value from the host, keeping editor and value in step', async () => {
+    // Review of #27: the cap filtered the host's own replace too, so the editor kept
+    // its text while `value` (and anything parsing it) moved on.
+    const { GcodeEditor } = await import('./index.js');
+    const refused: number[] = [];
+    const props = $state({
+      value: 'G0',
+      maxLength: 10,
+      ontoolarge: (n: number) => refused.push(n),
+    });
+    app = mount(GcodeEditor, { target, props });
+    await vi.waitFor(() => expect(content()).toContain('G0'));
+    props.value = 'G1 X123456789';
+    flushSync();
+    expect((await view()).state.doc.toString()).toBe('G0');
+    expect(props.value).toBe('G0');
+    expect(refused).toEqual([13]);
+    // Within the cap, the host's value always lands (the cap filter doesn't eat it).
+    props.value = 'G1 X1';
+    flushSync();
+    expect((await view()).state.doc.toString()).toBe('G1 X1');
+  });
+
+  it('applies the cap to the first value too', async () => {
+    const { GcodeEditor } = await import('./index.js');
+    const refused: number[] = [];
+    const props = $state({
+      value: 'G1 X123456789',
+      maxLength: 10,
+      ontoolarge: (n: number) => refused.push(n),
+    });
+    app = mount(GcodeEditor, { target, props });
+    await vi.waitFor(() => expect(target.querySelector('.cm-editor')).not.toBeNull());
+    expect((await view()).state.doc.toString()).toBe('');
+    expect(props.value).toBe('');
+    expect(refused).toEqual([13]);
+  });
+
+  it('follows readonly and dark after mount', async () => {
+    const { GcodeEditor } = await import('./index.js');
+    const { EditorView } = await import('@codemirror/view');
+    const props = $state({ value: 'G0', readonly: false, dark: true });
+    app = mount(GcodeEditor, { target, props });
+    await vi.waitFor(() => expect(content()).toContain('G0'));
+    const v = await view();
+    expect(v.state.readOnly).toBe(false);
+    expect(v.state.facet(EditorView.darkTheme)).toBe(true);
+    props.readonly = true;
+    props.dark = false;
+    flushSync();
+    expect(v.state.readOnly).toBe(true);
+    expect(v.state.facet(EditorView.darkTheme)).toBe(false);
+  });
+
+  it('creates no editor if unmounted before CodeMirror has loaded', async () => {
+    // Svelte nulls the host element on unmount, so a late editor would leave no trace
+    // in the DOM, yet would never be destroyed. A plugin counts editors created.
+    const { GcodeEditor } = await import('./index.js');
+    const { ViewPlugin } = await import('@codemirror/view');
+    let created = 0;
+    const counter = ViewPlugin.define(() => {
+      created++;
+      return {};
+    });
+    app = mount(GcodeEditor, { target, props: { value: 'G0', extensions: [counter] } });
+    flushSync(); // onMount has run: its import is in flight
+    unmount(app);
+    app = undefined;
+    await vi.dynamicImportSettled();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(created).toBe(0);
   });
 
   it('marks the picked path line and reports the cursor line', async () => {
@@ -241,6 +330,16 @@ describe('GcodeEditor', () => {
 });
 
 describe('GcodeWorkbench', () => {
+  it('makes no loader if unmounted before the viewer package has loaded', async () => {
+    const { GcodeWorkbench } = await import('./index.js');
+    app = mount(GcodeWorkbench, { target, props: { createWorker: () => ({}) as Worker } });
+    flushSync(); // onMount has run: its import is in flight
+    unmount(app);
+    app = undefined;
+    await settle();
+    expect(fx.state.loaders).toHaveLength(0);
+  });
+
   it('reads edits in the worker, binds the program out, and wires pick to the editor', async () => {
     const { GcodeWorkbench } = await import('./index.js');
     const loaded: [unknown, number][] = [];

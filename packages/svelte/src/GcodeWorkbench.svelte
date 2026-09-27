@@ -41,8 +41,16 @@ SPDX-License-Identifier: MIT
     timeoutMs?: number;
     /** A read finished: the program and how long it took (ms). */
     onload?: (program: LoadedProgram, ms: number) => void;
-    /** A read failed or took too long (not called when a newer read superseded it). */
+    /**
+     * A read failed or took too long (not when a newer read superseded it), or a part
+     * of the workbench failed to load.
+     */
     onerror?: (error: Error) => void;
+    /** Passed to the editor: see GcodeEditor. */
+    readonly?: boolean;
+    dark?: boolean;
+    maxLength?: number;
+    ontoolarge?: (length: number) => void;
     class?: string;
   }
 
@@ -57,6 +65,10 @@ SPDX-License-Identifier: MIT
     timeoutMs,
     onload,
     onerror,
+    readonly = false,
+    dark = true,
+    maxLength,
+    ontoolarge,
     class: className = '',
   }: Props = $props();
 
@@ -97,10 +109,15 @@ SPDX-License-Identifier: MIT
    */
   onMount(() => {
     let live = true;
-    void import('@woodpatch/gcode-viewer').then(({ ProgramLoader }) => {
-      if (!live) return;
-      loader = new ProgramLoader(createWorker, timeoutMs === undefined ? {} : { timeoutMs });
-    });
+    void import('@woodpatch/gcode-viewer').then(
+      ({ ProgramLoader }) => {
+        if (!live) return;
+        loader = new ProgramLoader(createWorker, timeoutMs === undefined ? {} : { timeoutMs });
+      },
+      (e: unknown) => {
+        if (live) onerror?.(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
     return () => {
       live = false;
       loader?.dispose();
@@ -152,8 +169,21 @@ SPDX-License-Identifier: MIT
     diagnostics={program?.diagnostics ?? []}
     pathLine={picked}
     oncursorline={(n) => (cursor = n)}
+    {readonly}
+    {dark}
+    {maxLength}
+    {ontoolarge}
+    {onerror}
   />
-  <GcodeViewer bind:this={viewerRef} {program} {mode} {view} highlightLine={cursor} {onpick} />
+  <GcodeViewer
+    bind:this={viewerRef}
+    {program}
+    {mode}
+    {view}
+    highlightLine={cursor}
+    {onpick}
+    {onerror}
+  />
 </div>
 
 <style>

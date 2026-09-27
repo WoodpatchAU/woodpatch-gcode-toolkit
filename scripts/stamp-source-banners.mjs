@@ -11,6 +11,7 @@
 // scripts/check-package-licences.mjs fails CI if any file's banner is missing or stale.
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { licenceBanner } from './licence-banner.mjs';
 
 export const SOURCE_FILE = /\.(svelte|js)$/;
@@ -23,14 +24,15 @@ export function sourceFiles(dir) {
     .map((f) => join(dir, 'src', f));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const dir = resolve(process.argv[2] ?? '.');
   const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
   const banner = licenceBanner(pkg.name);
   for (const f of sourceFiles(dir)) {
     const s = readFileSync(f, 'utf8');
     if (!BANNER_RE.test(s)) throw new Error(`${f}: no /*!BANNER*/ placeholder or banner`);
-    // The banner sits indented inside a <script module> in .svelte files.
+    // In a .svelte file the banner sits indented inside the instance <script>, on the
+    // onMount call (ADR-0030); keep its indentation.
     const indent = /^([ \t]*)\/\*!/m.exec(s)?.[1] ?? '';
     const next = s.replace(BANNER_RE, () => banner.split('\n').join(`\n${indent}`));
     if (next !== s) writeFileSync(f, next);

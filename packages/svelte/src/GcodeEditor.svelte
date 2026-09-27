@@ -15,7 +15,7 @@ SPDX-License-Identifier: MIT
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Extension } from '@codemirror/state';
+  import type { Compartment, Extension } from '@codemirror/state';
   import type { EditorView } from '@codemirror/view';
   import type { showDiagnostics, showPathLine } from '@woodpatch/gcode-editor';
   import type { LoadedProgram } from '@woodpatch/gcode-viewer';
@@ -29,11 +29,21 @@ SPDX-License-Identifier: MIT
     pathLine?: number | null;
     /** The cursor moved to another line. */
     oncursorline?: (line: number) => void;
+    /** Read-only. Can change at any time. */
     readonly?: boolean;
-    /** Dark (default) or light token colours. */
+    /** Dark (default) or light token colours. Can change at any time. */
     dark?: boolean;
-    /** The longest document an edit may make (paste, drop, typing). Default 20 MB. */
-    maxLength?: number;
+    /**
+     * The longest document allowed, in characters (UTF-16 code units, not bytes).
+     * Default 20 Mi. An edit past it (paste, drop, typing) is refused, and so is a longer
+     * `value` from the host: the editor keeps its text and `value` is set back to it.
+     * Either way, `ontoolarge` is told.
+     */
+    maxLength?: number | undefined;
+    /** Something longer than `maxLength` was refused; its length in characters. */
+    ontoolarge?: ((length: number) => void) | undefined;
+    /** CodeMirror or the editor package failed to load (a chunk error, a CSP block). */
+    onerror?: ((error: Error) => void) | undefined;
     /** More CodeMirror extensions, added after the built-in ones. Read once. */
     extensions?: Extension[];
     class?: string;
@@ -47,6 +57,8 @@ SPDX-License-Identifier: MIT
     readonly = false,
     dark = true,
     maxLength = 20 * 1024 * 1024,
+    ontoolarge,
+    onerror,
     extensions = [],
     class: className = '',
   }: Props = $props();
@@ -60,6 +72,38 @@ SPDX-License-Identifier: MIT
   } | null>(null);
   /** The text the editor last reported, so an echo of it isn't dispatched back in. */
   let echoed = '';
+  /** Compartments for the settings that can change after mount, and how to fill them. */
+  let settings: {
+    readOnly: Compartment;
+    theme: Compartment;
+    readOnlyOf: (on: boolean) => Extension;
+    themeOf: (dark: boolean) => Extension;
+  } | null = null;
+
+  const themeSpec = {
+    '&': {
+      height: '100%',
+      color: 'var(--gcode-text, #e6e6ea)',
+      backgroundColor: 'var(--gcode-bg, #1b1b1f)',
+    },
+    '.cm-scroller': { overflow: 'auto' },
+    '.cm-content': { caretColor: 'var(--gcode-text, #e6e6ea)' },
+    '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--gcode-text, #e6e6ea)' },
+    '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
+      { backgroundColor: 'var(--gcode-selection, #3a4a6b)' },
+    '.cm-activeLine': { backgroundColor: '#8080800f' },
+    '.cm-gutters': {
+      backgroundColor: 'var(--gcode-panel, #232329)',
+      color: 'var(--gcode-muted, #a0a0aa)',
+      borderRight: '1px solid var(--gcode-line, #34343c)',
+    },
+    '.cm-activeLineGutter': { backgroundColor: '#8080801f' },
+    '.cm-tooltip': {
+      backgroundColor: 'var(--gcode-panel, #232329)',
+      color: 'var(--gcode-text, #e6e6ea)',
+      border: '1px solid var(--gcode-line, #34343c)',
+    },
+  };
 
   // The MIT notice (ADR-0030). It sits on the onMount call because a bundler keeps a
   // comment only with the statement after it, and this call is never removed.
@@ -100,8 +144,19 @@ SPDX-License-Identifier: MIT
       import('@woodpatch/gcode-editor'),
     ]).then(([state, cmView, commands, language, gcodeLib]) => {
       if (!live) return;
-      const { EditorState } = state;
+      const { EditorState, Compartment: C } = state;
       const { EditorView: View, keymap } = cmView;
+      settings = {
+        readOnly: new C(),
+        theme: new C(),
+        readOnlyOf: (on) => EditorState.readOnly.of(on),
+        themeOf: (d) => View.theme(themeSpec, { dark: d }),
+      };
+      // The cap applies to the first document too.
+      if (value.length > maxLength) {
+        ontoolarge?.(value.length);
+        value = '';
+      }
       echoed = value;
       editor = new View({
         parent: host,
@@ -115,49 +170,29 @@ SPDX-License-Identifier: MIT
             cmView.drawSelection(),
             cmView.highlightActiveLine(),
             keymap.of([...commands.defaultKeymap, ...commands.historyKeymap, ...language.foldKeymap]),
-            EditorState.readOnly.of(readonly),
+            settings.readOnly.of(settings.readOnlyOf(readonly)),
             gcodeLib.gcode({ onCursorLine: (n) => oncursorline?.(n) }),
-            // Refuse any edit that would take the document past the cap.
-            EditorState.transactionFilter.of((tr) =>
-              tr.docChanged && tr.newDoc.length > maxLength ? [] : tr,
-            ),
+            // Refuse any edit that would take the document past the cap. (The host's
+            // own replacements bypass this and are checked in the value effect.)
+            EditorState.transactionFilter.of((tr) => {
+              if (!tr.docChanged || tr.newDoc.length <= maxLength) return tr;
+              const length = tr.newDoc.length;
+              queueMicrotask(() => ontoolarge?.(length));
+              return [];
+            }),
             View.updateListener.of((u) => {
               if (!u.docChanged) return;
               echoed = u.state.doc.toString();
               value = echoed;
             }),
-            View.theme(
-              {
-                '&': {
-                  height: '100%',
-                  color: 'var(--gcode-text, #e6e6ea)',
-                  backgroundColor: 'var(--gcode-bg, #1b1b1f)',
-                },
-                '.cm-scroller': { overflow: 'auto' },
-                '.cm-content': { caretColor: 'var(--gcode-text, #e6e6ea)' },
-                '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--gcode-text, #e6e6ea)' },
-                '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
-                  { backgroundColor: 'var(--gcode-selection, #3a4a6b)' },
-                '.cm-activeLine': { backgroundColor: '#8080800f' },
-                '.cm-gutters': {
-                  backgroundColor: 'var(--gcode-panel, #232329)',
-                  color: 'var(--gcode-muted, #a0a0aa)',
-                  borderRight: '1px solid var(--gcode-line, #34343c)',
-                },
-                '.cm-activeLineGutter': { backgroundColor: '#8080801f' },
-                '.cm-tooltip': {
-                  backgroundColor: 'var(--gcode-panel, #232329)',
-                  color: 'var(--gcode-text, #e6e6ea)',
-                  border: '1px solid var(--gcode-line, #34343c)',
-                },
-              },
-              { dark },
-            ),
+            settings.theme.of(settings.themeOf(dark)),
             ...extensions,
           ],
         }),
       });
       lib = { showDiagnostics: gcodeLib.showDiagnostics, showPathLine: gcodeLib.showPathLine };
+    }, (e: unknown) => {
+      if (live) onerror?.(e instanceof Error ? e : new Error(String(e)));
     });
     return () => {
       live = false;
@@ -166,11 +201,29 @@ SPDX-License-Identifier: MIT
   });
 
   // A new value from outside (a file opened, a sample picked) replaces the document.
+  // Past the cap it's refused, and `value` is set back to what the editor shows, so the
+  // two never disagree (and a host parsing `value` never reads text nobody can see).
   $effect(() => {
     const v = value;
     if (!editor || v === echoed) return;
+    if (v.length > maxLength) {
+      ontoolarge?.(v.length);
+      value = echoed;
+      return;
+    }
     echoed = v;
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: v } });
+    editor.dispatch({
+      changes: { from: 0, to: editor.state.doc.length, insert: v },
+      filter: false,
+    });
+  });
+  $effect(() => {
+    const on = readonly;
+    if (editor && settings) editor.dispatch({ effects: settings.readOnly.reconfigure(settings.readOnlyOf(on)) });
+  });
+  $effect(() => {
+    const d = dark;
+    if (editor && settings) editor.dispatch({ effects: settings.theme.reconfigure(settings.themeOf(d)) });
   });
   $effect(() => {
     if (editor && lib) lib.showDiagnostics(editor, diagnostics);

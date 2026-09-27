@@ -60,8 +60,14 @@ import '@woodpatch/gcode-svelte/worker';
   island hydrates. (A test fails if a component ever imports them statically.)
 - **Bind `program` to `$state.raw`.** A loaded program holds large typed arrays. Plain
   `$state` would wrap it in Svelte's deep proxy for no benefit.
-- **Input is capped** at 20 MB (`maxLength` on `GcodeEditor`): an edit that would pass it
-  is refused. Cap files your app opens before reading them, as the playground does.
+- **Input is capped** at 20 Mi characters (`maxLength`: UTF-16 code units, not bytes).
+  An edit past it is refused. So is a longer `value` from your app: the editor keeps its
+  text and `value` is set back to it. Either way, `ontoolarge(length)` is called. Cap
+  files your app opens by size before reading them, as the playground does.
+- **`onerror`** reports a part that failed to load (a chunk error, a CSP block), and on
+  the workbench, a program that failed to read or took too long.
+- `readonly` and `dark` can change at any time. `extensions`, `options3d` and `options2d`
+  are read once, at mount.
 - **Colours:** dark by default. Override with CSS custom properties on an ancestor:
   `--gcode-bg`, `--gcode-text`, `--gcode-panel`, `--gcode-muted`, `--gcode-line`,
   `--gcode-selection`; `--gcode-columns` sets the workbench's grid columns. Pass

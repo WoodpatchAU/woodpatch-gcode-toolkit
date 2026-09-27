@@ -1279,11 +1279,11 @@ the same palette, highlight and pick, so a host can offer both.
 **Decision.** `@woodpatch/gcode-svelte` ships three Svelte 5 components as PLAIN SOURCE:
 `GcodeWorkbench` (the editor and viewer in sync, reading in a worker), `GcodeViewer` (3D
 or 2D plan) and `GcodeEditor`. Svelte is a peer dependency (operator, 2026-09-24). The
-two consuming apps build with different Vite majors, and a pre-built bundle would tie
-them to one toolchain. The reviewer's three conditions are enforced mechanically:
+consuming applications build with different Vite majors, and a pre-built bundle would
+tie them to one toolchain. The review's three conditions are enforced mechanically:
 
 - **The peer floor is what's tested.** The peer range is `^5.56.4`, the lowest Svelte
-  either app resolves today (both are on 5.56.x). The package's dev dependency is pinned
+  any consuming application resolves today (all are on 5.56.x). The package's dev dependency is pinned
   to exactly that version, so svelte-check and every test run on the floor. A test
   fails if the pin and the floor ever disagree, or if the installed Svelte isn't the
   floor. Newer 5.x minors are exercised by the apps themselves, which pin exact versions.
@@ -1292,7 +1292,7 @@ them to one toolchain. The reviewer's three conditions are enforced mechanically
   hold only `.svelte`, `.js` and hand-written `.d.ts` files. Each is a test. The root
   build skips the package (`--if-present`).
 - **The MIT notice in each file.** A source package has no build to prepend the banner,
-  so every source file carries it, generated from LICENSE (`scripts/licence-banner.mjs`,
+  so every source file (`.svelte` and `.js`) carries it, generated from LICENSE (`scripts/licence-banner.mjs`,
   now shared with the build; `scripts/stamp-source-banners.mjs` writes it).
   - **Where it sits in a `.svelte` file was found by testing, not assumed.**
     - Svelte 5.56 drops comments in `<script module>`.
@@ -1301,14 +1301,19 @@ them to one toolchain. The reviewer's three conditions are enforced mechanically
       tree-shook, and the notice went with it.
     - So the banner sits directly on each component's `onMount(…)` call, which no
       bundler removes. A test checks that placement in the compiled output.
-  - Tests and the CI licence check compile every component (client and server) and
-    minify it (esbuild `inline` and `eof`), and require the notice to survive.
+  - The package's tests compile every component for both client and server; the CI
+    licence check compiles for the client (what browsers get). Both then minify it
+    (esbuild `inline` and `eof`) and require the notice to survive.
   - **Checked by hand on the real components:**
-    - Vite 6.4.3 with the storefront's own plugin and default settings keeps all three
-      banners.
+    - A Vite 6.4.3 build with its default settings keeps all three banners.
     - Vite 8.3.0 keeps them with `output.comments.legal` and drops them without. That's
-      the same rule as the other packages, so the staff portal must set it.
-    - Both apps should grep their chunks in CI (README).
+      the same rule as the other packages, so a consuming application on Vite 8 must
+      set it.
+    - Consuming applications should grep their chunks in CI (README).
+  - `worker.js` carries the banner too, but a bundler may drop it: the file is a bare
+    import with no statement of its own to keep the comment. No notice is lost. The
+    worker it imports is the viewer package's built entry, whose own banner survives
+    (the viewer's licence check).
   - The package's LICENSE and NOTICE copies are committed, since there's no build to copy
     them. The licence check fails if they differ from the root's.
 
@@ -1328,10 +1333,29 @@ is real):
 
 - Each view is created the first time its mode is shown. Each gets the program
   separately, so showing the 2D plan doesn't reset the 3D camera. Both get highlights.
-- The editor's `value` is bindable. Outside changes replace the document; an edit past
-  `maxLength` (20 MB) is refused.
+- The editor's `value` is bindable. Outside changes replace the document.
+- **The size cap** (`maxLength`, 20 Mi characters: UTF-16 code units, not bytes) holds on
+  every path:
+  - an edit past it (paste, drop, typing) is refused;
+  - a longer `value` from the host is refused too, and `value` is set back to what the
+    editor shows, so the two never disagree (and a host parsing `value` never parses
+    text nobody can see);
+  - an over-long first value starts the editor empty;
+  - each refusal calls `ontoolarge`.
+    The host's own replacements bypass the edit filter (`filter: false`) and are checked
+    explicitly. Before review, the filter silently ate an oversized host value while
+    `value` moved on.
+- `readonly` and `dark` follow their props after mount (CodeMirror compartments).
+  `extensions` and the view options are read once, as documented.
+- **Load failures:** a lazy import that fails (a chunk error, a CSP block) goes to
+  `onerror` on each component, and the workbench forwards its children's. No unhandled
+  rejection, and no silently blank box.
+- **Unmounting before the imports settle** creates nothing. Tests unmount while each
+  component's import is in flight: no editor (counted by a plugin, since a late one
+  would leave no trace in the DOM yet never be destroyed), no loader, no views.
 - The workbench re-reads `delay` ms after the last edit or dialect change. A superseded
-  read is quiet; a real failure goes to `onerror`. It disposes its worker on unmount.
+  read is quiet; a real failure goes to `onerror`. It disposes its worker on unmount. It
+  passes `readonly`, `dark`, `maxLength` and `ontoolarge` through to its editor.
 - A loaded program is large (typed arrays): hosts should bind it to `$state.raw`, not
   `$state`, which would deep-proxy it (README).
 

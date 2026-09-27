@@ -39,6 +39,8 @@ SPDX-License-Identifier: MIT
     options3d?: ViewerOptions;
     /** Options for the 2D view (palette, line width, pick radius). Read once. */
     options2d?: View2DOptions;
+    /** The viewer package failed to load (a chunk error, a CSP block). */
+    onerror?: ((error: Error) => void) | undefined;
     class?: string;
   }
 
@@ -50,6 +52,7 @@ SPDX-License-Identifier: MIT
     onpick,
     options3d,
     options2d,
+    onerror,
     class: className = '',
   }: Props = $props();
 
@@ -94,9 +97,14 @@ SPDX-License-Identifier: MIT
    */
   onMount(() => {
     let live = true;
-    void import('@woodpatch/gcode-viewer').then((m) => {
-      if (live) lib = { GcodeViewer: m.GcodeViewer, GcodeView2D: m.GcodeView2D };
-    });
+    void import('@woodpatch/gcode-viewer').then(
+      (m) => {
+        if (live) lib = { GcodeViewer: m.GcodeViewer, GcodeView2D: m.GcodeView2D };
+      },
+      (e: unknown) => {
+        if (live) onerror?.(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
     return () => {
       live = false;
       v3?.dispose();
