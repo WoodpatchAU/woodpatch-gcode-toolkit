@@ -4,7 +4,7 @@
 import { GENERIC, type Dialect } from '../dialect/profiles.js';
 import { editLine, parse, write, type LineEdit } from '../syntax/program.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
-import { formatLike } from './format.js';
+import { formatLike, MAX_WRITTEN, writable } from './format.js';
 import { invalidOp, mapOf, type TransformOp } from './map.js';
 
 /**
@@ -364,6 +364,7 @@ function applyOne(program: Program, op: TransformOp, dialect: Dialect) {
     ) => {
       if (w.value?.kind !== 'number' || like.value?.kind !== 'number') return;
       const target = carryAxis ? value + carry[carryAxis] / unit / times : value;
+      if (!inRange(letter, target)) return;
       const old = w.value.value;
       const src = line.text.slice(w.value.span.start, w.value.span.end);
       let written = old;
@@ -384,6 +385,16 @@ function applyOne(program: Program, op: TransformOp, dialect: Dialect) {
         if (text !== src) edits.push({ span: w.value.span, text });
       }
       if (carryAxis) carry[carryAxis] = (target - written) * unit * times;
+    };
+    /** Refuses a result no controller could read: non-finite, or past MAX_WRITTEN. */
+    const inRange = (letter: string, v: number): boolean => {
+      if (writable(v)) return true;
+      error(
+        n,
+        'TRANSFORM_OUT_OF_RANGE',
+        `${letter} would be ${Number.isFinite(v) ? String(v) : 'infinite'}: beyond ±${MAX_WRITTEN.toLocaleString('en-AU')}, no machine goes there and no controller reads it. Refusing`,
+      );
+      return false;
     };
     /** A coordinate word written as an expression can't be rewritten (decision 2). */
     const needsNumber = (w: WordToken | undefined, changes: boolean): boolean => {
@@ -407,6 +418,7 @@ function applyOne(program: Program, op: TransformOp, dialect: Dialect) {
       const own = line.text[after.span.start] ?? letter;
       const l = own === own.toLowerCase() ? letter.toLowerCase() : letter;
       const target = carryAxis ? value + carry[carryAxis] / unit / times : value;
+      if (!inRange(letter, target)) return;
       const text = formatLike(
         target,
         after.value ? line.text.slice(after.value.span.start, after.value.span.end) : '',

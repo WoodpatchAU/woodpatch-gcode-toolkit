@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
 // SPDX-License-Identifier: MIT
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   formatLike,
@@ -310,6 +311,68 @@ describe('what a transform leaves alone, and what stops it', () => {
   it("knows Masso's K is a cycle repeat count, not a coordinate", () => {
     expect(t('G90 G81 X10 Y10 Z-2 R1 K3', [{ op: 'translate', x: 1, z: -1 }], MASSO_G3).text).toBe(
       'G90 G81 X11 Y10 Z-3 R0 K3',
+    );
+  });
+});
+
+describe('values no controller could read are refused', () => {
+  const SRC = 'G21 G90\nG0 X1 Y2\nG2 X3 Y2 I1 J0 F100\nG91 G1 X0.5\nM2';
+
+  it('refuses huge and overflowing results, naming the lines', () => {
+    for (const op of [
+      { op: 'scale', x: 1e308, y: 1e308 },
+      { op: 'translate', x: 1e300 },
+      { op: 'scale', x: 1e20 },
+      { op: 'rotate', degrees: 30, about: { x: 1e300, y: 0 } },
+    ] as const) {
+      const r = transformText(SRC, [op]);
+      expect(r.ok, JSON.stringify(op)).toBe(false);
+      expect(r.text).toBe(SRC);
+      expect(r.diagnostics.map((d) => d.code)).toContain('TRANSFORM_OUT_OF_RANGE');
+      expect(r.diagnostics[0]?.line).toBeGreaterThan(0);
+    }
+    // The message shows the value itself, not a rounded exponent.
+    const just = transformText('G21\nG0 X0', [{ op: 'translate', x: 1_000_000.0004 }]);
+    expect(just.diagnostics[0]?.message).toContain('1000000.0004');
+    // Up to the limit is fine.
+    expect(transformText('G21\nG0 X1', [{ op: 'translate', x: 999_999 }]).text).toBe(
+      'G21\nG0 X1000000',
+    );
+  });
+
+  it('the formatter throws rather than write an exponent or Infinity', () => {
+    expect(() => formatLike(1e21, '1', 3)).toThrow(RangeError);
+    expect(() => formatLike(Infinity, '1', 3)).toThrow(RangeError);
+    expect(() => formatLike(Number.NaN, '1', 3)).toThrow(RangeError);
+    expect(formatLike(-1_000_000, '1', 3)).toBe('-1000000');
+  });
+
+  it('property: any scale or move either refuses, or writes only plain numbers in range', () => {
+    const big = fc.oneof(
+      fc.double({ min: -1e308, max: 1e308, noNaN: true, noDefaultInfinity: true }),
+      fc.integer({ min: -2_000_000, max: 2_000_000 }),
+    );
+    fc.assert(
+      fc.property(
+        fc.oneof(
+          big.map((x) => ({ op: 'translate' as const, x, y: 1 })),
+          big.filter((x) => x !== 0).map((x) => ({ op: 'scale' as const, x, y: x })),
+          big.map((x) => ({ op: 'rotate' as const, degrees: 45, about: { x, y: 0 } })),
+        ),
+        (op) => {
+          const r = transformText(SRC, [op]);
+          if (!r.ok) {
+            expect(r.text).toBe(SRC);
+            return;
+          }
+          for (const m of r.text.matchAll(/[A-Z]([^A-Z\s()]+)/g)) {
+            const v = m[1] as string;
+            expect(v, r.text).toMatch(/^[+-]?(\d+\.?\d*|\.\d+)$/);
+            expect(Math.abs(Number(v)), r.text).toBeLessThanOrEqual(1_000_000);
+          }
+        },
+      ),
+      { numRuns: 500 },
     );
   });
 });
