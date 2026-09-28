@@ -310,4 +310,15 @@ describe('arcsToLines', () => {
       'TRANSFORM_ARC_NOT_RUN@7',
     );
   });
+
+  it('refuses a Masso subprogram file; leaves a library sub’s arcs alone', () => {
+    const masso = arcs('G90\nG2 X10 Y0 I5 F300\nM99', { tolerance: 0.5 }, MASSO_G3);
+    expect(masso.ok).toBe(false);
+    expect(masso.diagnostics[0]?.message).toContain('this is a subprogram file');
+    // Never called here, so never run: left as an arc, with a warning.
+    const src = 'G21 G90\no<lib> sub\nG2 X10 Y0 I5 F300\no<lib> endsub\nM2';
+    const lib = arcs(src, { tolerance: 0.5 });
+    expect(lib.text).toBe(src);
+    expect(lib.diagnostics.map((d) => `${d.code}@${d.line}`)).toContain('TRANSFORM_ARC_NOT_RUN@3');
+  });
 });
