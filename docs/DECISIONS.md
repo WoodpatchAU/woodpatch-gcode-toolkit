@@ -2017,6 +2017,12 @@ before anything is written.
 bulge past the arc's end points. One beyond ±1,000,000 refuses the arc
 (`TRANSFORM_OUT_OF_RANGE`) rather than reaching the formatter.
 
+**The worker budget is raised to 50 kB** (operator decision, 2026-09-28; ADR-0031 set
+40 kB when the worker only read programs). Since the transform panel (ADR-0038), the
+playground's worker also runs the transforms. So each transform parcel grows it: 31.7 kB
+on main, then 36.0 with units, 37.5 with overrides, and 40.2 with arc to line. The page
+budget stays 300 kB.
+
 ## ADR-0038: The playground's transform panel
 
 **Status:** Accepted, 2026-09-28. Parcel 4e-1.
