@@ -10,6 +10,8 @@ export interface Palette {
   readonly arc: number;
   readonly rapid: number;
   readonly highlight: number;
+  /** The original program, drawn faintly behind a transformed one (`setGhost`). */
+  readonly ghost: number;
   readonly grid: number;
   readonly background: number;
 }
@@ -19,6 +21,7 @@ export const DEFAULT_PALETTE: Palette = Object.freeze({
   arc: 0xffffff,
   rapid: 0xff0000,
   highlight: 0xffff00,
+  ghost: 0x5b8def,
   grid: 0xff7f2a,
   background: 0x1b1b1f,
 });

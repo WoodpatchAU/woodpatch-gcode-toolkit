@@ -23,6 +23,39 @@ export function fitDistance(radius: number, fovDeg: number, aspect: number): num
   return (radius / Math.sin(narrow / 2)) * 1.1;
 }
 
+type Box = {
+  readonly min: { readonly X: number; readonly Y: number; readonly Z: number };
+  readonly max: { readonly X: number; readonly Y: number; readonly Z: number };
+};
+
+/** The box around both, or whichever exists. */
+export function unionBox(a: Box | null | undefined, b: Box | null | undefined): Box | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return {
+    min: {
+      X: Math.min(a.min.X, b.min.X),
+      Y: Math.min(a.min.Y, b.min.Y),
+      Z: Math.min(a.min.Z, b.min.Z),
+    },
+    max: {
+      X: Math.max(a.max.X, b.max.X),
+      Y: Math.max(a.max.Y, b.max.Y),
+      Z: Math.max(a.max.Z, b.max.Z),
+    },
+  };
+}
+
+/** The radius about `centre` that takes in the whole box: its farthest corner. */
+export function coverRadius(box: Box, centre: readonly [number, number, number]): number {
+  const d = (lo: number, hi: number, c: number) => Math.max(Math.abs(lo - c), Math.abs(hi - c));
+  return Math.hypot(
+    d(box.min.X, box.max.X, centre[0]),
+    d(box.min.Y, box.max.Y, centre[1]),
+    d(box.min.Z, box.max.Z, centre[2]),
+  );
+}
+
 /** A grid a round size (1, 2 or 5 × 10ⁿ mm per cell) covering `extent` mm, 10–20 cells. */
 export function gridSpec(extent: number): { size: number; divisions: number } {
   const e = Math.max(extent, 1) * 1.2;

@@ -48,6 +48,18 @@ plan.setProgram(program); // the same program the 3D view shows
 plan.onPick(({ line }) => editor.showPathLine(line));
 ```
 
+## Showing the original behind a transformed program
+
+Both views take a second program to draw faintly behind the first, in one colour
+(`palette.ghost`): the original under a transformed result, say. It can't be picked,
+and framing (`setView`, `fit`, and the fit on `setProgram`) takes both in. Null clears it.
+
+```ts
+viewer.setGhost(original);
+plan.setGhost(original);
+viewer.setProgram(transformed);
+```
+
 - Drag to pan, scroll to zoom about the pointer, `fit()` to frame the path.
 - The grid adapts to the zoom (1, 2 or 5 × 10ⁿ mm) and is labelled in mm. The
   machine's X and Y axes are drawn through the origin.

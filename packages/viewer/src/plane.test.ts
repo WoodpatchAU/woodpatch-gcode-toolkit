@@ -49,6 +49,17 @@ describe('transform', () => {
 });
 
 describe('fitTransform', () => {
+  it('frames a ghost too: the original behind a transformed program', () => {
+    // Both start at the machine origin: the original spans X-100..0, the result 0..110.
+    const p = loadProgram('G21 G90 F100\nG0 X-100 Y0\nG1 X-90 Y10');
+    const moved = loadProgram('G21 G90 F100\nG0 X100 Y0\nG1 X110 Y10');
+    const t = fitTransform(moved, W, H, p);
+    expect(t.cx).toBeCloseTo(5, 9);
+    expect(t.cy).toBeCloseTo(5, 9);
+    // Without the ghost, only the program itself.
+    expect(fitTransform(moved, W, H, null).cx).toBeCloseTo(55, 9);
+  });
+
   it('frames the XY box with a margin, whatever the aspect', () => {
     const p = loadProgram('G21 G90 F100\nG0 X-50 Y0\nG1 X150 Y50 Z-3');
     const t = fitTransform(p, W, H);

@@ -1661,3 +1661,51 @@ with the spindle stopped, and gave a false end warning. Fixed:
 - **Known limit:** a plasma or laser on Masso runs M3 without S. It gets
   `PROGRAM_SPINDLE_NO_SPEED`, and the message says that's expected there. A custom
   controller (roadmap) can turn the check off.
+
+## ADR-0038: The playground's transform panel
+
+**Status:** Accepted, 2026-09-28. Parcel 4e-1.
+
+**Decision.** The playground gets a Transform panel for the 4a operations: move,
+rotate, mirror and scale. Each transform applied goes on a history, with undo and redo,
+a recipe that can be saved and applied to another file, and the original drawn faintly
+behind the result. The units preference, the convert-units action, and the override
+and arc-to-line controls follow when their core parcels merge (4e-2).
+
+- **Transforms run in a worker**, so a big file doesn't freeze the page. There's one
+  worker script, which answers both the viewer's load requests and transform requests.
+  So the core is bundled once, and the budget grows by the transform code only (worker
+  26.6 → 31.7 kB, page 259.1 → 262.4 kB gzipped, of 40 and 300). The page runs three
+  instances: the loader, the transforms, and the original's loader. A long transform
+  never holds up reading the program. It is stopped after two minutes.
+- **The history means "these ops, applied to the original, give the text on
+  screen".** That's the recipe, and a test checks it against the core. An edit by
+  hand therefore starts the history again, with the edited text as the new original:
+  a recipe that no longer reproduced the screen would be worse than none. The page
+  says so when it happens. Opening a file starts again too.
+- **A refused transform changes nothing.** Its reasons are listed with their lines, as
+  diagnostics are. A result for text that was typed into while the transform ran is
+  discarded, not applied.
+- **Recipes** are a small JSON file (`woodpatch-gcode-recipe`, version 1: the ops and
+  the controller they were made for). On the way in, every op is checked as the core
+  checks it, so a misspelt field is refused, naming the step, never read as zero. The
+  ops are applied one at a time, so each can be undone, stopping at the first refusal.
+  A recipe made for another controller applies to the current one, and says so.
+- **The original is drawn faintly, not diffed.** The viewer gained `setGhost` on both
+  views: one muted colour under the path, never pickable. Framing takes both in, so a
+  move of 100 mm keeps both in view. It can be hidden.
+- **Saving** is a download of the editor's text (`name-transformed.ext` when
+  transforms are in effect) or of the recipe (`name.recipe.json`). Nothing is uploaded.
+- **Layout:** the panel is a closed `<details>` above the code, one line tall, so it
+  can't shift the page on load (the Lighthouse gate, ADR-0031). Opened, it scrolls
+  within 40% of the height.
+
+**Tests.** Unit tests for the history and recipes (the playground's first; vitest,
+`src/` only), viewer tests for the combined framing, and browser tests:
+
+- apply, undo and redo;
+- the original drawn and hidden;
+- a refusal listed with nothing changed;
+- an edit by hand resetting the history;
+- the recipe and G-code downloads, and a saved recipe applied to another file;
+- a misspelt recipe refused.

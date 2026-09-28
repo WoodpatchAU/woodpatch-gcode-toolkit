@@ -18,7 +18,14 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { buildSegments, DEFAULT_PALETTE, type Palette } from './geometry.js';
 import { buildLineIndex, type LineIndex } from './lineIndex.js';
 import type { LoadedProgram } from './program.js';
-import { fitDistance, gridSpec, VIEW_DIRECTIONS, type ViewName } from './view.js';
+import {
+  coverRadius,
+  fitDistance,
+  gridSpec,
+  unionBox,
+  VIEW_DIRECTIONS,
+  type ViewName,
+} from './view.js';
 
 export interface ViewerOptions {
   readonly palette?: Partial<Palette>;
@@ -68,12 +75,17 @@ export class GcodeViewer {
   private readonly palette: Palette;
   private readonly pathMaterial: LineMaterial;
   private readonly highlightMaterial: LineMaterial;
+  private readonly ghostMaterial: LineMaterial;
   private readonly observer: ResizeObserver;
   private readonly raycaster = new Raycaster();
   private readonly pickListeners = new Set<(e: PickEvent) => void>();
   private readonly renderListeners = new Set<(info: RenderInfo) => void>();
   private path: LineSegments2 | null = null;
   private highlight: LineSegments2 | null = null;
+  private ghost: LineSegments2 | null = null;
+  private ghostProgram: LoadedProgram | null = null;
+  /** The program's centre, the scene's origin: positions are relative to it. */
+  private origin: readonly [number, number, number] = [0, 0, 0];
   private grid: GridHelper | null = null;
   private index: LineIndex | null = null;
   private program: LoadedProgram | null = null;
@@ -109,6 +121,14 @@ export class GcodeViewer {
       worldUnits: false,
       depthTest: false, // always visible, even behind other cuts
     });
+    this.ghostMaterial = new LineMaterial({
+      linewidth: options.lineWidth ?? 1.5,
+      color: this.palette.ghost,
+      worldUnits: false,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+    });
     this.raycaster.params.Line2 = { threshold: options.pickRadius ?? 6 };
 
     const el = this.renderer.domElement;
@@ -134,8 +154,22 @@ export class GcodeViewer {
     }
     this.path = new LineSegments2(geometry, this.pathMaterial);
     this.world.add(this.path);
+    this.origin = seg.origin;
+    this.buildGhost();
     this.placeGrid(seg.origin);
     this.setView('iso');
+  }
+
+  /**
+   * Draws another program faintly behind this one, in one colour: the original under a
+   * transformed result, say. It can't be picked, and the views frame both. Null clears it.
+   * Set it before `setProgram` to have the first framing take it in.
+   */
+  setGhost(program: LoadedProgram | null): void {
+    if (this.disposed) return;
+    this.ghostProgram = program;
+    this.buildGhost();
+    this.requestRender();
   }
 
   /** Draws one source line's segments highlighted, or clears the highlight (null). */
@@ -181,9 +215,9 @@ export class GcodeViewer {
   /** Points the camera along a standard direction, framing the whole path. */
   setView(view: ViewName): void {
     if (this.disposed) return;
-    const b = this.program?.bounds.all;
-    const size = b ? [b.max.X - b.min.X, b.max.Y - b.min.Y, b.max.Z - b.min.Z] : [100, 100, 10];
-    this.radius = Math.max(1, Math.hypot(size[0] ?? 0, size[1] ?? 0, size[2] ?? 0) / 2);
+    // Everything shown, the ghost included, about the scene's origin (the program's centre).
+    const b = unionBox(this.program?.bounds.all, this.ghostProgram?.bounds.all);
+    this.radius = Math.max(1, b ? coverRadius(b, this.origin) : Math.hypot(100, 100, 10) / 2);
     const [dx, dy, dz] = VIEW_DIRECTIONS[view];
     const d = fitDistance(this.radius, this.camera.fov, this.camera.aspect);
     this.camera.position.set(dx * d, dy * d, dz * d);
@@ -207,6 +241,7 @@ export class GcodeViewer {
     this.camera.updateProjectionMatrix();
     this.pathMaterial.resolution.set(w, h);
     this.highlightMaterial.resolution.set(w, h);
+    this.ghostMaterial.resolution.set(w, h);
     this.requestRender();
   }
 
@@ -225,6 +260,8 @@ export class GcodeViewer {
     this.grid?.dispose(); // geometry AND material
     this.pathMaterial.dispose();
     this.highlightMaterial.dispose();
+    this.disposeGhost();
+    this.ghostMaterial.dispose();
     // dispose() alone keeps the WebGL context alive, and browsers cap live contexts
     // (~16): a host mounting and unmounting viewers would start losing old ones.
     this.renderer.forceContextLoss();
@@ -251,6 +288,31 @@ export class GcodeViewer {
       };
       for (const l of this.renderListeners) l(info);
     });
+  }
+
+  private buildGhost(): void {
+    this.disposeGhost();
+    const g = this.ghostProgram;
+    if (!g || g.count < 2) return;
+    const seg = buildSegments(g, this.palette);
+    const geometry = new LineSegmentsGeometry();
+    geometry.setPositions(seg.positions);
+    this.ghost = new LineSegments2(geometry, this.ghostMaterial);
+    // Its own centre, placed relative to the scene's origin.
+    this.ghost.position.set(
+      seg.origin[0] - this.origin[0],
+      seg.origin[1] - this.origin[1],
+      seg.origin[2] - this.origin[2],
+    );
+    this.ghost.renderOrder = -1;
+    this.world.add(this.ghost);
+  }
+
+  private disposeGhost(): void {
+    if (!this.ghost) return;
+    this.world.remove(this.ghost);
+    this.ghost.geometry.dispose();
+    this.ghost = null;
   }
 
   private disposePath(): void {
