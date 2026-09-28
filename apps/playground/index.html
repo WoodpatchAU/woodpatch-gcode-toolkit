@@ -78,7 +78,9 @@ SPDX-License-Identifier: MIT
               <legend>Rotate (counter-clockwise, seen from above)</legend>
               <label>Degrees <input name="deg" type="number" step="any" value="90" /></label>
               <label>About X <input name="rx" type="number" step="any" value="0" /></label>
-              <label>Y <input name="ry" type="number" step="any" value="0" /></label>
+              <label
+                >Y <input name="ry" type="number" step="any" value="0" aria-label="About Y"
+              /></label>
             </fieldset>
             <fieldset data-op="mirror" hidden>
               <legend>Mirror</legend>
@@ -93,12 +95,30 @@ SPDX-License-Identifier: MIT
             </fieldset>
             <fieldset data-op="scale" hidden>
               <legend>Scale by</legend>
-              <label>X <input name="sx" type="number" step="any" value="1" /></label>
-              <label>Y <input name="sy" type="number" step="any" placeholder="same as X" /></label>
-              <label>Z <input name="sz" type="number" step="any" placeholder="1" /></label>
-              <label>About X <input name="ax" type="number" step="any" value="0" /></label>
-              <label>Y <input name="ay" type="number" step="any" value="0" /></label>
-              <label>Z <input name="az" type="number" step="any" value="0" /></label>
+              <label
+                >X <input name="sx" type="number" step="any" value="1" aria-label="Scale X"
+              /></label>
+              <label
+                >Y
+                <input
+                  name="sy"
+                  type="number"
+                  step="any"
+                  placeholder="same as X"
+                  aria-label="Scale Y"
+              /></label>
+              <label
+                >Z <input name="sz" type="number" step="any" placeholder="1" aria-label="Scale Z"
+              /></label>
+              <label
+                >About X <input name="ax" type="number" step="any" value="0" aria-label="About X"
+              /></label>
+              <label
+                >Y <input name="ay" type="number" step="any" value="0" aria-label="About Y"
+              /></label>
+              <label
+                >Z <input name="az" type="number" step="any" value="0" aria-label="About Z"
+              /></label>
             </fieldset>
             <div class="actions">
               <button id="apply" type="submit">Apply</button>

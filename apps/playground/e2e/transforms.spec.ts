@@ -97,6 +97,18 @@ test('an edit by hand starts the history again', async ({ page }) => {
   expect(problems).toEqual([]);
 });
 
+test('changing the controller starts the history again', async ({ page }) => {
+  const problems = watch(page);
+  await openPart(page);
+  await move(page, '5');
+  await expect(page.locator('#undo')).toBeEnabled();
+  await page.selectOption('#dialect', 'masso-g3-5.13');
+  await expect(said(page)).toContainText('Controller changed');
+  await expect(page.locator('#undo')).toBeDisabled();
+  await expect(page.locator('#export-recipe')).toBeDisabled();
+  expect(problems).toEqual([]);
+});
+
 test('the recipe and the result are saved, and a recipe applies to another file', async ({
   page,
 }) => {

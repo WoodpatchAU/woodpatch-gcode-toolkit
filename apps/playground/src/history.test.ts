@@ -87,6 +87,19 @@ describe('recipes', () => {
     );
   });
 
+  it('refuses a recipe of more than 256 steps', () => {
+    const many = (n: number) =>
+      JSON.stringify({
+        format: 'woodpatch-gcode-recipe',
+        version: 1,
+        ops: Array.from({ length: n }, () => ({ op: 'translate' })),
+      });
+    expect(parseRecipe(many(256)).ok).toBe(true);
+    const r = parseRecipe(many(257));
+    expect(r.ok).toBe(false);
+    expect(r.ok ? '' : r.error).toContain('more than 256');
+  });
+
   it('describes each op in words', () => {
     expect(describeOp(MOVE)).toBe('Move X 10, Y 0, Z 0 mm');
     expect(describeOp({ op: 'rotate', degrees: 30, about: { x: 5, y: -2 } })).toBe(

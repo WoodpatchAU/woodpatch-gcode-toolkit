@@ -69,6 +69,11 @@ export class TransformHistory {
 // ── Recipes ────────────────────────────────────────────────────────────────
 
 const FORMAT = 'woodpatch-gcode-recipe';
+/**
+ * The most steps a recipe may have. Each one is a transform, a re-read and a copy of
+ * the text, so a shared file of tens of thousands could hang the tab (review of #42).
+ */
+export const MAX_RECIPE_STEPS = 256;
 
 /** A recipe as a file: the ops, and the controller they were applied for. */
 export function recipeJson(ops: readonly TransformOp[], dialect: string): string {
@@ -96,6 +101,11 @@ export function parseRecipe(
   const ops = r['ops'];
   if (!Array.isArray(ops) || ops.length === 0)
     return { ok: false, error: 'The recipe has no operations' };
+  if (ops.length > MAX_RECIPE_STEPS)
+    return {
+      ok: false,
+      error: `The recipe has ${ops.length.toLocaleString('en-AU')} steps: more than ${MAX_RECIPE_STEPS}, the most one may have`,
+    };
   for (const [i, op] of ops.entries()) {
     const bad =
       typeof op === 'object' && op !== null ? invalidOp(op as TransformOp) : 'not an operation';

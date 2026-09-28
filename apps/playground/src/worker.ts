@@ -10,7 +10,7 @@ import { handle, type LoadRequest } from '@woodpatch/gcode-viewer/worker';
 import type { TransformRequest, TransformResponse } from './transformTypes.js';
 
 interface Scope {
-  onmessage: ((e: MessageEvent<LoadRequest | TransformRequest>) => void) | null;
+  onmessage: ((e: MessageEvent<unknown>) => void) | null;
   postMessage(message: unknown, transfer?: Transferable[]): void;
 }
 const scope = globalThis as unknown as Scope;
@@ -43,11 +43,15 @@ function transformOne(req: TransformRequest): TransformResponse {
 // Importing the viewer's entry installed its handler; this one replaces it, and hands
 // load requests back to the same `handle`.
 scope.onmessage = (e) => {
-  const data = e.data;
-  if ('kind' in data && data.kind === 'transform') {
-    scope.postMessage(transformOne(data));
+  const data: unknown = e.data;
+  if (typeof data !== 'object' || data === null) return; // not ours: ignore
+  const kind = (data as { kind?: unknown }).kind;
+  if (kind === 'transform') {
+    scope.postMessage(transformOne(data as TransformRequest));
     return;
   }
+  // The viewer's load requests carry no kind; anything else isn't a request.
+  if (kind !== undefined) return;
   const { response, transfer } = handle(data as LoadRequest);
   scope.postMessage(response, transfer);
 };

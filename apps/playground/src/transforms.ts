@@ -286,6 +286,14 @@ export function installTransformPanel(host: PanelHost, makeWorker: () => Worker)
       say('Edited by hand: the transform history starts again from here');
     },
     dialectChanged() {
+      // The steps were worked out for the old controller: a recipe saved now would claim
+      // the new one. Start again, as after an edit by hand (review of #42).
+      if (history.canUndo || history.canRedo) {
+        history.reset();
+        notes.replaceChildren();
+        refresh();
+        say('Controller changed: the transform history starts again from here');
+      }
       ghostKey = '';
       void updateGhost();
     },
@@ -303,10 +311,14 @@ class TransformRunner {
     const worker = (this.worker ??= this.make());
     const id = ++this.id;
     return new Promise((resolve, reject) => {
+      const drop = () => {
+        // Only this request's worker: a newer one may have replaced it.
+        worker.terminate();
+        if (this.worker === worker) this.worker = null;
+      };
       const timer = setTimeout(() => {
         // Stuck: the only way to stop it is to end the worker.
-        worker.terminate();
-        this.worker = null;
+        drop();
         cleanup();
         reject(new Error('it took too long, and was stopped'));
       }, TIMEOUT_MS);
@@ -317,17 +329,22 @@ class TransformRunner {
       };
       const onError = (e: ErrorEvent) => {
         cleanup();
-        this.worker?.terminate();
-        this.worker = null;
+        drop();
         reject(new Error(e.message || 'the worker failed'));
+      };
+      const onMessageError = () => {
+        cleanup();
+        reject(new Error("the worker's reply couldn't be read"));
       };
       const cleanup = () => {
         clearTimeout(timer);
         worker.removeEventListener('message', onMessage);
         worker.removeEventListener('error', onError);
+        worker.removeEventListener('messageerror', onMessageError);
       };
       worker.addEventListener('message', onMessage);
       worker.addEventListener('error', onError);
+      worker.addEventListener('messageerror', onMessageError);
       const req: TransformRequest = { kind: 'transform', id, text, ops, dialect };
       worker.postMessage(req);
     });

@@ -1689,11 +1689,15 @@ and arc-to-line controls follow when their core parcels merge (4e-2).
 - **The panel has its own status line.** Each transform is followed by a re-read,
   which writes the page's status ("Read in … ms"). So an outcome posted there flashed
   past unseen (found by the browser tests).
+- **Changing the controller starts the history again**, as an edit by hand does: the
+  steps were worked out for the old one, and a recipe saved afterwards would claim the
+  new one.
 - **Recipes** are a small JSON file (`woodpatch-gcode-recipe`, version 1: the ops and
   the controller they were made for). On the way in, every op is checked as the core
   checks it, so a misspelt field is refused, naming the step, never read as zero. The
   ops are applied one at a time, so each can be undone, stopping at the first refusal.
-  A recipe made for another controller applies to the current one, and says so.
+  A recipe made for another controller applies to the current one, and says so. A recipe has at most 256 steps: each is a transform, a re-read and a copy of the
+  text, so a shared file of tens of thousands could hang the tab.
 - **The original is drawn faintly, not diffed.** The viewer gained `setGhost` on both
   views: one muted colour under the path, never pickable. Framing takes both in, so a
   move of 100 mm keeps both in view. It can be hidden.
