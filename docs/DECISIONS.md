@@ -1711,8 +1711,8 @@ cause. A sub called in the modes its text says still converts.
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long
 random G91 programs without drift, and each of the review's probes is a unit test. mm → inch → mm is
-within 1 µm. 40 of the 47 fixtures convert; the rest are refused for expressions, or
-for G87/G88.
+within 1 µm. 39 of the 47 fixtures convert. The rest are refused: for expressions,
+for G87/G88, or for an exponent's E word. The run-time mode guard refuses none of them.
 
 ## ADR-0035: Whole-job checks
 
