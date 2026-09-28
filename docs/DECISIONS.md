@@ -2057,6 +2057,11 @@ How it works:
   onto the chords of the rotated arc, so the conversion is right either way.
 - **An arc that never runs** (a branch not taken, after the end, or rejected by the
   interpreter) is left as it is, with a warning.
+- **A run that stops before the end is refused.** The arcs after the stop were never
+  seen, and an arc seen before it might run again after it, in other modes. An arc the
+  run executed always has its modes. The conversion never falls back to a default.
+  Fanuc-style in-file M98 bodies, which LinuxCNC's preview doesn't run, keep their arcs
+  as arcs, with the warning (review of #37 and #40).
 
 **Verified.**
 

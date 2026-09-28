@@ -6,6 +6,7 @@ import { arcPoint, startAngle } from '../path/path.js';
 import {
   GENERIC,
   interpret,
+  LINUXCNC,
   MASSO_G3,
   parse,
   transformText,
@@ -287,6 +288,26 @@ describe('arcsToLines', () => {
         },
       ),
       { numRuns: 300 },
+    );
+  });
+
+  it('refuses when the run stops; leaves arcs the run never reaches as they are', () => {
+    // A call to a file that isn't there stops the run.
+    const stopped = arcs('G21 G90\nG0 X0 Y0\no<ext> call\nG2 X10 Y0 I5 F300\nM2', {
+      tolerance: 0.5,
+    });
+    expect(stopped.ok).toBe(false);
+    expect(stopped.diagnostics[0]?.message).toContain("The preview's run stopped here");
+    // A Fanuc-style in-file subprogram isn't run on LinuxCNC: its arcs stay arcs.
+    const fanuc = arcs(
+      'G21 G90\nG0 X0 Y0\nG2 X10 Y0 I5 F300\nM98 P100\nM30\nO100\nG2 X20 Y0 I5\nM99',
+      { tolerance: 0.5 },
+      LINUXCNC,
+    );
+    expect(fanuc.ok).toBe(true);
+    expect(fanuc.text).toContain('\nO100\nG2 X20 Y0 I5\nM99');
+    expect(fanuc.diagnostics.map((d) => `${d.code}@${d.line}`)).toContain(
+      'TRANSFORM_ARC_NOT_RUN@7',
     );
   });
 });
