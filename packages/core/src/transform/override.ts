@@ -25,7 +25,8 @@ type MoveKind = 'cut' | 'plunge';
 /** Each line's feed moves: plunge if all are vertical (Z only), cut if any isn't. */
 function feedMoves(program: Program, dialect: Dialect): Map<number, MoveKind> {
   const out = new Map<number, MoveKind>();
-  for (const s of interpret(program, { dialect }).steps) {
+  // Block delete off, so "/" lines are classified too.
+  for (const s of interpret(program, { dialect, blockDelete: false }).steps) {
     if (s.file) continue;
     if (s.kind === 'arc') out.set(s.line, 'cut');
     else if (s.kind === 'linear' && !s.rapid) {
@@ -76,6 +77,29 @@ export function overrideFeed(
       line: 0,
     });
   const moves = selective ? feedMoves(program, dialect) : new Map<number, MoveKind>();
+  // The walker tracks F in text order. Where "/" is an operator's switch, a block-
+  // deletable line that feeds or sets the feed may not run, and the F in force after
+  // it then differs from the one tracked (as the second review of #37 found for units).
+  if (selective && dialect.interpreter.blockDelete === 'switch')
+    for (const line of program.lines) {
+      if (!line.tokens.some((t) => t.kind === 'block-delete')) continue;
+      const feedWord = line.tokens.some(
+        (t) =>
+          t.kind === 'word' &&
+          (t.letter === 'F' ||
+            (t.letter === 'G' &&
+              t.value?.kind === 'number' &&
+              [93, 94, 95].includes(t.value.value))),
+      );
+      if (feedWord || moves.has(line.lineNo))
+        errors.push({
+          severity: 'error',
+          code: 'TRANSFORM_BLOCK_DELETE',
+          message:
+            'This block-deletable ("/") line feeds or sets the feed, and whether it runs is the block-delete switch: the feed in force after it depends on that, so an override limited to plunges, cuts or lines can\'t be right both ways. A plain override of every feed works',
+          line: line.lineNo,
+        });
+    }
 
   let inch = false;
   let original: number | null = null; // the program's F, in its own terms

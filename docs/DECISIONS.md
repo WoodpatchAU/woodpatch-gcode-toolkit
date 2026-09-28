@@ -1913,6 +1913,11 @@ too; the factor means the same thing.
   wherever it runs.
 - **Warned:** moves before any F (the machine's rate), which an override in the program
   can't reach.
+- **Refused, too:** a selective override on a controller where `/` is a switch
+  (LinuxCNC, generic), when a block-deletable line feeds, sets F or changes the feed
+  mode. Whether that line runs is the operator's choice, and the F in force after it
+  depends on it (the class the second review of the units conversion found). Masso runs
+  `/` lines, so it's unaffected.
 
 **Evidence.** A corpus property over every fixture, for all, plunges only, and cuts
 only. The geometry is identical, and every move's actual feed (as the interpreter reads

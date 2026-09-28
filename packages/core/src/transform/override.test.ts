@@ -96,4 +96,23 @@ describe('override ops are validated', () => {
   ])('refuses %j', (op) => {
     expect(codes(o('G1 X1 F100', op as unknown as TransformOp))).toContain('TRANSFORM_BAD_OP');
   });
+
+  it('refuses a selective override past a block-deletable feed line, where "/" is a switch', () => {
+    // With block delete on, line 2 is skipped and line 3 would run at F300, not 100.
+    const src = 'G21 G90\nG1 X1 F300\n/G1 Z-1 F100\nG1 Z-2\nG1 X2\nM2';
+    const r = transformText(src, [{ op: 'feed', percent: 50, only: 'plunge' }]);
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics.map((d) => `${d.code}@${d.line}`)).toEqual(['TRANSFORM_BLOCK_DELETE@3']);
+    // A plain override is right either way; so is Masso, which runs "/" lines.
+    expect(transformText(src, [{ op: 'feed', percent: 50 }]).ok).toBe(true);
+    expect(
+      transformText(src, [{ op: 'feed', percent: 50, only: 'plunge' }], { dialect: MASSO_G3 }).ok,
+    ).toBe(true);
+    // A block-deletable line that doesn't feed is fine.
+    expect(
+      transformText('G21\nG1 X1 F300\n/M8\nG1 Z-1\nM2', [
+        { op: 'feed', percent: 50, only: 'plunge' },
+      ]).ok,
+    ).toBe(true);
+  });
 });
