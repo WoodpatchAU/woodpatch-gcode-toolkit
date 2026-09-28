@@ -56,6 +56,91 @@ SPDX-License-Identifier: MIT
         <section id="summary-box" class="summary-box" aria-label="Program summary" tabindex="0">
           <div id="summary" class="summary"></div>
         </section>
+        <details id="transform-box" class="transform-box">
+          <summary>Transform</summary>
+          <form id="transform" class="transform" autocomplete="off">
+            <label>
+              Operation
+              <select id="op">
+                <option value="translate">Move</option>
+                <option value="rotate">Rotate</option>
+                <option value="mirror">Mirror</option>
+                <option value="scale">Scale</option>
+              </select>
+            </label>
+            <fieldset data-op="translate">
+              <legend>Move by (mm)</legend>
+              <label>X <input name="tx" type="number" step="any" value="0" /></label>
+              <label>Y <input name="ty" type="number" step="any" value="0" /></label>
+              <label>Z <input name="tz" type="number" step="any" value="0" /></label>
+            </fieldset>
+            <fieldset data-op="rotate" hidden>
+              <legend>Rotate (counter-clockwise, seen from above)</legend>
+              <label>Degrees <input name="deg" type="number" step="any" value="90" /></label>
+              <label>About X <input name="rx" type="number" step="any" value="0" /></label>
+              <label
+                >Y <input name="ry" type="number" step="any" value="0" aria-label="About Y"
+              /></label>
+            </fieldset>
+            <fieldset data-op="mirror" hidden>
+              <legend>Mirror</legend>
+              <label>
+                Flip
+                <select name="axis">
+                  <option value="x">X (left ↔ right)</option>
+                  <option value="y">Y (front ↔ back)</option>
+                </select>
+              </label>
+              <label>About (mm) <input name="mabout" type="number" step="any" value="0" /></label>
+            </fieldset>
+            <fieldset data-op="scale" hidden>
+              <legend>Scale by</legend>
+              <label
+                >X <input name="sx" type="number" step="any" value="1" aria-label="Scale X"
+              /></label>
+              <label
+                >Y
+                <input
+                  name="sy"
+                  type="number"
+                  step="any"
+                  placeholder="same as X"
+                  aria-label="Scale Y"
+              /></label>
+              <label
+                >Z <input name="sz" type="number" step="any" placeholder="1" aria-label="Scale Z"
+              /></label>
+              <label
+                >About X <input name="ax" type="number" step="any" value="0" aria-label="About X"
+              /></label>
+              <label
+                >Y <input name="ay" type="number" step="any" value="0" aria-label="About Y"
+              /></label>
+              <label
+                >Z <input name="az" type="number" step="any" value="0" aria-label="About Z"
+              /></label>
+            </fieldset>
+            <div class="actions">
+              <button id="apply" type="submit">Apply</button>
+              <button id="undo" type="button" disabled>Undo</button>
+              <button id="redo" type="button" disabled>Redo</button>
+              <label class="check"
+                ><input id="ghost" type="checkbox" checked /> Show original</label
+              >
+            </div>
+            <p id="transform-status" class="transform-status" role="status" aria-live="polite"></p>
+            <ol id="recipe" class="recipe" aria-label="Transforms applied"></ol>
+            <ol id="transform-notes" class="diagnostics" aria-label="Transform messages"></ol>
+            <div class="actions">
+              <button id="export-recipe" type="button" disabled>Save recipe</button>
+              <label class="file">
+                Apply recipe…
+                <input id="import-recipe" type="file" accept=".json,application/json" />
+              </label>
+              <button id="save-gcode" type="button">Save G-code</button>
+            </div>
+          </form>
+        </details>
         <section id="editor" class="editor" aria-label="G-code"></section>
       </div>
       <section id="view" class="view" aria-label="Toolpath">

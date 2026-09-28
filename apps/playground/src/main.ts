@@ -3,7 +3,7 @@
 
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { foldGutter, foldKeymap } from '@codemirror/language';
-import { EditorState } from '@codemirror/state';
+import { Annotation, EditorState } from '@codemirror/state';
 import {
   drawSelection,
   EditorView,
@@ -23,6 +23,7 @@ import {
 } from '@woodpatch/gcode-viewer';
 import { installStats } from './stats.js';
 import { renderSummary } from './summary.js';
+import { installTransformPanel } from './transforms.js';
 
 /**
  * The public playground (parcel 3c, ADR-0028): the viewer and the editor in sync.
@@ -56,9 +57,14 @@ const highlight = (n: number | null) => {
   viewer.highlightLine(n);
   plan.highlightLine(n);
 };
-const loader = new ProgramLoader(
-  () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
-);
+// One worker script, written once here so the bundler emits it once: the loader, the
+// transform panel and the original's loader each run their own instance of it.
+const makeWorker = () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+const loader = new ProgramLoader(makeWorker);
+/** Marks the editor changes the page makes itself (a file opened, a transform). */
+const programmatic = Annotation.define<boolean>();
+let currentName = 'program.nc';
+let currentView: ViewName = 'iso';
 
 /**
  * The core's own limit for public input is 20 MB (plan §4.8). It applies to every way
@@ -119,7 +125,9 @@ const editor = new EditorView({
       }),
       // Re-read the program a moment after the user stops typing.
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) scheduleReload();
+        if (!u.docChanged) return;
+        if (!u.transactions.some((t) => t.annotation(programmatic))) panel.handEdited();
+        scheduleReload();
       }),
     ],
   }),
@@ -215,12 +223,22 @@ function goToLine(n: number): void {
   highlight(n);
 }
 
-/** Replaces the editor's text (a file or a sample) and reads it at once. */
-function open(text: string, name: string): void {
-  editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: text } });
+/** Replaces the editor's text and reads it at once. Not an edit by hand. */
+function replaceText(text: string): void {
+  editor.dispatch({
+    changes: { from: 0, to: editor.state.doc.length, insert: text },
+    annotations: programmatic.of(true),
+  });
   clearTimeout(timer);
-  document.title = `${name} · G-code Playground`;
   void reload();
+}
+
+/** Opens a file or a sample: new text, and a new transform history. */
+function open(text: string, name: string): void {
+  currentName = name;
+  document.title = `${name} · G-code Playground`;
+  panel.reset();
+  replaceText(text);
 }
 
 async function openSample(name: string): Promise<void> {
@@ -248,7 +266,10 @@ $<HTMLInputElement>('file').addEventListener('change', (e) => {
 sampleSel.addEventListener('change', () => {
   if (sampleSel.value) void openSample(sampleSel.value);
 });
-dialectSel.addEventListener('change', () => void reload());
+dialectSel.addEventListener('change', () => {
+  panel.dialectChanged();
+  void reload();
+});
 const viewButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-view]')];
 for (const b of viewButtons)
   b.addEventListener('click', () => {
@@ -258,7 +279,8 @@ for (const b of viewButtons)
       else plan.fit(); // already showing: a second click re-frames
     } else {
       planEl.hidden = true;
-      viewer.setView(name as ViewName);
+      currentView = name as ViewName;
+      viewer.setView(currentView);
     }
     for (const x of viewButtons) x.setAttribute('aria-pressed', String(x === b));
   });
@@ -285,6 +307,27 @@ document.addEventListener(
     if (f) void openFile(f);
   },
   { capture: true },
+);
+
+// The transform panel (parcel 4e, ADR-0038).
+const panel = installTransformPanel(
+  {
+    getText: () => editor.state.doc.toString(),
+    setText: replaceText,
+    dialect: () => dialectSel.value,
+    setGhost: (p) => {
+      viewer.setGhost(p);
+      plan.setGhost(p);
+      // Frame the original too, when it appears.
+      if (p) {
+        viewer.setView(currentView);
+        plan.fit();
+      }
+    },
+    goToLine,
+    fileName: () => currentName,
+  },
+  makeWorker,
 );
 
 sampleSel.value = 'tux.ngc';

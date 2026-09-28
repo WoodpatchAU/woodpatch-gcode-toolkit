@@ -55,7 +55,8 @@ body {
   max-width: 13rem;
 }
 select,
-button {
+button,
+input[type='number'] {
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--line);
@@ -92,9 +93,65 @@ button:hover:not(:disabled) {
 }
 .left {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 0;
   border-right: 1px solid var(--line);
+}
+/* The transform panel (parcel 4e): closed by default, so it costs one line and can't
+   shift the layout on load; open, it scrolls inside a capped height. */
+.transform-box {
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 0.9em;
+}
+.transform-box > summary {
+  cursor: pointer;
+  padding: 0.3rem 0.6rem;
+}
+.transform {
+  display: grid;
+  gap: 0.4rem;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 0 0.6rem 0.5rem;
+}
+.transform fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.6rem;
+  margin: 0;
+  border: 1px solid var(--line);
+}
+.transform fieldset[hidden] {
+  display: none;
+}
+.transform input[type='number'] {
+  width: 5.5rem;
+}
+.transform label {
+  color: var(--muted);
+}
+.transform .file input {
+  max-width: 9rem;
+}
+.transform .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.recipe {
+  margin: 0;
+  padding-left: 1.4rem;
+}
+.transform-status {
+  margin: 0;
+  color: var(--muted);
+  min-height: 1.2em;
+}
+.recipe:empty,
+#transform-notes:empty {
+  display: none;
 }
 /* The summary sits above the code, always in view. A fixed height (scrolling inside),
    not one that grows as it fills in after load: growing would push the editor down,

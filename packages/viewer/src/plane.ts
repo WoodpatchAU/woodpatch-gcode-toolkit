@@ -3,6 +3,7 @@
 
 import { VERTEX_ARC, VERTEX_RAPID } from '@woodpatch/gcode-core';
 import type { LoadedProgram } from './program.js';
+import { unionBox } from './view.js';
 
 /**
  * The maths of the 2D plan view (parcel 3d, ADR-0029), kept pure so it's testable
@@ -43,8 +44,13 @@ export function toWorld(
 }
 
 /** The transform that fits the program's XY box in a w × h view, with a margin. */
-export function fitTransform(p: LoadedProgram | null, w: number, h: number): Transform {
-  const b = p?.bounds.all;
+export function fitTransform(
+  p: LoadedProgram | null,
+  w: number,
+  h: number,
+  also?: LoadedProgram | null,
+): Transform {
+  const b = unionBox(p?.bounds.all, also?.bounds.all);
   if (!b) return { scale: 1, cx: 0, cy: 0 };
   const dx = Math.max(b.max.X - b.min.X, 1e-3);
   const dy = Math.max(b.max.Y - b.min.Y, 1e-3);

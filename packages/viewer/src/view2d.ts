@@ -46,6 +46,7 @@ export class GcodeView2D {
   private readonly observer: ResizeObserver;
   private readonly pickListeners = new Set<(e: PickEvent) => void>();
   private program: LoadedProgram | null = null;
+  private ghost: LoadedProgram | null = null;
   private index: LineIndex | null = null;
   private highlighted: number | null = null;
   private t: Transform = { scale: 1, cx: 0, cy: 0 };
@@ -91,10 +92,21 @@ export class GcodeView2D {
     this.fit();
   }
 
-  /** Frames the whole path. */
+  /**
+   * Draws another program faintly behind this one, in one colour (the original under a
+   * transformed result). It can't be picked, and `fit` frames both. Null clears it. The
+   * view isn't re-framed: `setProgram` or `fit` does that.
+   */
+  setGhost(program: LoadedProgram | null): void {
+    if (this.disposed) return;
+    this.ghost = program;
+    this.requestRender();
+  }
+
+  /** Frames the whole path, and the ghost if there is one. */
   fit(): void {
     if (this.disposed) return;
-    this.t = fitTransform(this.program, this.w, this.h);
+    this.t = fitTransform(this.program, this.w, this.h, this.ghost);
     // A fit while hidden (no size) doesn't count: fit again once there's a size.
     this.fitted = this.program !== null && this.hasSize();
     this.requestRender();
@@ -144,6 +156,7 @@ export class GcodeView2D {
     this.canvas.remove();
     this.pickListeners.clear();
     this.program = null;
+    this.ghost = null;
     this.index = null;
     this.disposed = true;
   }
@@ -163,6 +176,17 @@ export class GcodeView2D {
     ctx.fillStyle = css(palette.background);
     ctx.fillRect(0, 0, w, h);
     this.drawGrid();
+    const g = this.ghost;
+    if (g && g.count >= 2) {
+      // Under everything, one faint stroke.
+      ctx.beginPath();
+      for (let i = 0; i + 1 < g.count; i++) this.segment(g, i);
+      ctx.strokeStyle = css(palette.ghost);
+      ctx.globalAlpha = 0.45;
+      ctx.lineWidth = this.options.lineWidth ?? 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
     const p = this.program;
     if (!p || p.count < 2) return;
     // One path per colour: three strokes for the whole program, not one per segment.
