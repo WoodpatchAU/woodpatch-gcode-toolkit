@@ -101,6 +101,17 @@ export function arcsToLines(
       if (s.kind === 'arc')
         (executions.get(s.line) ?? executions.set(s.line, []).get(s.line))?.push(s);
     }
+    // A run that stopped never saw the rest: an arc there, or one that runs again after
+    // the stop in other modes, would be converted blind (review of #37 and #40).
+    if (!run.completed) {
+      const why = [...run.diagnostics].reverse().find((d) => d.severity === 'error');
+      error(
+        why?.line ?? 0,
+        'TRANSFORM_CONTROL_FLOW',
+        `The preview's run stopped here${why ? ` (${why.message})` : ''}, so the arcs after it can't be checked. Refusing`,
+      );
+      break;
+    }
   }
   // Control flow, for the modal G2/G3 rule below.
   const flow = program.lines.some((l) =>
@@ -203,11 +214,14 @@ export function arcsToLines(
         'TRANSFORM_CONTROL_FLOW',
         `This arc runs in different modes on different runs (${lineModes.map(describe).join('; ')}): a subroutine called under different modes, or a block-deleted ("/") mode change before it. No one set of chords is right. Refusing`,
       );
-    const { units, absolute, comp } = lineModes[0] ?? {
-      units: assume,
-      absolute: true,
-      comp: false,
-    };
+    // Every executed arc was reported with its modes; never fall back to a default.
+    const first = lineModes[0];
+    if (!first) {
+      error(n, 'TRANSFORM_CONTROL_FLOW', "The run didn't report this arc's modes. Refusing");
+      out.push(line.text + line.eol);
+      continue;
+    }
+    const { units, absolute, comp } = first;
     if (comp)
       error(
         n,
