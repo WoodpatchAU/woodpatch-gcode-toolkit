@@ -267,7 +267,10 @@ export function corpusSuite(entries: [string, Dialect][]): void {
             expect(a.kind).toBe(b.kind);
             for (const k of ['X', 'Y', 'Z'] as const)
               expect(Math.abs(a.to[k] - b.to[k]), `${at} ${k}`).toBeLessThan(0.002);
-            if (a.kind === 'arc' && b.kind === 'arc') expect(a.clockwise).toBe(b.clockwise);
+            if (a.kind === 'arc' && b.kind === 'arc') {
+              expect(a.clockwise).toBe(b.clockwise);
+              expect(a.turns, `${at} turns`).toBe(b.turns);
+            }
             const fb = b.kind === 'arc' || !b.rapid ? b.feed : null;
             const fa = a.kind === 'arc' || !a.rapid ? a.feed : null;
             if (fb?.mode === 'per-minute' && fa?.mode === 'per-minute')

@@ -1768,6 +1768,24 @@ RUNS, and compares only what it models. So:
 - **A Masso program-number header** (a lone `O1234` on the first line of code) is
   allowed. Every other O-word on Masso is still refused.
 
+**Corrected in the sixth review.**
+
+- **G64's P and Q are converted only where G64 is their only reader on the line.**
+  That's an allow-list. Beside G0/G1, the plane, units, distance, feed-mode, offset and
+  path-control codes, it converts. Beside anything else it's refused: an arc (its P is
+  turns, explicit or modal), a cycle, G10 (its P), or any M code (M64's output number,
+  M66's input and timeout, user M-codes). The previous round's list of dwell readers
+  missed those.
+- **A final check: the result must run as the original did, line for line.** The same
+  steps, arcs with the same turns, and dwells of the same length. This catches what no
+  word rule can see. For example, `Q0.0123` in → `Q0.312` mm turns 10 pecks into 11.
+- **Converted values beyond ±1,000,000 are refused** (`TRANSFORM_OUT_OF_RANGE`), as
+  for the other transforms (ADR-0033). `formatConverted` throws rather than write an
+  exponent.
+- **The Masso header must be alone on its line** (comments aside). With anything else
+  on the line, the preview drops the whole line, units word and all.
+- The corpus check compares arcs' turns too.
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long

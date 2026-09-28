@@ -58,6 +58,7 @@ function roundTo(v: number, places: number): number {
  * style (".5") and no negative zero, as {@link formatLike}.
  */
 export function formatConverted(value: number, source: string, places: number): string {
+  assertWritable(value);
   const f = 10 ** places;
   let text = (Math.round(value * f) / f).toFixed(places);
   if (text.includes('.')) text = text.replace(/0+$/, '');

@@ -6,7 +6,7 @@ import { interpret } from '../interp/interpret.js';
 import { editLine, parse, write, type LineEdit } from '../syntax/program.js';
 import type { ModalState } from '../interp/types.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
-import { formatConverted } from './format.js';
+import { formatConverted, MAX_WRITTEN, writable } from './format.js';
 
 /**
  * Units conversion (parcel 4b, ADR-0034): every length and feed the program writes,
@@ -31,8 +31,11 @@ const UNITS_G = new Set([
   91, 91.1, 92, 92.1, 92.2, 92.3, 93, 94, 95, 97, 98, 99,
 ]);
 const CYCLES = new Set([73, 81, 82, 83, 84, 85, 86, 89]);
-/** Cycles whose P is a dwell at the bottom, in seconds (or ms on Masso). */
-const DWELL_CYCLES = new Set([82, 86, 89]);
+/** G codes that read neither P nor Q: beside them, G64's P and Q are G64's alone. */
+const NO_PQ_READER = new Set([
+  0, 1, 17, 18, 19, 20, 21, 40, 49, 54, 55, 56, 57, 58, 59, 59.1, 59.2, 59.3, 61, 61.1, 64, 80, 90,
+  90.1, 91, 91.1, 93, 94, 95, 97,
+]);
 const MOTION = new Set([0, 1, 2, 3, 38.2, 73, 80, 81, 82, 83, 84, 85, 86, 89]);
 /**
  * Codes that take some of the line's words themselves, and which ones: those words are
@@ -90,10 +93,14 @@ export function convertUnits(
   const flowError = (line: number, message: string) => {
     if (++flowErrors <= 20) error(line, 'TRANSFORM_CONTROL_FLOW', message);
   };
-  // A lone program number on the first line of code (Masso's O1234 header) is harmless.
-  const firstCode = program.lines.find((l) =>
+  // A program number ALONE on the first line of code (Masso's O1234 header, comments
+  // aside) is harmless. With anything else on its line, the preview drops the whole line.
+  const first0 = program.lines.find((l) =>
     l.tokens.some((t) => t.kind === 'word' || t.kind === 'oword'),
-  )?.lineNo;
+  );
+  const firstCode = first0?.tokens.every((t) => t.kind === 'oword' || t.kind === 'comment')
+    ? first0.lineNo
+    : undefined;
   for (const line of program.lines)
     for (const t of line.tokens) {
       // Without O-words, the controller (and the preview) skips these lines and runs a
@@ -263,6 +270,15 @@ export function convertUnits(
       (motion === 2 || motion === 3) &&
       (axes || has('I') || has('J') || has('K') || has('R'));
     const m66 = words.some((w) => w.letter === 'M' && num0(w) === 66);
+    // G64's P and Q are converted only where G64 is their ONLY reader on the line: an
+    // allow-list, so a reader nobody thought of is refused, not converted (review of #37:
+    // an arc's turns, M64's output number and G10's P all read the same P).
+    const g64Shared = (): boolean =>
+      gs.has(64) &&
+      (words.some((w) => w.letter === 'M') ||
+        [...gs].some((g) => !NO_PQ_READER.has(g)) ||
+        arc ||
+        cycleRuns);
     const cycleRuns = !offsetLine && motion !== null && CYCLES.has(motion) && axes;
     const lengthFactor = factor(units, to);
     // F is read in the units in force before the line (or, on end-of-line controllers,
@@ -320,6 +336,14 @@ export function convertUnits(
         }
         f = lengthFactor;
       } else if (L === 'Q') {
+        if (gs.has(64) && g64Shared()) {
+          error(
+            n,
+            'TRANSFORM_UNSUPPORTED_WORD',
+            "Q here is G64's naive-CAM tolerance, but something else on this line reads Q too (a cycle's peck, an M code…). Put G64 on a line of its own",
+          );
+          continue;
+        }
         if (!cycleRuns && !gs.has(64)) {
           // M66's timeout isn't a length. On other lines a Q is the modal motion's, which
           // the run-time check compares (a cycle's peck), or ignored by it (a G1).
@@ -338,11 +362,11 @@ export function convertUnits(
         if (!gs.has(64)) continue; // dwell, turns, an index…
         // LinuxCNC reads one P for both G64's tolerance (a length) and a dwell (seconds)
         // on the same line: no conversion of it is right (review of #37).
-        if (gs.has(4) || (motion !== null && DWELL_CYCLES.has(motion))) {
+        if (g64Shared()) {
           error(
             n,
             'TRANSFORM_UNSUPPORTED_WORD',
-            "P here is both G64's blending tolerance (a length) and a dwell (seconds): no conversion of it is right. Put G64 on a line of its own",
+            "P here is G64's blending tolerance, but something else on this line reads P too (a dwell, an arc's turns, an M code…): no one conversion of it is right. Put G64 on a line of its own",
           );
           continue;
         }
@@ -367,7 +391,8 @@ export function convertUnits(
       // a carry can't work: refuse unless the value converts exactly.
       let target = exact;
       if (axis) {
-        const loose = Math.abs(Number(formatConverted(exact, src, places)) - exact) > 1e-9;
+        const loose =
+          writable(exact) && Math.abs(Number(formatConverted(exact, src, places)) - exact) > 1e-9;
         if (loose && (flow || repeats)) {
           error(
             n,
@@ -377,6 +402,16 @@ export function convertUnits(
           continue;
         }
         target = exact + carry[axis];
+      }
+      // Beyond what any controller reads (ADR-0033's MAX_WRITTEN): refuse, never write
+      // an exponent (review of #37, after the same fix to the other transforms).
+      if (!writable(target)) {
+        error(
+          n,
+          'TRANSFORM_OUT_OF_RANGE',
+          `${L} would be ${Number.isFinite(target) ? String(target) : 'infinite'}: beyond ±${MAX_WRITTEN.toLocaleString('en-AU')}, no controller reads it. Refusing`,
+        );
+        continue;
       }
       const text = formatConverted(target, src, places);
       // A feed, a peck (Q) or a blending tolerance (G64 P/Q) that rounds to zero means
@@ -493,6 +528,37 @@ export function convertUnits(
       stated = true;
     }
   }
+  // Finally, the result must RUN as the original did, line for line: the same steps,
+  // arcs with the same turns, dwells of the same length. It catches what no word-by-word
+  // rule can see, such as a rounded peck depth that adds a peck (review of #37).
+  const runs = (p: Program, units: Units) => {
+    const m = new Map<number, string[]>();
+    for (const st of interpret(p, { dialect, units, blockDelete: false }).steps) {
+      if (st.file) continue;
+      const k =
+        st.kind === 'arc'
+          ? `arc×${st.turns}`
+          : st.kind === 'dwell'
+            ? `dwell ${st.seconds}s`
+            : st.kind;
+      (m.get(st.line) ?? m.set(st.line, []).get(st.line))?.push(k);
+    }
+    return m;
+  };
+  const was = runs(program, assume);
+  const now = runs(result, to);
+  const moved = (n: number) => (stated && first && n >= first.lineNo ? n + 1 : n);
+  for (const [n, steps] of was) {
+    const after = now.get(moved(n)) ?? [];
+    if (after.join() !== steps.join())
+      error(
+        n,
+        'TRANSFORM_UNITS_CHANGED',
+        `This line runs differently once converted (${steps.length} steps, then ${after.length}; e.g. a rounded peck adds a peck). Refusing`,
+      );
+  }
+  if (errors.length) return { ok: false, program, diagnostics: errors };
+
   // Warn when the ORIGINAL relied on the preference (the interpreter's own rule).
   if (assumed)
     notes.push({

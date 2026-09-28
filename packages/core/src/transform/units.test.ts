@@ -438,7 +438,7 @@ describe('units: the fifth review of #37', () => {
     for (const src of ['G21\nG4 G64 P1\nM2', 'G21 G90\nG64 G82 X0 Y0 Z-2 R1 P1 F100\nM2']) {
       const r = u(src, 'inch', 'mm', LINUXCNC);
       expect(r.ok, src).toBe(false);
-      expect(r.diagnostics[0]?.message).toContain('both G64');
+      expect(r.diagnostics[0]?.message).toContain('something else on this line reads P');
     }
     // Apart, both are fine: G64 P converts, the dwell stays.
     expect(u('G21\nG64 P0.254\nG4 P1\nM2', 'inch').text).toBe('G20\nG64 P0.01\nG4 P1\nM2');
@@ -455,5 +455,64 @@ describe('units: the fifth review of #37', () => {
   it('allows a Masso program-number header, and no other O-word', () => {
     expect(u('O1234\nG21 G90\nG1 X1 F100\nM30', 'inch', 'mm', MASSO_G3).ok).toBe(true);
     expect(u('G21 G90\nO1234\nG1 X1 F100\nM30', 'inch', 'mm', MASSO_G3).ok).toBe(false);
+  });
+});
+
+describe('units: the sixth review of #37', () => {
+  const refused = (
+    src: string,
+    to: 'mm' | 'inch',
+    code: string,
+    line: number,
+    d: Dialect = LINUXCNC,
+  ) => {
+    const r = u(src, to, 'mm', d);
+    expect(r.ok, src).toBe(false);
+    expect(r.text).toBe(src);
+    expect(
+      r.diagnostics.map((x) => `${x.code}@${x.line}`),
+      src,
+    ).toContain(`${code}@${line}`);
+  };
+
+  it("converts G64's P and Q only where nothing else on the line reads them", () => {
+    // An arc's turns (explicit and modal), an output number, G10's P, M66's input and timeout.
+    refused(
+      'G20 G90 G17\nG0 X0 Y0\nG64 G2 X0.2 Y0 I-0.2 J0 P5 F10\nM2',
+      'mm',
+      'TRANSFORM_UNSUPPORTED_WORD',
+      3,
+    );
+    refused(
+      'G21 G90\nG0 X0 Y0\nG2 X10 Y0 I-5 J0 F100\nG64 X20 Y0 I-5 J0 P2\nM2',
+      'inch',
+      'TRANSFORM_UNSUPPORTED_WORD',
+      4,
+    );
+    refused('G21\nG64 M64 P1\nM2', 'inch', 'TRANSFORM_UNSUPPORTED_WORD', 2);
+    refused('G21\nG64 G10 L20 P2 X0\nM2', 'inch', 'TRANSFORM_UNSUPPORTED_WORD', 2);
+    refused('G21\nG64 M66 P1 L3 Q5\nM2', 'inch', 'TRANSFORM_UNSUPPORTED_WORD', 2);
+    // Alone, or beside codes that read neither, it converts.
+    expect(u('G21\nG64 P0.254 Q0.0254\nM2', 'inch').text).toBe('G20\nG64 P0.01 Q0.001\nM2');
+    expect(u('G21 G90\nG1 G64 P0.254 X1 F100\nM2', 'inch').ok).toBe(true);
+  });
+
+  it('a Masso header must be alone on its line (comments aside)', () => {
+    refused('O1234 G20\nG1 X1 F10\nM30', 'mm', 'TRANSFORM_CONTROL_FLOW', 1, MASSO_G3);
+    refused('N10 O1234 G21\nG1 X1 F10\nM30', 'inch', 'TRANSFORM_CONTROL_FLOW', 1, MASSO_G3);
+    expect(u('O1234 (part)\nG21 G90\nG1 X1 F100\nM30', 'inch', 'mm', MASSO_G3).ok).toBe(true);
+  });
+
+  it('refuses a line that runs differently once converted: a rounded peck adds a peck', () => {
+    refused(
+      'G20 G90\nG0 X0 Y0 Z0.1\nG83 X0 Y0 Z-0.123 R0 Q0.0123 F10\nG80\nM2',
+      'mm',
+      'TRANSFORM_UNITS_CHANGED',
+      3,
+    );
+  });
+
+  it('refuses a converted value no controller reads (after the fix to the other transforms)', () => {
+    refused('G20\nG1 X99999999999999999999 F10\nM2', 'mm', 'TRANSFORM_OUT_OF_RANGE', 2);
   });
 });
