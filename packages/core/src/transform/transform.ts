@@ -318,12 +318,28 @@ function applyOne(program: Program, op: TransformOp, dialect: Dialect) {
 
     // A move while an axis the op changes sits at an untransformed machine position.
     if (moves) {
+      // An absolute word states where the tool goes, except a canned cycle's Z: that's
+      // the hole's bottom, and the cycle rapids across at (and may return to) the
+      // height it started from.
       const recommanded = absolute
-        ? new Set(axisWords.filter(([, w]) => w).map(([a]) => a))
+        ? new Set(axisWords.filter(([a, w]) => w && !(cycle && a === 'Z')).map(([a]) => a))
         : new Set<Axis>();
       const stale = [...untransformed].filter((a) => !recommanded.has(a) && touches(a));
+      // The usual tool-change pattern: a machine or home retract in Z only, then rapids
+      // to the next position. A rapid with no Z word travels at that retract height in
+      // BOTH programs, which is physically what's intended, so it's allowed (review of
+      // #33). A feed move, a cycle, or any Z word before Z is given again absolutely is
+      // still refused: it would cut, or step from, a height the map doesn't account for.
+      const retractTravel =
+        stale.length === 1 && stale[0] === 'Z' && motion === 0 && !arc && !cycle && !Z;
+      if (retractTravel)
+        warn(
+          n,
+          'TRANSFORM_RETRACT_TRAVEL',
+          'Rapids after a machine-coordinate or home Z retract travel at that retract height, which the Z translation or scale leaves where it is. The first absolute Z after it is transformed',
+        );
       // X and Y move together under a rotation: a re-commanded X with a stale Y is stale.
-      if (stale.length)
+      else if (stale.length)
         error(
           n,
           'TRANSFORM_UNKNOWN_POSITION',

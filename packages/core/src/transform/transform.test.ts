@@ -236,6 +236,42 @@ describe('what a transform leaves alone, and what stops it', () => {
     );
   });
 
+  it('lets rapids travel at a Z retract height under a Z translation, and nothing else', () => {
+    // Review of #33: every real job retracts for a tool change; strict refusal made Z
+    // translation unusable. Rapids with no Z word travel at the retract height.
+    const job = 'G21 G90\nG53 G0 Z0\nG0 X10 Y10\nG0 Z5\nG1 Z-1 F100\nG1 X20';
+    const r = t(job, [{ op: 'translate', z: -2 }], MASSO_G3);
+    expect(r.ok).toBe(true);
+    expect(r.text).toBe('G21 G90\nG53 G0 Z0\nG0 X10 Y10\nG0 Z3\nG1 Z-3 F100\nG1 X20');
+    expect(codes(r)).toContain('TRANSFORM_RETRACT_TRAVEL');
+    // A feed move at the retract height, an incremental Z, or a cycle: still refused.
+    for (const next of ['G1 X10 F100', 'G91 G0 Z-5', 'G81 X10 Y10 Z-1 R2 F100'])
+      expect(codes(t(`G21 G90\nG53 G0 Z0\n${next}`, [{ op: 'translate', z: -2 }]))).toContain(
+        'TRANSFORM_UNKNOWN_POSITION',
+      );
+    // XY still untransformed: rapids aren't exempt.
+    expect(codes(t('G21 G90\nG53 G0 X0 Y0\nG0 X10', [{ op: 'translate', x: 1 }]))).toContain(
+      'TRANSFORM_UNKNOWN_POSITION',
+    );
+  });
+
+  it('refuses the Masso G68 rotations the review found changing R (pinned as found)', () => {
+    const cycle = t(
+      'G21 G90 G81 Z-1 R2 F100\nG68 X10 Y0 R30',
+      [{ op: 'translate', z: 1 }],
+      MASSO_G3,
+    );
+    expect(cycle.ok).toBe(false);
+    expect(cycle.diagnostics.find((d) => d.code === 'TRANSFORM_UNSUPPORTED_CODE')?.line).toBe(2);
+    const arc = t(
+      'G21 G90 G0 X0 Y0\nG2 X10 Y0 I5 J0 F100\nG68 X10 Y0 R30',
+      [{ op: 'scale', x: 2 }],
+      MASSO_G3,
+    );
+    expect(arc.ok).toBe(false);
+    expect(codes(arc)).toContain('TRANSFORM_UNSUPPORTED_CODE');
+  });
+
   it('leaves G28/G30 as written: a quarter turn must not home a different axis', () => {
     const r = t('G21 G90 G0 X1 Y1\nG28 G91 X0\nG90 G0 X2 Y2', [{ op: 'rotate', degrees: 90 }]);
     expect(r.ok).toBe(true);
