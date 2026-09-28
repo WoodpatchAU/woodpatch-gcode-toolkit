@@ -1598,3 +1598,66 @@ approximation.
 **Performance.** 2.2 s for a quarter turn of the 224k-line sample, mostly re-tokenizing
 217k changed lines. It's acceptable in a worker for now; a later parcel can avoid the
 re-tokenizing.
+
+## ADR-0035: Whole-job checks
+
+**Status:** Accepted, 2026-09-28. Operator request.
+
+**Decision.** `programChecks(program, result, dialect)` in the core reports what a
+controller needs to run a job start to finish, as warnings:
+
+- `PROGRAM_END`: the job doesn't end the way the controller needs.
+  - **Masso finishes a job only on M30.** Without it, the job never finishes (the
+    operator, on the machine), and M2 is warned about too.
+  - LinuxCNC and generic accept M2 or M30.
+- `PROGRAM_SPINDLE_ON_AT_END`: the spindle is still on when the job ends. Masso expects
+  M5 before M30.
+- `PROGRAM_SPINDLE_NO_SPEED`: M3/M4 with no S programmed yet, or at S0. All controllers.
+  The message notes that a router whose speed is set by hand will expect this.
+- `PROGRAM_CUT_SPINDLE_OFF`: the job cuts (a feed move or arc) with the spindle never
+  started, or stopped. All controllers. Rapids don't count. The message allows that an
+  air cut or test may intend it.
+
+The checks are **dialect data** (`InterpreterRules.programChecks`: which end code,
+whether M5 must come first, whether a tool change stops the spindle, whether to check
+speeds and the spindle while cutting). So they vary by controller, and a
+custom controller (roadmap) will set them.
+
+- **Separate from `interpret`.** The interpreter reports what each line does; these
+  judge a whole job. So the viewer's `loadProgram`, which loads jobs, runs them, and
+  the playground shows them with the other diagnostics. A snippet (a test, a transform,
+  a parity check) isn't told it lacks an M30.
+- **On real jobs:** the operator's BB and MillMage programs (ending `M5`, then `M30`)
+  raise nothing. The Masso machine-test air cut and upstream's Tux, neither of which
+  starts the spindle, are flagged.
+- **Still to confirm on the machine:** what Masso does with M2, and with no end code,
+  and whether it stops the spindle itself at M30. Masso's documentation describes M30
+  as "end the program and rewind" (with L repeats) and M02 as "program end", and says
+  nothing more.
+
+**Corrected in review.** The first version missed the two ways a job actually cuts
+with the spindle stopped, and gave a false end warning. Fixed:
+
+- **A tool change stops the spindle.** LinuxCNC's M6: "When the tool change is
+  complete: The spindle will be stopped." That's `toolChangeStopsSpindle`: true for
+  LinuxCNC, and for Masso too. Masso's docs ask for M5 before M6, and what it does
+  without one is unconfirmed, so it's assumed to stop (the safe way round). This is on
+  the machine-test list.
+- **The checks follow the run into subprogram files.** A Masso M98 is always a file, so
+  skipping them skipped Masso's subprograms entirely. A warning raised in a file names
+  it.
+- **A run cut short skips the end checks.** When the interpreter stopped early (a
+  subprogram the host didn't supply, a safety limit), it never reached the end. So
+  `InterpretResult.completed` is new, and the end checks run only when it's true. The
+  error that stopped the run already says why.
+- **The cut warning re-arms** on every M3/M4, M5 and tool change. So a harmless early
+  move can't use it up and hide a plunge after the next tool change. The speed warning
+  is still once per job.
+- **Fewer false alarms.** A feed move that only raises Z isn't a cut, and neither is a
+  G53 move in the main program (machine positioning). A file ending at a closing `%` on
+  LinuxCNC gets its own message: that ends the run, but doesn't reset the machine. An
+  M99 ending gets its own message too. An empty file raises nothing.
+- A dialect without `programChecks` (built before it existed) gets LinuxCNC's.
+- **Known limit:** a plasma or laser on Masso runs M3 without S. It gets
+  `PROGRAM_SPINDLE_NO_SPEED`, and the message says that's expected there. A custom
+  controller (roadmap) can turn the check off.

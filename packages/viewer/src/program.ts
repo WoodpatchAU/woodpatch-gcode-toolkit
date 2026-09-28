@@ -7,6 +7,7 @@ import {
   interpret,
   parse,
   pathBounds,
+  programChecks,
   summarise,
   tessellate,
   type Diagnostic,
@@ -74,7 +75,13 @@ export function loadProgram(text: string, options: LoadOptions = {}): LoadedProg
     if (s && s.file === undefined) vertexLine[v] = s.line;
   }
   const bounds = pathBounds(result.steps);
-  const diagnostics: Diagnostic[] = [...program.diagnostics, ...result.diagnostics];
+  // Whole-job checks (ADR-0035): the end code the controller needs, and the spindle
+  // while cutting. The viewer loads jobs, so it runs them.
+  const diagnostics: Diagnostic[] = [
+    ...program.diagnostics,
+    ...result.diagnostics,
+    ...programChecks(program, result, dialect),
+  ];
   const b = bounds.all;
   if (b && Math.max(b.max.X - b.min.X, b.max.Y - b.min.Y, b.max.Z - b.min.Z) > MAX_PLAUSIBLE_SPAN)
     diagnostics.push({

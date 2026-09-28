@@ -132,6 +132,9 @@ describe('implausible coordinates (reviewer, #20)', () => {
     expect(p.diagnostics.map((d) => d.code)).toContain('VIEW_SPAN_IMPLAUSIBLE');
     const s = buildSegments(p);
     expect(Array.from(s.positions).every(Number.isFinite)).toBe(true);
-    expect(loadProgram('G0 X1600 Y4000').diagnostics).toEqual([]);
+    // A large but real span: no span warning (the job checks may still have things to say).
+    expect(loadProgram('G0 X1600 Y4000').diagnostics.map((d) => d.code)).not.toContain(
+      'VIEW_SPAN_IMPLAUSIBLE',
+    );
   });
 });

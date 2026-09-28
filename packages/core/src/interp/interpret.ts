@@ -307,7 +307,12 @@ class Interpreter {
         message: `${this.suppressed} further diagnostic(s) not kept (limit ${this.limits.maxDiagnostics})`,
         line: 0,
       });
-    return { steps: this.steps, diagnostics: this.diagnostics, state: this.state() };
+    return {
+      steps: this.steps,
+      diagnostics: this.diagnostics,
+      state: this.state(),
+      completed: !this.stopped,
+    };
   }
 
   /**

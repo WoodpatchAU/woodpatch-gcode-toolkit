@@ -7,8 +7,10 @@ export * from './types.js';
 export {
   LINUXCNC_INTERPRETER_RULES,
   type InterpreterRules,
+  type ProgramChecks,
   type SubprogramRules,
 } from './rules.js';
+export { programChecks } from './checks.js';
 export {
   LINUXCNC_ARC_TOLERANCE,
   arcFromCentre,
