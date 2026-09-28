@@ -32,8 +32,20 @@ const UNITS_G = new Set([
 ]);
 const CYCLES = new Set([73, 81, 82, 83, 84, 85, 86, 89]);
 const MOTION = new Set([0, 1, 2, 3, 38.2, 73, 80, 81, 82, 83, 84, 85, 86, 89]);
-/** Codes that use the line's axis, P or Q words themselves, so no motion reads them. */
-const OWN_WORDS = new Set([4, 10, 28, 30, 52, 64, 92]);
+/**
+ * Codes that take some of the line's words themselves, and which ones: those words are
+ * not the modal motion's. Only those: G4 takes only P, so X/Y/Z/Q on a G4 line still
+ * belong to the modal motion, which runs after the dwell (review of #37).
+ */
+const OWN_WORDS: ReadonlyMap<number, string> = new Map([
+  [4, 'P'],
+  [64, 'PQ'],
+  [10, 'XYZLPR'],
+  [28, 'XYZ'],
+  [30, 'XYZ'],
+  [52, 'XYZ'],
+  [92, 'XYZ'],
+]);
 /** Letters that are never lengths. */
 const NOT_LENGTH = new Set(['G', 'M', 'N', 'T', 'H', 'D', 'S', 'A', 'B', 'C', 'L', 'O']);
 
@@ -70,8 +82,21 @@ export function convertUnits(
   const defined = new Set<string>();
   const calls: { name: string; line: number }[] = [];
   const inFileM98 = dialect.interpreter.subprograms.m98 !== 'file';
+  const oWords = dialect.interpreter.subprograms.oWord;
+  let flowErrors = 0;
+  /** Per-line control-flow refusals: the first 20 named, the rest counted at the end. */
+  const flowError = (line: number, message: string) => {
+    if (++flowErrors <= 20) error(line, 'TRANSFORM_CONTROL_FLOW', message);
+  };
   for (const line of program.lines)
     for (const t of line.tokens) {
+      // Without O-words, the controller (and the preview) skips these lines and runs a
+      // "sub" body inline, where the units line inserted above it doesn't reach.
+      if (t.kind === 'oword' && !oWords)
+        flowError(
+          line.lineNo,
+          "This controller has no O-word subroutines: it skips this line and runs a 'sub' body in place, so the conversion can't place its units safely. Refusing",
+        );
       if (t.kind === 'oword' && (t.keyword === 'sub' || t.keyword === 'call')) {
         const name = line.text.slice(t.label.start, t.label.end).toLowerCase().replace(/\s+/g, '');
         if (t.keyword === 'sub') defined.add(name);
@@ -84,10 +109,22 @@ export function convertUnits(
         t.value?.kind === 'number' &&
         (t.value.value === 98 || t.value.value === 99)
       )
-        error(
+        flowError(
           line.lineNo,
-          'TRANSFORM_CONTROL_FLOW',
           `M${t.value.value} (a subprogram in this file, Fanuc style) isn't run by the preview on this controller, so the modes its body runs in can't be checked. Refusing`,
+        );
+      // Masso's M99 ends a subprogram FILE: this file runs in its caller's units, and the
+      // units line added here would carry back into the caller.
+      if (
+        !inFileM98 &&
+        t.kind === 'word' &&
+        t.letter === 'M' &&
+        t.value?.kind === 'number' &&
+        t.value.value === 99
+      )
+        flowError(
+          line.lineNo,
+          "M99: this is a subprogram file. It runs in its caller's units, and a units line added here would carry back into the caller. Convert the program that calls it, with it",
         );
       if (
         t.kind === 'assignment' ||
@@ -125,10 +162,18 @@ export function convertUnits(
   // conversion of this one would leave in the old units.
   for (const c of calls)
     if (!defined.has(c.name))
-      error(
+      flowError(
         c.line,
-        'TRANSFORM_CONTROL_FLOW',
         `o${c.name} isn't defined in this file: it calls a subroutine in another file, which would stay in the old units`,
+      );
+  // A subroutine never called here is a library for other files: its body runs in
+  // their modes, which this file can't check.
+  const called = new Set(calls.map((c) => c.name));
+  for (const name of defined)
+    if (!called.has(name))
+      flowError(
+        0,
+        `o${name} is defined but never called in this file: it's a library for other programs, whose modes can't be checked here. Refusing`,
       );
 
   let units: Units = assume;
@@ -305,6 +350,16 @@ export function convertUnits(
         target = exact + carry[axis];
       }
       const text = formatConverted(target, src, places);
+      // A feed, a peck (Q) or a blending tolerance (G64 P/Q) that rounds to zero means
+      // something else at zero: no feed, an endless peck, no blending (review of #37).
+      if ((L === 'F' || L === 'Q' || L === 'P') && w.value.value !== 0 && Number(text) === 0) {
+        error(
+          n,
+          'TRANSFORM_UNITS_PRECISION',
+          `${L}${src} would round to zero in ${to === 'inch' ? 'inches' : 'mm'}, where it means something else. Refusing`,
+        );
+        continue;
+      }
       if (axis) carry[axis] = target - Number(text);
       if (text !== src) {
         edits.push({ span: w.value.span, text });
@@ -362,6 +417,8 @@ export function convertUnits(
       break;
     }
   }
+  if (flowErrors > 20)
+    error(0, 'TRANSFORM_CONTROL_FLOW', `…and ${flowErrors - 20} more subroutine lines like these`);
   if (refused.size > MAX_MODE_ERRORS)
     error(
       0,
@@ -490,12 +547,16 @@ function modeDifference(t: TextState, run: ModalState, line: Line | undefined): 
   if (has('XYZR') && (run.distance === 'absolute') !== t.absolute)
     diffs.push(`in ${run.distance} mode`);
   if (has('F') && run.feedMode !== t.feedMode) diffs.push(`with ${run.feedMode} feed`);
-  // A code that takes the line's words itself (a dwell's P, G10/G28/G30/G52/G92's axes)
-  // leaves nothing for a modal motion to read.
-  const own = words.some(
-    (w) => w.letter === 'G' && (MOTION.has(num0(w) ?? -1) || OWN_WORDS.has(num0(w) ?? -1)),
+  // The words a modal motion would read: those no code on the line takes for itself.
+  const ownMotion = words.some((w) => w.letter === 'G' && MOTION.has(num0(w) ?? -1));
+  const owned = words
+    .filter((w) => w.letter === 'G')
+    .map((w) => OWN_WORDS.get(num0(w) ?? -1) ?? '')
+    .join('');
+  const motionReads = words.some(
+    (w) => 'XYZIJKRQP'.includes(w.letter) && !owned.includes(w.letter),
   );
-  if (!own && has('XYZIJKRQP')) {
+  if (!ownMotion && motionReads) {
     const modelled = ['G0', 'G1', 'G2', 'G3', 'G73', 'G81', 'G82', 'G83'];
     const text = t.motion === null ? null : `G${t.motion}`;
     if (text === null || !modelled.includes(text) || text !== run.motion)

@@ -389,3 +389,46 @@ describe('units: the third review of #37 (what the run-time guard cannot see)', 
     }
   });
 });
+
+describe('units: the fourth review of #37', () => {
+  const errs = (src: string, to: 'mm' | 'inch', d: Dialect = LINUXCNC) => {
+    const r = u(src, to, 'mm', d);
+    expect(r.ok, src).toBe(false);
+    expect(r.text).toBe(src);
+    return r.diagnostics.filter((x) => x.severity === 'error');
+  };
+
+  it('G4 takes only P: X/Y/Q on its line are the modal motion’s', () => {
+    const e = errs(
+      'G21 G90 G17 F100\nG1 X0 Y0\no100 sub\nG4 P0.1 X1 Y1 Q0.2\no100 endsub\nG83 X0 Y0 Z-2 R1 Q0.5\no100 call\nG80\nM2',
+      'inch',
+    );
+    expect(e[0]?.line).toBe(4);
+    expect(e[0]?.message).toContain('under G83');
+    // A dwell alone still converts: P is its own.
+    expect(u('G21\nG4 P2\nG1 X1 F10\nM2', 'inch').ok).toBe(true);
+  });
+
+  it('refuses O-words on a controller without them (Masso runs the body inline)', () => {
+    const e = errs('o100 sub\nG1 X1 F10\no100 endsub\nG20\no100 call\nM30', 'mm', MASSO_G3);
+    expect(e.map((d) => d.line)).toEqual(expect.arrayContaining([1, 3, 5]));
+    expect(e[0]?.message).toContain('no O-word subroutines');
+  });
+
+  it('refuses a feed, peck or blending tolerance that would round to zero', () => {
+    const e = errs('G21\nG64 P0.0001\nG1 X1 F0.0001\nM2', 'inch');
+    expect(e.map((d) => `${d.code}@${d.line}`)).toEqual([
+      'TRANSFORM_UNITS_PRECISION@2',
+      'TRANSFORM_UNITS_PRECISION@3',
+    ]);
+  });
+
+  it('refuses subprogram files: a Masso file ending M99, a LinuxCNC library', () => {
+    expect(errs('G20\nG1 X1 F10\nM99', 'mm', MASSO_G3)[0]?.message).toContain(
+      'this is a subprogram file',
+    );
+    expect(errs('G21\no<lib> sub\nG1 X1 F10\no<lib> endsub\nM2', 'inch')[0]?.message).toContain(
+      'o<lib> is defined but never called',
+    );
+  });
+});

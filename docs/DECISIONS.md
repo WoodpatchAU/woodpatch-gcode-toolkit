@@ -1724,12 +1724,16 @@ RUNS, and compares only what it models. So:
   - feed mode, for F;
   - motion, where the line relies on it.
 
-  A code that takes the line's own words (G4, G10, G28, G30, G52, G64, G92) relies on no
-  motion. So a body of `M9` and `G4 P1`, called under G91 or G93, converts.
+  A code that takes some of the line's words for itself leaves only those out of the
+  motion check: G4 takes P, G64 P and Q, and G10/G28/G30/G52/G92 their axes. So a body of
+  `M9` and `G4 P1`, called under G91 or G93, converts. (Round 3 had G4 take the whole
+  line, which let `G4 P0.1 X1 Y1 Q0.2` under a caller's G83 through with its peck Q
+  unconverted. The fourth review caught it.)
 
 - **Block-deletable incremental lines carry their rounding in a chain of their own.**
   The lines that always run sum exactly whether the `/` lines run or not, and so do the
-  `/` lines. With 1,000 of each, the end is within 0.04 µm either way. One shared chain
+  `/` lines. With 1,000 of each, the end is within about one output quantum either way (0.25 µm in
+  inches; 0.02–0.05 µm measured, depending on the values). One shared chain
   was 0.23 µm off with block delete on. Isolating the `/` lines instead would have been
   94 µm off with it off.
 - **One cause names its first 20 lines, then counts the rest.**
@@ -1737,6 +1741,20 @@ RUNS, and compares only what it models. So:
   preference is inch, is still refused. Its body text reads in the preference, but runs
   after the G21. Converting each line under its run-time state would accept it. That's a
   bigger change, which the text-order refusal keeps safe for now.
+
+**Corrected in the fourth review.**
+
+- The G4 regression above.
+- **O-words on a controller without them (Masso) are refused.** The controller skips
+  those lines and runs a `sub` body in place, before the units line the conversion adds.
+- **Subprogram files are refused:**
+  - a Masso file with M99, which runs in its caller's units, where an added units line
+    would carry back into the caller;
+  - a LinuxCNC library (an `o<name> sub` never called in the file), whose body runs in
+    other programs' modes.
+- **A nonzero F, Q, or G64 P that would round to zero is refused.** Zero means
+  something else: no feed, an endless peck, no blending.
+- Per-line subroutine refusals are capped like the mode ones (20 named, then counted).
 
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
