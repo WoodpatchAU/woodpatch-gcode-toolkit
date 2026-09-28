@@ -1925,6 +1925,10 @@ the result) is exactly the original times the override where it applies, and exa
 original where it doesn't. A mutation that skips the restore after an overridden plunge
 fails both it and a unit test.
 
+**Out-of-range results** (after the fix to the other transforms, ADR-0033): an override
+whose scaled F or S would be beyond ±1,000,000 is refused (`TRANSFORM_OUT_OF_RANGE`)
+before anything is written.
+
 ## ADR-0038: The playground's transform panel
 
 **Status:** Accepted, 2026-09-28. Parcel 4e-1.
