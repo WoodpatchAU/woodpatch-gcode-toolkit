@@ -432,3 +432,28 @@ describe('units: the fourth review of #37', () => {
     );
   });
 });
+
+describe('units: the fifth review of #37', () => {
+  it('refuses a P that is both G64 tolerance and a dwell', () => {
+    for (const src of ['G21\nG4 G64 P1\nM2', 'G21 G90\nG64 G82 X0 Y0 Z-2 R1 P1 F100\nM2']) {
+      const r = u(src, 'inch', 'mm', LINUXCNC);
+      expect(r.ok, src).toBe(false);
+      expect(r.diagnostics[0]?.message).toContain('both G64');
+    }
+    // Apart, both are fine: G64 P converts, the dwell stays.
+    expect(u('G21\nG64 P0.254\nG4 P1\nM2', 'inch').text).toBe('G20\nG64 P0.01\nG4 P1\nM2');
+  });
+
+  it('refuses a Q nothing reads', () => {
+    const r = u('G21 G90\nG83 X0 Y0 Z-2 R1 Q0.5 F100\nG80\nG28 X0 Q0.2\nM2', 'inch');
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics.map((d) => `${d.code}@${d.line}`)).toContain(
+      'TRANSFORM_UNSUPPORTED_WORD@4',
+    );
+  });
+
+  it('allows a Masso program-number header, and no other O-word', () => {
+    expect(u('O1234\nG21 G90\nG1 X1 F100\nM30', 'inch', 'mm', MASSO_G3).ok).toBe(true);
+    expect(u('G21 G90\nO1234\nG1 X1 F100\nM30', 'inch', 'mm', MASSO_G3).ok).toBe(false);
+  });
+});

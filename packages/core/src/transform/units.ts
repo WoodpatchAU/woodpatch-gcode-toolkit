@@ -31,6 +31,8 @@ const UNITS_G = new Set([
   91, 91.1, 92, 92.1, 92.2, 92.3, 93, 94, 95, 97, 98, 99,
 ]);
 const CYCLES = new Set([73, 81, 82, 83, 84, 85, 86, 89]);
+/** Cycles whose P is a dwell at the bottom, in seconds (or ms on Masso). */
+const DWELL_CYCLES = new Set([82, 86, 89]);
 const MOTION = new Set([0, 1, 2, 3, 38.2, 73, 80, 81, 82, 83, 84, 85, 86, 89]);
 /**
  * Codes that take some of the line's words themselves, and which ones: those words are
@@ -88,11 +90,15 @@ export function convertUnits(
   const flowError = (line: number, message: string) => {
     if (++flowErrors <= 20) error(line, 'TRANSFORM_CONTROL_FLOW', message);
   };
+  // A lone program number on the first line of code (Masso's O1234 header) is harmless.
+  const firstCode = program.lines.find((l) =>
+    l.tokens.some((t) => t.kind === 'word' || t.kind === 'oword'),
+  )?.lineNo;
   for (const line of program.lines)
     for (const t of line.tokens) {
       // Without O-words, the controller (and the preview) skips these lines and runs a
       // "sub" body inline, where the units line inserted above it doesn't reach.
-      if (t.kind === 'oword' && !oWords)
+      if (t.kind === 'oword' && !oWords && !(t.keyword === null && line.lineNo === firstCode))
         flowError(
           line.lineNo,
           "This controller has no O-word subroutines: it skips this line and runs a 'sub' body in place, so the conversion can't place its units safely. Refusing",
@@ -256,6 +262,7 @@ export function convertUnits(
       !offsetLine &&
       (motion === 2 || motion === 3) &&
       (axes || has('I') || has('J') || has('K') || has('R'));
+    const m66 = words.some((w) => w.letter === 'M' && num0(w) === 66);
     const cycleRuns = !offsetLine && motion !== null && CYCLES.has(motion) && axes;
     const lengthFactor = factor(units, to);
     // F is read in the units in force before the line (or, on end-of-line controllers,
@@ -313,10 +320,32 @@ export function convertUnits(
         }
         f = lengthFactor;
       } else if (L === 'Q') {
-        if (!cycleRuns && !gs.has(64)) continue; // e.g. M66's timeout: not a length
+        if (!cycleRuns && !gs.has(64)) {
+          // M66's timeout isn't a length. On other lines a Q is the modal motion's, which
+          // the run-time check compares (a cycle's peck), or ignored by it (a G1).
+          if (m66 || !offsetLine) continue;
+          // G10/G28/G30/G52/G92 take the axes and suspend the motion: nothing on the line
+          // reads this Q, so refuse rather than leave a length unconverted (review of #37).
+          error(
+            n,
+            'TRANSFORM_UNSUPPORTED_WORD',
+            "Q here isn't read by a cycle, G64 or M66, so what it means is unknown. Refusing rather than guess",
+          );
+          continue;
+        }
         f = lengthFactor;
       } else if (L === 'P') {
         if (!gs.has(64)) continue; // dwell, turns, an index…
+        // LinuxCNC reads one P for both G64's tolerance (a length) and a dwell (seconds)
+        // on the same line: no conversion of it is right (review of #37).
+        if (gs.has(4) || (motion !== null && DWELL_CYCLES.has(motion))) {
+          error(
+            n,
+            'TRANSFORM_UNSUPPORTED_WORD',
+            "P here is both G64's blending tolerance (a length) and a dwell (seconds): no conversion of it is right. Put G64 on a line of its own",
+          );
+          continue;
+        }
         f = lengthFactor;
       } else if (L === 'F') {
         if (feedMode === 'inverse-time') continue;

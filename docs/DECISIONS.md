@@ -1756,6 +1756,18 @@ RUNS, and compares only what it models. So:
   something else: no feed, an endless peck, no blending.
 - Per-line subroutine refusals are capped like the mode ones (20 named, then counted).
 
+**Corrected in the fifth review.**
+
+- **A P shared by G64 and a dwell is refused.** On `G4 G64 P1`, or `G64 G82 … P1`
+  (explicit or modal G82/G86/G89), LinuxCNC reads the one P as both the blending
+  tolerance (a length) and the dwell (seconds), so no conversion of it is right. The
+  corpus check now also asserts every dwell's seconds are unchanged, so this class is
+  caught generally, not only for moves.
+- **A Q on a G10/G28/G30/G52/G92 line is refused.** Those codes take the axes and
+  suspend the motion, so nothing reads the Q.
+- **A Masso program-number header** (a lone `O1234` on the first line of code) is
+  allowed. Every other O-word on Masso is still refused.
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long

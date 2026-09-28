@@ -274,6 +274,13 @@ export function corpusSuite(entries: [string, Dialect][]): void {
               // F to 5 inch decimals or 3 mm: well under 0.01 mm/min.
               expect(Math.abs(fa.mmPerMinute - fb.mmPerMinute), `${at} feed`).toBeLessThan(0.01);
           }
+          // Dwells too: a P that is a dwell must come through untouched (review of #37:
+          // a G64 P shared with a G82 dwell once came out 25x shorter).
+          const dwells = (text: string, units?: 'mm' | 'inch') =>
+            interpret(parse(text), { dialect, ...(units ? { units } : {}) })
+              .steps.filter((s) => s.kind === 'dwell')
+              .map((s) => (s.kind === 'dwell' ? s.seconds : 0));
+          expect(dwells(write(r.program)), `${to}/${assume}: dwells`).toEqual(dwells(src, assume));
         }
     }, 120_000);
 
