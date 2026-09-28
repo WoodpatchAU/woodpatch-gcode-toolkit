@@ -3,7 +3,7 @@
 
 import type { Dialect } from '../dialect/profiles.js';
 import { interpret } from '../interp/interpret.js';
-import type { Plane, Step } from '../interp/types.js';
+import type { ModalState, Plane, Step } from '../interp/types.js';
 import { arcPoint, chordsNeeded, startAngle } from '../path/path.js';
 import { editLine, parse, type LineEdit } from '../syntax/program.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
@@ -79,57 +79,40 @@ export function arcsToLines(
   };
 
   // Every run the controller could make of this file: block delete on and off. A line
-  // must convert the same in each (unless it only runs in one).
+  // must convert the same in each (unless it only runs in one). The modes each arc
+  // line RUNS in come from the interpreter, not the text above it: a subroutine runs in
+  // its caller's modes, and a block-deleted mode word may not run (review of #37).
   const executions = new Map<number, Arc[]>();
+  const modes = new Map<number, Map<string, Modes>>();
+  const lineAt = (n: number) => program.lines[n - 1];
   for (const blockDelete of [true, false]) {
-    for (const s of interpret(program, { dialect, units: assume, blockDelete }).steps) {
+    const run = interpret(program, {
+      dialect,
+      units: assume,
+      blockDelete,
+      onBlock: ({ line, file, state }) => {
+        if (file !== undefined) return;
+        const m = runModes(state, lineAt(line));
+        (modes.get(line) ?? modes.set(line, new Map()).get(line))?.set(key(m), m);
+      },
+    });
+    for (const s of run.steps) {
       if (s.file) continue;
       if (s.kind === 'arc')
         (executions.get(s.line) ?? executions.set(s.line, []).get(s.line))?.push(s);
     }
   }
-
-  // Modal state the steps don't carry, read from the text. With control flow, lines
-  // run out of text order, so it's only trusted when it never changes.
-  // The modes seen are those in force on a line that moves (or switches them).
-  let flow = false;
-  const unitsSeen = new Set<Units>();
-  const distanceSeen = new Set<'abs' | 'inc'>();
-  let compensation = false;
-  {
-    let u: Units = assume;
-    let d: 'abs' | 'inc' = 'abs';
-    for (const line of program.lines) {
-      let moves = false;
-      for (const t of line.tokens) {
-        if (t.kind === 'oword' && t.keyword !== null) flow = true;
-        if (t.kind !== 'word' || t.value?.kind !== 'number') continue;
-        const v = t.value.value;
-        if (ARC_WORDS.has(t.letter)) moves = true;
-        if (t.letter === 'M' && (v === 98 || v === 99)) flow = true;
-        if (t.letter !== 'G') continue;
-        if (v === 20 || v === 21) unitsSeen.add((u = v === 20 ? 'inch' : 'mm'));
-        if (v === 90 || v === 91) distanceSeen.add((d = v === 90 ? 'abs' : 'inc'));
-        if (v === 41 || v === 42 || v === 41.1 || v === 42.1) compensation = true;
-      }
-      if (moves) {
-        unitsSeen.add(u);
-        distanceSeen.add(d);
-      }
-    }
-  }
-  if (flow && (unitsSeen.size > 1 || distanceSeen.size > 1) && executions.size)
-    error(
-      0,
-      'TRANSFORM_CONTROL_FLOW',
-      'This program switches units or distance mode (G20/G21, G90/G91) and uses subroutines or loops, so the mode each arc runs in is unknowable from the text. Refusing',
-    );
-  if (flow && compensation && executions.size)
-    error(
-      0,
-      'TRANSFORM_CUTTER_COMP',
-      'This program uses cutter compensation (G41/G42) and subroutines or loops, so whether it is on at each arc is unknowable. Refusing',
-    );
+  // Control flow, for the modal G2/G3 rule below.
+  const flow = program.lines.some((l) =>
+    l.tokens.some(
+      (t) =>
+        (t.kind === 'oword' && t.keyword !== null) ||
+        (t.kind === 'word' &&
+          t.letter === 'M' &&
+          t.value?.kind === 'number' &&
+          (t.value.value === 98 || t.value.value === 99)),
+    ),
+  );
 
   const selects = (n: number, runs: readonly Arc[]) =>
     runs.length > 0 &&
@@ -138,9 +121,6 @@ export function arcsToLines(
   const anySelected = [...executions].some(([n, runs]) => selects(n, runs));
   const eolDefault = program.lines.find((l) => l.eol)?.eol ?? '\n';
   const places = { mm: 3, inch: 4 };
-  let units: Units = assume;
-  let absolute = true;
-  let comp = false;
   // Whether the motion mode in force (in text order) was set by a converted arc, which
   // now leaves G1 behind: a following arc line that relies on G2/G3 being modal must say so.
   let modalFromConverted = false;
@@ -154,15 +134,8 @@ export function arcsToLines(
     const words = line.tokens.filter((t): t is WordToken => t.kind === 'word');
     let ownMotion: number | null = null;
     for (const w of words) {
-      if (w.letter !== 'G') continue;
-      const g = num(w);
-      if (g === 20) units = 'inch';
-      else if (g === 21) units = 'mm';
-      else if (g === 90) absolute = true;
-      else if (g === 91) absolute = false;
-      else if (g === 40) comp = false;
-      else if (g === 41 || g === 42 || g === 41.1 || g === 42.1) comp = true;
-      else if (g !== null && MOTION_G.has(g)) ownMotion = g;
+      const g = w.letter === 'G' ? num(w) : null;
+      if (g !== null && MOTION_G.has(g)) ownMotion = g;
     }
     const runs = executions.get(n) ?? [];
     const explicitArc = ownMotion === 2 || ownMotion === 3;
@@ -223,7 +196,19 @@ export function arcsToLines(
         'TRANSFORM_INVERSE_TIME',
         "Under inverse-time feed (G93) each chord would need its own F: not supported, so it's refused",
       );
-    if (comp && !flow)
+    const lineModes = [...(modes.get(n)?.values() ?? [])];
+    if (lineModes.length > 1)
+      error(
+        n,
+        'TRANSFORM_CONTROL_FLOW',
+        `This arc runs in different modes on different runs (${lineModes.map(describe).join('; ')}): a subroutine called under different modes, or a block-deleted ("/") mode change before it. No one set of chords is right. Refusing`,
+      );
+    const { units, absolute, comp } = lineModes[0] ?? {
+      units: assume,
+      absolute: true,
+      comp: false,
+    };
+    if (comp)
       error(
         n,
         'TRANSFORM_CUTTER_COMP',
@@ -299,6 +284,30 @@ export function arcsToLines(
   });
   const text = (program.bom ? '﻿' : '') + out.join('');
   return { ok: true, program: converted ? parse(text) : program, diagnostics: notes };
+}
+
+/** The modes an arc line runs in: the state before it, with its own words applied. */
+interface Modes {
+  readonly units: Units;
+  readonly absolute: boolean;
+  readonly comp: boolean;
+}
+const key = (m: Modes) => `${m.units}|${m.absolute}|${m.comp}`;
+const describe = (m: Modes) =>
+  `${m.units === 'inch' ? 'inches' : 'mm'}, ${m.absolute ? 'absolute' : 'incremental'}${m.comp ? ', compensated' : ''}`;
+function runModes(state: ModalState, line: Line | undefined): Modes {
+  let units: Units = state.units;
+  let absolute = state.distance === 'absolute';
+  let comp = state.cutterCompensation !== 'off';
+  for (const t of line?.tokens ?? []) {
+    if (t.kind !== 'word' || t.letter !== 'G' || t.value?.kind !== 'number') continue;
+    const g = t.value.value;
+    if (g === 20 || g === 21) units = g === 20 ? 'inch' : 'mm';
+    else if (g === 90 || g === 91) absolute = g === 90;
+    else if (g === 40) comp = false;
+    else if (g === 41 || g === 42 || g === 41.1 || g === 42.1) comp = true;
+  }
+  return { units, absolute, comp };
 }
 
 const inRange = (n: number, r: LineRange | undefined) => !r || (n >= r.from && n <= r.to);

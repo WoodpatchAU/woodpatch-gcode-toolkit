@@ -1966,6 +1966,12 @@ How it works:
   with block delete on and off) must convert the same way every time, or it's refused.
   A G91 arc in a loop is fine: its chords are relative, and so identical each time. An
   arc in a G90 subroutine called from two places isn't.
+- **Modes come from the run, not the text.** An arc's units, distance mode and cutter
+  compensation are the ones it RUNS in. The interpreter's `onBlock` hook reports them
+  (the units review found that a subroutine runs in its caller's modes, and a
+  block-deleted mode word may not run). A subroutine body whose text says G90, called
+  under G91, is converted as incremental. One called under two different modes, or an
+  arc after a block-deleted mode change, is refused, and the message names the modes.
 - **Refused:**
   - expressions or parameters on an arc's line;
   - other axes (A/B/C/U/V/W) on the line;
@@ -1975,8 +1981,6 @@ How it works:
   - cutter compensation in force: the controller would offset the chords, not the arc,
     and short chords can stop it on an inside corner;
   - more than 100,000 chords for one arc, or 2,000,000 lines in all;
-  - with control flow, a program that switches units or distance mode, or uses
-    compensation anywhere, because the mode at each arc can't be known from the text.
 - **Not refused: coordinate rotation** (G68, G10 R). The interpreter doesn't simulate
   it, so its coordinates are the programmed ones. A rotation maps the chords of an arc
   onto the chords of the rotated arc, so the conversion is right either way.

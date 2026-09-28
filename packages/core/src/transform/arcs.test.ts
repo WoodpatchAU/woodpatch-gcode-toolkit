@@ -172,11 +172,24 @@ describe('arcsToLines', () => {
     );
     expect(loop.ok).toBe(true);
     expect(motion(loop.text).at(-1)?.to.X).toBeCloseTo(30, 9);
-    // Units or distance mode switching under control flow: unknowable from the text.
-    const mixed = arcs('G21 G91\no1 sub\nG2 X10 Y0 I5 F300\no1 endsub\no1 call\nG90\nM2', {
-      tolerance: 0.5,
-    });
-    expect(codes(mixed)).toContain('TRANSFORM_CONTROL_FLOW@0');
+    // The modes an arc runs in are its caller's, not the text's (review of #37): a body
+    // whose text says G90, called under G91, is converted as incremental.
+    const body = 'G21 G90\no1 sub\nG2 X10 Y0 I5 F300\no1 endsub\nG91\no1 call\nM2';
+    const r = arcs(body, { tolerance: 0.5 });
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain('G1 X1.464 Y3.536 F300\nX3.536 Y1.464\n');
+    const moved = motion(r.text);
+    expect(moved.at(-1)?.to.X).toBeCloseTo(10, 9);
+    // Called under G90 once and G91 once: two sets of chords, so refused, naming both.
+    const both = arcs(
+      'G21 G90\no1 sub\nG2 X10 Y0 I5 F300\no1 endsub\no1 call\nG91\nG0 X-10\no1 call\nM2',
+      { tolerance: 0.5 },
+    );
+    expect(codes(both)).toEqual(['TRANSFORM_CONTROL_FLOW@3']);
+    expect(both.diagnostics[0]?.message).toContain('mm, absolute; mm, incremental');
+    // A block-deleted mode change before an arc: refused (it depends on the switch).
+    const bd = arcs('G21 G90\nG0 X0 Y0\n/G91\nG2 X10 Y0 I5 F300\nM30', { tolerance: 0.5 });
+    expect(codes(bd)).toEqual(['TRANSFORM_CONTROL_FLOW@4']);
   });
 
   it('refuses what chords can’t carry faithfully', () => {
