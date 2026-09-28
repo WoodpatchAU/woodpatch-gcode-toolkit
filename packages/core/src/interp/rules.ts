@@ -19,10 +19,18 @@ export interface ProgramChecks {
   /**
    * The code that ends a job. 'M30': Masso finishes a job on M30; without it the job
    * never finishes (the operator, on the machine; what M2 does there is still to be
-   * confirmed). 'M2-or-M30': either (LinuxCNC complains about a file without one).
-   * null: no check.
+   * confirmed). 'M2-or-M30': either. LinuxCNC also accepts a file wrapped in a %
+   * pair, but ending at the closing % doesn't reset the machine (the spindle and
+   * coolant may stay on), so that still gets a (different) warning. null: no check.
    */
   readonly end: 'M30' | 'M2-or-M30' | null;
+  /**
+   * A tool change (M6) leaves the spindle stopped, so cutting after one needs a new
+   * M3/M4. LinuxCNC's M6: "When the tool change is complete: The spindle will be
+   * stopped." Masso's docs ask for M5 before M6; what it does without one is
+   * unconfirmed, so it's assumed to stop too (the safe way round).
+   */
+  readonly toolChangeStopsSpindle: boolean;
   /** Warn when the spindle is still on at the end (Masso: M5 before M30). */
   readonly spindleOffAtEnd: boolean;
   /** Warn on M3/M4 with no spindle speed programmed, or S0. */
@@ -177,6 +185,7 @@ export const LINUXCNC_INTERPRETER_RULES: InterpreterRules = Object.freeze({
   spindleSettleAdvice: false,
   programChecks: Object.freeze({
     end: 'M2-or-M30',
+    toolChangeStopsSpindle: true,
     spindleOffAtEnd: false,
     spindleSpeed: true,
     spindleOnToCut: true,

@@ -71,9 +71,11 @@ export const MASSO_G3: Dialect = Object.freeze({
     subprograms: Object.freeze({ oWord: false, m98: 'file', maxCallDepth: 5 }),
     // The operator, on the machine: a Masso job only finishes on M30, and expects the
     // spindle stopped (M5) before it. To be confirmed by a machine test, with what M2
-    // does there.
+    // does there. The docs ask for M5 before M6; whether M6 stops the spindle itself
+    // is unconfirmed, so assume it does.
     programChecks: Object.freeze({
       end: 'M30',
+      toolChangeStopsSpindle: true,
       spindleOffAtEnd: true,
       spindleSpeed: true,
       spindleOnToCut: true,

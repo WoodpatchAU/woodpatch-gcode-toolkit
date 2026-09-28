@@ -228,4 +228,10 @@ export interface InterpretResult {
    */
   readonly diagnostics: readonly Diagnostic[];
   readonly state: ModalState;
+  /**
+   * False when the run was cut short: a call to a missing subprogram, or a safety
+   * limit (the error says which). The steps then stop where the run did, so whatever
+   * judges the whole job (its end, the spindle at the end) has not seen all of it.
+   */
+  readonly completed: boolean;
 }

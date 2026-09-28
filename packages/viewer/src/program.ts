@@ -80,7 +80,7 @@ export function loadProgram(text: string, options: LoadOptions = {}): LoadedProg
   const diagnostics: Diagnostic[] = [
     ...program.diagnostics,
     ...result.diagnostics,
-    ...programChecks(program, result.steps, dialect),
+    ...programChecks(program, result, dialect),
   ];
   const b = bounds.all;
   if (b && Math.max(b.max.X - b.min.X, b.max.Y - b.min.Y, b.max.Z - b.min.Z) > MAX_PLAUSIBLE_SPAN)
