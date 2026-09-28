@@ -321,4 +321,13 @@ describe('arcsToLines', () => {
     expect(lib.text).toBe(src);
     expect(lib.diagnostics.map((d) => `${d.code}@${d.line}`)).toContain('TRANSFORM_ARC_NOT_RUN@3');
   });
+
+  it('refuses a chord no controller reads (an arc bulging past the range)', () => {
+    // End points in range, but the half circle bulges to Y = -999,999.5 - 1: past it.
+    const src = 'G21 G90\nG0 X0 Y-999999.5\nG3 X2 Y-999999.5 I1 J0 F100\nM2';
+    const r = arcs(src, { tolerance: 0.5 });
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe(src);
+    expect(r.diagnostics.map((d) => `${d.code}@${d.line}`)).toContain('TRANSFORM_OUT_OF_RANGE@3');
+  });
 });
