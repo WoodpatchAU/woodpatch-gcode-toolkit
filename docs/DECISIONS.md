@@ -1656,8 +1656,44 @@ result gives the same toolpath.
   O-word control flow in a single-unit program is fine: each word converts the same
   wherever it runs.
 
-**Evidence.** On every fixture, converting to inches and to mm moves nothing: every
-step lands where it did, within 2 µm, with arc directions unchanged. mm → inch → mm is
+**Corrected in review (toolkit #37). The rule is now: the only safe failure is a
+refusal.** The first cut returned wrong G-code as success in several ways. Now:
+
+- **The units go on a line of their own,** before the first line the main program runs
+  (outside any O-word subroutine; after %, the program number and leading comments).
+  The first line keeps its own units word only if it's a clean statement: a G20/G21,
+  no F, and not block-deletable.
+  - On the same line, an F was read by at-feed-step controllers in the units BEFORE the
+    line, the controller's default, 25.4× off.
+  - The old placement also put the units inside a subroutine, onto a block-delete line,
+    or ahead of the N-number.
+- **Every word must be KNOWN to be a length, a feed or not a length, in its context;
+  anything else refuses.**
+  - X/Y/Z always.
+  - I/J/K only on arc lines. Masso's cycle K is a repeat count.
+  - R only as an arc radius or on a line that runs a canned cycle.
+  - Q only on a line that runs a cycle, or with G64 (M66's Q is a timeout).
+  - P only with G64. F unless inverse time.
+  - G10 only as a work offset (L2/L20, and Masso's L2.1/L20.1), and never with R (a
+    rotation).
+  - Refused: G41.1/G42.1 (D is a diameter), G43.1 and G38.3–5 (not modelled), G96
+    (surface speed), and U/V/W/E words.
+- **G91 drift.** Each incremental X/Y/Z absorbs the rounding carried along its axis, so
+  a long incremental program ends where the exact conversion would, within one rounding
+  step. Where an increment would repeat (a loop, a subroutine, a stepping L-repeat),
+  a carry can't work, so an inexact increment there refuses.
+- **Parameters and expressions refuse anywhere,** loop conditions included: a condition
+  like `[#5422 GT -10]` compares a position with a number in the old units.
+- **M98/M99 count as control flow,** alongside O-words.
+- **The units-assumed warning is exact.** The interpreter records when a G20/G21 first
+  RUNS, so a G21 in a subroutine called before the first move counts, and one in a
+  skipped branch or on a block-deleted line doesn't. The conversion uses the same rule
+  for its own warning.
+
+**Evidence.** On every fixture, converting to inches and to mm, with both unit
+assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
+(within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long
+random G91 programs without drift, and each of the review's probes is a unit test. mm → inch → mm is
 within 1 µm. 40 of the 47 fixtures convert; the rest are refused for expressions, or
 for G87/G88.
 

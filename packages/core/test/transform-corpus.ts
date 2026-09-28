@@ -244,25 +244,38 @@ export function corpusSuite(entries: [string, Dialect][]): void {
 
     // Units (parcel 4b, ADR-0034): a conversion moves nothing, and mm → inch → mm lands
     // within a micrometre (the plan's acceptance).
-    it('converting units moves nothing: every step lands where it did', () => {
-      for (const to of ['inch', 'mm'] as const) {
-        const r = transform(parse(src), [{ op: 'units', to }], { dialect });
-        if (!r.ok) {
-          expect(write(r.program)).toBe(src);
-          continue;
+    it('converting units moves nothing: every step lands where it did, at the same feed', () => {
+      // Both targets, and both assumptions for a program that states no units: the
+      // original is read in the assumed units, the result states its own.
+      // (The 224k-line sample runs one combination; the rest run all four.)
+      for (const to of big ? (['inch'] as const) : (['inch', 'mm'] as const))
+        for (const assume of big ? (['mm'] as const) : (['mm', 'inch'] as const)) {
+          const r = transform(parse(src), [{ op: 'units', to, assume }], { dialect });
+          if (!r.ok) {
+            expect(write(r.program)).toBe(src);
+            continue;
+          }
+          const was = interpret(parse(src), { dialect, units: assume }).steps.filter(
+            (s): s is Motion => s.kind === 'linear' || s.kind === 'arc',
+          );
+          const after = motions(write(r.program), dialect);
+          expect(after.length).toBe(was.length);
+          for (let i = 0; i < was.length; i++) {
+            const b = was[i] as Motion;
+            const a = after[i] as Motion;
+            const at = `${to}/${assume}: line ${b.line}`;
+            expect(a.kind).toBe(b.kind);
+            for (const k of ['X', 'Y', 'Z'] as const)
+              expect(Math.abs(a.to[k] - b.to[k]), `${at} ${k}`).toBeLessThan(0.002);
+            if (a.kind === 'arc' && b.kind === 'arc') expect(a.clockwise).toBe(b.clockwise);
+            const fb = b.kind === 'arc' || !b.rapid ? b.feed : null;
+            const fa = a.kind === 'arc' || !a.rapid ? a.feed : null;
+            if (fb?.mode === 'per-minute' && fa?.mode === 'per-minute')
+              // F to 5 inch decimals or 3 mm: well under 0.01 mm/min.
+              expect(Math.abs(fa.mmPerMinute - fb.mmPerMinute), `${at} feed`).toBeLessThan(0.01);
+          }
         }
-        const after = motions(write(r.program), dialect);
-        expect(after.length).toBe(before.length);
-        for (let i = 0; i < before.length; i++) {
-          const b = before[i] as Motion;
-          const a = after[i] as Motion;
-          expect(a.kind).toBe(b.kind);
-          for (const k of ['X', 'Y', 'Z'] as const)
-            expect(Math.abs(a.to[k] - b.to[k]), `${to}: line ${b.line} ${k}`).toBeLessThan(0.002);
-          if (a.kind === 'arc' && b.kind === 'arc') expect(a.clockwise).toBe(b.clockwise);
-        }
-      }
-    }, 60_000);
+    }, 120_000);
 
     it('mm → inch → mm lands within a micrometre', () => {
       const r = transform(

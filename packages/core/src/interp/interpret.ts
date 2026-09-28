@@ -47,36 +47,7 @@ import {
  * Values are stored in millimetres.
  */
 export function interpret(program: Program, options: InterpretOptions = {}): InterpretResult {
-  const result = new Interpreter(options).run(program);
-  if (options.units === undefined) return result;
-  // The host gave a units preference: say so when the program relied on it.
-  const move = result.steps.find((s) => (s.kind === 'linear' || s.kind === 'arc') && !s.file);
-  if (!move) return result;
-  const stated = program.lines.some(
-    (l) =>
-      l.lineNo <= move.line &&
-      l.tokens.some(
-        (t) =>
-          t.kind === 'word' &&
-          t.letter === 'G' &&
-          t.value?.kind === 'number' &&
-          (t.value.value === 20 || t.value.value === 21),
-      ),
-  );
-  if (stated) return result;
-  const name = options.units === 'inch' ? 'inches' : 'millimetres';
-  return {
-    ...result,
-    diagnostics: [
-      ...result.diagnostics,
-      {
-        severity: 'warning',
-        code: 'SEMANTIC_UNITS_ASSUMED',
-        message: `The program moves before it states its units (G20/G21): read as ${name}, your units preference. A controller reads it in its own default units, so check that matches`,
-        line: move.line,
-      },
-    ],
-  };
+  return new Interpreter(options).run(program);
 }
 
 const AXIS_INDEX: Readonly<Record<Axis, number>> = { X: 0, Y: 1, Z: 2, A: 3, B: 4, C: 5 };
@@ -227,6 +198,10 @@ class Interpreter {
   private motion: ModalState['motion'] = 'G0';
   private plane: Plane = 'XY';
   private units: 'mm' | 'inch' = 'mm';
+  /** The host's units preference, if it gave one (then relying on it is warned about). */
+  private readonly unitsPreference: 'mm' | 'inch' | undefined;
+  /** How many steps existed when a G20/G21 first ran; null until one does. */
+  private unitsStatedAt: number | null = null;
   private distance: 'absolute' | 'incremental' = 'absolute';
   private arcDistance: 'absolute' | 'incremental' = 'incremental';
   private feedMode: ModalState['feedMode'] = 'per-minute';
@@ -281,6 +256,7 @@ class Interpreter {
     this.blockDelete = options.blockDelete ?? true;
     this.position = { ...ZERO, ...options.start };
     this.units = options.units ?? 'mm';
+    this.unitsPreference = options.units;
     this.machineHome = options.machine?.home ?? {};
     this.machinePark = options.machine?.park;
     this.resolve = options.resolveProgram;
@@ -329,6 +305,19 @@ class Interpreter {
         message: `${skippedAfterEnd} line(s) after the program end were not run`,
         line: firstSkipped,
       });
+    }
+    // A program that moves before any G20/G21 runs relies on the units preference.
+    if (this.unitsPreference !== undefined) {
+      const first = this.steps.findIndex((s) => s.kind === 'linear' || s.kind === 'arc');
+      const move = this.steps[first];
+      if (move && (this.unitsStatedAt === null || this.unitsStatedAt > first))
+        this.add({
+          severity: 'warning',
+          code: 'SEMANTIC_UNITS_ASSUMED',
+          message: `The program moves before it states its units (G20/G21): read as ${this.unitsPreference === 'inch' ? 'inches' : 'millimetres'}, your units preference. A controller reads it in its own default units, so check that matches`,
+          line: move.line,
+          ...(move.file ? { file: move.file } : {}),
+        });
     }
     if (this.suppressed > 0)
       this.diagnostics.push({
@@ -879,6 +868,10 @@ class Interpreter {
     if (g.has('17')) this.plane = 'XY';
     if (g.has('18')) this.plane = 'ZX';
     if (g.has('19')) this.plane = 'YZ';
+    // The first G20/G21 that actually runs, by step: exact under subroutines, skipped
+    // branches and block delete (SEMANTIC_UNITS_ASSUMED, review of toolkit #37).
+    if ((g.has('20') || g.has('21')) && this.unitsStatedAt === null)
+      this.unitsStatedAt = this.steps.length;
     this.units = unitsAfter;
     if (g.has('40')) this.cutterComp = 'off';
     if (g.has('41') || g.has('42')) {
