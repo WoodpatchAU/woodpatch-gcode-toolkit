@@ -177,6 +177,7 @@ class Interpreter {
   private readonly rules: ExpressionRules;
   private readonly behaviour: InterpreterRules;
   private readonly blockDelete: boolean;
+  private readonly onBlock: InterpretOptions['onBlock'];
   private readonly steps: Step[] = [];
   private readonly diagnostics: Diagnostic[] = [];
   private readonly numbered = new Map<number, number>();
@@ -254,6 +255,7 @@ class Interpreter {
     this.behaviour =
       options.interpreterRules ?? options.dialect?.interpreter ?? LINUXCNC_INTERPRETER_RULES;
     this.blockDelete = options.blockDelete ?? true;
+    this.onBlock = options.onBlock;
     this.position = { ...ZERO, ...options.start };
     this.units = options.units ?? 'mm';
     this.unitsPreference = options.units;
@@ -402,7 +404,8 @@ class Interpreter {
   // ── One line ────────────────────────────────────────────────────────────
 
   private line(line: Line, index: number): void {
-    if (this.fastLine(line)) return;
+    // The fast path does what the general one does, minus the hook: skip it when watched.
+    if (!this.onBlock && this.fastLine(line)) return;
     const n = line.lineNo;
     const tokens = line.tokens;
     if (tokens.length === 0) return;
@@ -497,6 +500,10 @@ class Interpreter {
     }
     if (!this.checkLine(n, words)) return;
 
+    if (this.onBlock) {
+      const file = this.frame.program.name;
+      this.onBlock({ line: n, ...(file === null ? {} : { file }), state: this.state() });
+    }
     this.execute(n, words);
     for (const a of assignments) this.assign(line, a.target, a.value);
     // M98/M99 act after the rest of the line (their parameters are already set).

@@ -656,3 +656,31 @@ G0 X#<_value> Y#<_value_returned>`;
     expect(moves(r.steps).map((s) => s.to.X)).toEqual([1, 2]);
   });
 });
+
+describe('onBlock: the modal state each executed block runs under', () => {
+  it('reports every executed block, fast-path lines too, and not skipped ones', () => {
+    const seen: string[] = [];
+    interpret(parse('G20\nX1 Y1\n/G21\no100 sub\nG1 X2 F10\no100 endsub\nG91\no100 call\nM2'), {
+      onBlock: ({ line, file, state }) =>
+        seen.push(`${line}${file ? `@${file}` : ''}:${state.units}/${state.distance}`),
+    });
+    // Line 3 is block-deleted; line 5 runs in the caller's G91.
+    expect(seen).toEqual([
+      '1:mm/absolute',
+      '2:inch/absolute',
+      '7:inch/absolute',
+      '5:inch/incremental',
+      '9:inch/incremental',
+    ]);
+  });
+
+  it('names the file of a block in a subprogram file', () => {
+    const seen: string[] = [];
+    interpret(parse('G21\no<part> call\nM2'), {
+      resolveProgram: ({ name }) =>
+        name === 'part' ? 'o<part> sub\nG1 X1 F10\no<part> endsub' : undefined,
+      onBlock: ({ line, file }) => seen.push(`${line}${file ? `@${file}` : ''}`),
+    });
+    expect(seen).toEqual(['1', '2@part', '3']);
+  });
+});

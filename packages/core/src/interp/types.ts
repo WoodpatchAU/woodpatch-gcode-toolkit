@@ -163,6 +163,18 @@ export interface InterpretOptions {
   };
   /** Safety caps for untrusted input. Hitting one stops the run with an error. */
   readonly limits?: Partial<InterpretLimits>;
+  /**
+   * Called before each block that executes, with the modal state it runs under: the
+   * state the controller is in at that line, whatever the text above it says. A
+   * transform that reads modes from the text uses it to check that the run agrees
+   * (review of toolkit #37: a subroutine runs in its caller's modes; a block-deleted
+   * line may not run). Not called for skipped lines or O-word flow lines.
+   */
+  readonly onBlock?: (block: {
+    readonly line: number;
+    readonly file?: string;
+    readonly state: ModalState;
+  }) => void;
 }
 
 export interface ProgramRequest {

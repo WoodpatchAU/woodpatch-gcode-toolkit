@@ -4,6 +4,7 @@
 import type { Dialect } from '../dialect/profiles.js';
 import { interpret } from '../interp/interpret.js';
 import { editLine, parse, write, type LineEdit } from '../syntax/program.js';
+import type { ModalState } from '../interp/types.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
 import { formatConverted } from './format.js';
 
@@ -36,6 +37,14 @@ const NOT_LENGTH = new Set(['G', 'M', 'N', 'T', 'H', 'D', 'S', 'A', 'B', 'C', 'L
 
 type Units = 'mm' | 'inch';
 type Axis = 'X' | 'Y' | 'Z';
+type FeedMode = 'per-minute' | 'inverse-time' | 'per-revolution';
+/** The modes a line is converted under, as the text above it sets them. */
+interface TextState {
+  readonly units: Units;
+  readonly absolute: boolean;
+  readonly feedMode: FeedMode;
+  readonly motion: number | null;
+}
 
 export function convertUnits(
   program: Program,
@@ -92,12 +101,15 @@ export function convertUnits(
 
   let units: Units = assume;
   let absolute = true;
-  let feedMode: 'per-minute' | 'inverse-time' | 'per-revolution' = 'per-minute';
+  let feedMode: FeedMode = 'per-minute';
   let motion: number | null = null;
   const carry: Record<Axis, number> = { X: 0, Y: 0, Z: 0 };
   const seen = new Set<Units>();
   let converted = 0;
 
+  // The modes each line is converted under, read from the text above it: checked
+  // against the run below.
+  const textState = new Map<number, TextState>();
   const lines: Line[] = [];
   for (const line of program.lines) {
     const words = line.tokens.filter((t): t is WordToken => t.kind === 'word');
@@ -105,6 +117,7 @@ export function convertUnits(
     const num = (w: WordToken | undefined) => (w?.value?.kind === 'number' ? w.value.value : null);
     const edits: LineEdit[] = [];
     const before = units;
+    textState.set(n, { units, absolute, feedMode, motion });
     const gs = new Set<number>();
     let ownMotion: number | null = null;
     for (const w of words) {
@@ -255,6 +268,41 @@ export function convertUnits(
     lines.push(edits.length ? editLine(line, edits) : line);
   }
 
+  // The text-order modes must be the ones each line RUNS under (review of #37). A
+  // subroutine body runs in its caller's modes, and a block-deleted line that changes a
+  // mode may not run: either way a line would be converted for modes it doesn't have.
+  // So every executed line of this file, with block delete on and off, is checked.
+  // Block delete OFF first: every line runs, so a difference there is control flow.
+  // One that appears only with it ON comes from a skipped "/" line.
+  let assumed = false;
+  const refused = new Set<number>();
+  // Only worth running when nothing else refused: a refused loop may never end.
+  for (const blockDelete of errors.length ? [] : [false, true]) {
+    const run = interpret(program, {
+      dialect,
+      units: assume,
+      blockDelete,
+      onBlock: ({ line: n, file, state }) => {
+        if (file !== undefined || refused.has(n)) return;
+        const t = textState.get(n);
+        if (!t) return;
+        const differs = modeDifference(t, state, program.lines[n - 1]);
+        if (!differs) return;
+        refused.add(n);
+        error(
+          n,
+          'TRANSFORM_CONTROL_FLOW',
+          `This line runs ${differs}, not as the lines above it set. ${
+            blockDelete
+              ? 'A block-deleted ("/") line above it changes a mode, so the result would depend on the block-delete switch'
+              : 'A subroutine runs in the modes of the line that calls it'
+          }: refusing rather than converting it for the wrong modes`,
+        );
+      },
+    });
+    if (blockDelete) assumed = run.diagnostics.some((d) => d.code === 'SEMANTIC_UNITS_ASSUMED');
+  }
+
   if (seen.size > 1 && flow)
     error(
       0,
@@ -294,11 +342,7 @@ export function convertUnits(
     }
   }
   // Warn when the ORIGINAL relied on the preference (the interpreter's own rule).
-  if (
-    interpret(program, { dialect, units: assume }).diagnostics.some(
-      (d) => d.code === 'SEMANTIC_UNITS_ASSUMED',
-    )
-  )
+  if (assumed)
     notes.push({
       severity: 'warning',
       code: 'TRANSFORM_UNITS_ASSUMED',
@@ -360,4 +404,32 @@ function firstMainLine(program: Program): Line | undefined {
     if (code) return line;
   }
   return undefined;
+}
+
+/**
+ * How the modes a line runs under differ from the text's, in words, or null if they
+ * don't. Motion matters only to a line that relies on it (no motion code of its own,
+ * but words a motion reads), and only for the motions the interpreter models.
+ */
+function modeDifference(t: TextState, run: ModalState, line: Line | undefined): string | null {
+  const diffs: string[] = [];
+  if (run.units !== t.units) diffs.push(`in ${run.units === 'inch' ? 'inches' : 'mm'}`);
+  if ((run.distance === 'absolute') !== t.absolute) diffs.push(`in ${run.distance} mode`);
+  if (run.feedMode !== t.feedMode) diffs.push(`with ${run.feedMode} feed`);
+  if (t.motion !== null && line) {
+    const words = line.tokens.filter((x): x is WordToken => x.kind === 'word');
+    const own = words.some((w) => w.letter === 'G' && MOTION.has(num0(w) ?? -1));
+    const reads = words.some((w) => 'XYZIJKRQP'.includes(w.letter));
+    const modelled = ['G0', 'G1', 'G2', 'G3', 'G73', 'G81', 'G82', 'G83'];
+    const text = `G${t.motion}`;
+    if (
+      !own &&
+      reads &&
+      modelled.includes(text) &&
+      modelled.includes(run.motion) &&
+      run.motion !== text
+    )
+      diffs.push(`under ${run.motion}`);
+  }
+  return diffs.length ? diffs.join(', ') : null;
 }

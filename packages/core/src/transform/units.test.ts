@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: MIT
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { GENERIC, interpret, MASSO_G3, parse, transformText, type Dialect } from '../index.js';
+import {
+  GENERIC,
+  interpret,
+  LINUXCNC,
+  MASSO_G3,
+  parse,
+  transformText,
+  type Dialect,
+} from '../index.js';
 
 // Parcel 4b (ADR-0034): units conversion. Operator decisions, 2026-09-28: inches get
 // at least 5 decimals; a program that states no units is read in the user's preference.
@@ -253,5 +261,64 @@ describe('units: long incremental programs (property)', () => {
       ),
       { numRuns: 40 },
     );
+  });
+});
+
+describe('units: the second review of #37 (modes the text says vs modes the line runs in)', () => {
+  const refused = (
+    src: string,
+    to: 'mm' | 'inch',
+    at: number,
+    why: string,
+    d: Dialect = GENERIC,
+  ) => {
+    const r = u(src, to, 'mm', d);
+    expect(r.ok, src).toBe(false);
+    expect(r.text).toBe(src);
+    const e = r.diagnostics.find((x) => x.code === 'TRANSFORM_CONTROL_FLOW');
+    expect(e?.line, src).toBe(at);
+    expect(e?.message, src).toContain(why);
+  };
+
+  it('refuses a mode word on a block-deletable line where "/" is a switch', () => {
+    for (const d of [GENERIC, LINUXCNC]) {
+      refused('/G20\nG1 X1 F10', 'mm', 2, 'block-delete switch', d);
+      refused('G20\nG1 X1 F10\n/G21\nG1 X2', 'inch', 4, 'block-delete switch', d);
+      refused('G21\nG1 X1 F10\n/G93\nG1 X2 F10', 'inch', 4, 'block-delete switch', d);
+      refused('G21 G90\nG1 X1 F10\n/G91\nG1 X2', 'inch', 4, 'block-delete switch', d);
+    }
+    // Masso runs "/" lines: nothing depends on a switch.
+    expect(u('/G20\nG1 X1 F10', 'mm', 'mm', MASSO_G3).text).toBe('G21\n/G21\nG1 X25.4 F254');
+    // A block-deletable line that changes no mode is fine.
+    expect(u('G21\n/G1 X1 F100\nG1 X2\nM2', 'inch').ok).toBe(true);
+  });
+
+  it("refuses a subroutine body that runs in modes other than the text's", () => {
+    // Feed mode, both ways round.
+    refused(
+      'G20\no100 sub\nG93 G1 X1 F2\no100 endsub\nG1 X5 F10\no100 call\nM2',
+      'mm',
+      5,
+      'subroutine',
+    );
+    refused('G20\no100 sub\nG1 X1 F2\no100 endsub\nG93\no100 call\nM2', 'mm', 3, 'subroutine');
+    // Distance: read as absolute, called under G91.
+    refused(
+      'G20 G90\no100 sub\nG1 X0.01\no100 endsub\nG1 X0 F10\nG91\no100 call\nM2',
+      'mm',
+      3,
+      'incremental',
+    );
+    // Motion: read under G2, run under G83 (so Q is a peck, not ignored).
+    refused(
+      'G20 G90\nG2 X1 Y0 I0.5 F10\no100 sub\nX2 Y0 Z-0.5 R0.1 Q0.1\no100 endsub\nG83 X0 Y0 Z-1 R1 Q0.1\no100 call\nG80\nM2',
+      'mm',
+      4,
+      'G83',
+    );
+    // Called in the modes the text says: converted.
+    expect(
+      u('G21 G90\no100 sub\nG1 X1 F100\no100 endsub\no100 call\no100 call\nM2', 'inch').ok,
+    ).toBe(true);
   });
 });

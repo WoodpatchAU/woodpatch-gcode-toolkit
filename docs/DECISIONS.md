@@ -1690,6 +1690,23 @@ refusal.** The first cut returned wrong G-code as success in several ways. Now:
   skipped branch or on a block-deleted line doesn't. The conversion uses the same rule
   for its own warning.
 
+**Corrected in the second review.** The conversion reads each line's modes (units,
+distance mode, feed mode, motion) from the text above it. Two cases ran a line in other
+modes, and it came out converted for the wrong ones:
+
+- **A block-deleted line that changes a mode** (`/G20`, `/G93`, `/G91`). On LinuxCNC
+  and generic, `/` is a switch, so whether the line runs is the operator's choice. Masso
+  runs it, so it's fine there.
+- **A subroutine body runs in its CALLER's modes**, not those of the text above it:
+  feed mode, distance mode and the modal motion a body line relies on.
+
+The general guard: the interpreter's new `onBlock` hook reports the modal state each
+executed block RUNS under. The conversion runs the program with block delete off (every
+line runs, so a difference is control flow) and on (a new difference comes from a
+skipped `/` line), and refuses any line of this file whose run-time units, distance
+mode, feed mode or relied-on motion differ from the text's. The message names the
+cause. A sub called in the modes its text says still converts.
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long
