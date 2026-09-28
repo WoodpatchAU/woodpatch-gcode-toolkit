@@ -9,7 +9,31 @@ import { LINUXCNC_G, LINUXCNC_M } from './codes.js';
  * (ADR-0019), in the same spirit as the expression rules (ADR-0018). Dialect
  * profiles (parcel 2e) choose a set.
  */
+/**
+ * Checks on the program as a whole (operator request, 2026-09-28): what a controller
+ * needs to run a job start to finish. Each is a warning, never an error: the program
+ * still runs, but may not do what the operator expects. Part of the dialect profile,
+ * so a custom controller (roadmap) sets them too.
+ */
+export interface ProgramChecks {
+  /**
+   * The code that ends a job. 'M30': Masso finishes a job on M30; without it the job
+   * never finishes (the operator, on the machine; what M2 does there is still to be
+   * confirmed). 'M2-or-M30': either (LinuxCNC complains about a file without one).
+   * null: no check.
+   */
+  readonly end: 'M30' | 'M2-or-M30' | null;
+  /** Warn when the spindle is still on at the end (Masso: M5 before M30). */
+  readonly spindleOffAtEnd: boolean;
+  /** Warn on M3/M4 with no spindle speed programmed, or S0. */
+  readonly spindleSpeed: boolean;
+  /** Warn when the program cuts with the spindle off: never started, or stopped. */
+  readonly spindleOnToCut: boolean;
+}
+
 export interface InterpreterRules {
+  /** Whole-program checks (see {@link ProgramChecks}). */
+  readonly programChecks: ProgramChecks;
   /**
    * The units of an F word on a line that also switches G20/G21.
    * - `at-feed-step`: F is read in the units in force BEFORE the line's G20/G21.
@@ -151,4 +175,10 @@ export const LINUXCNC_INTERPRETER_RULES: InterpreterRules = Object.freeze({
   m66: 'io',
   toolChangeChecks: false,
   spindleSettleAdvice: false,
+  programChecks: Object.freeze({
+    end: 'M2-or-M30',
+    spindleOffAtEnd: false,
+    spindleSpeed: true,
+    spindleOnToCut: true,
+  }),
 });

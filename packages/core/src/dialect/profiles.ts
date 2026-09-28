@@ -69,6 +69,15 @@ export const MASSO_G3: Dialect = Object.freeze({
     g83Clearance: 0.254,
     // Docs: M98 P<n> runs the file n.nc, up to 5 levels; no O-words.
     subprograms: Object.freeze({ oWord: false, m98: 'file', maxCallDepth: 5 }),
+    // The operator, on the machine: a Masso job only finishes on M30, and expects the
+    // spindle stopped (M5) before it. To be confirmed by a machine test, with what M2
+    // does there.
+    programChecks: Object.freeze({
+      end: 'M30',
+      spindleOffAtEnd: true,
+      spindleSpeed: true,
+      spindleOnToCut: true,
+    }),
     // T17 accepted 0.5 mm on a 10 mm radius; LinuxCNC refuses that. Anything up to
     // 0.5 mm is accepted here; the real limit is on the machine-test backlog.
     arcTolerance: Object.freeze({

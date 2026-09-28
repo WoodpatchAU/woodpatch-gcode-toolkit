@@ -1598,3 +1598,39 @@ approximation.
 **Performance.** 2.2 s for a quarter turn of the 224k-line sample, mostly re-tokenizing
 217k changed lines. It's acceptable in a worker for now; a later parcel can avoid the
 re-tokenizing.
+
+## ADR-0035: Whole-job checks
+
+**Status:** Accepted, 2026-09-28. Operator request.
+
+**Decision.** `programChecks(program, steps, dialect)` in the core reports what a
+controller needs to run a job start to finish, as warnings:
+
+- `PROGRAM_END`: the job doesn't end the way the controller needs.
+  - **Masso finishes a job only on M30.** Without it, the job never finishes (the
+    operator, on the machine), and M2 is warned about too.
+  - LinuxCNC and generic accept M2 or M30.
+- `PROGRAM_SPINDLE_ON_AT_END`: the spindle is still on when the job ends. Masso expects
+  M5 before M30.
+- `PROGRAM_SPINDLE_NO_SPEED`: M3/M4 with no S programmed yet, or at S0. All controllers.
+  The message notes that a router whose speed is set by hand will expect this.
+- `PROGRAM_CUT_SPINDLE_OFF`: the job cuts (a feed move or arc) with the spindle never
+  started, or stopped. All controllers. Rapids don't count. The message allows that an
+  air cut or test may intend it.
+
+Each is reported once, at the first line it applies to. The checks are **dialect data**
+(`InterpreterRules.programChecks`: which end code, whether M5 must come first, whether
+to check speeds and the spindle while cutting). So they vary by controller, and a
+custom controller (roadmap) will set them.
+
+- **Separate from `interpret`.** The interpreter reports what each line does; these
+  judge a whole job. So the viewer's `loadProgram`, which loads jobs, runs them, and
+  the playground shows them with the other diagnostics. A snippet (a test, a transform,
+  a parity check) isn't told it lacks an M30.
+- **On real jobs:** the operator's BB and MillMage programs (ending `M5`, then `M30`)
+  raise nothing. The Masso machine-test air cut and upstream's Tux, neither of which
+  starts the spindle, are flagged.
+- **Still to confirm on the machine:** what Masso does with M2, and with no end code,
+  and whether it stops the spindle itself at M30. Masso's documentation describes M30
+  as "end the program and rewind" (with L repeats) and M02 as "program end", and says
+  nothing more.
