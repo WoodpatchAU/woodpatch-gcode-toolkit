@@ -19,7 +19,7 @@ import {
   type Dialect,
   type Position,
   type Step,
-  type TransformOp,
+  type GeometricOp,
 } from '../src/index.js';
 
 // ── The corpus: every transform is either refused cleanly or geometrically right ──
@@ -117,7 +117,7 @@ const motions = (src: string, dialect: Dialect) =>
 const work = (p: Position, o: Position) => [p.X - o.X, p.Y - o.Y, p.Z - o.Z] as const;
 const apply = (m: AffineMap, [x, y, z]: readonly [number, number, number]) =>
   [m.a * x + m.b * y + m.tx, m.c * x + m.d * y + m.ty, m.sz * z + m.tz] as const;
-const OPS: TransformOp[] = [
+const OPS: GeometricOp[] = [
   { op: 'rotate', degrees: 90, about: { x: 3, y: -7 } },
   { op: 'rotate', degrees: 180 },
   { op: 'rotate', degrees: 270 },
@@ -166,7 +166,7 @@ export function corpusSuite(entries: [string, Dialect][]): void {
     // (words renamed and translated), plus rotate ×4. Every other file runs every op, and
     // the smaller real jobs cover the mirror identity.
     const big = file.includes('aztec');
-    const ops = big ? ([OPS[0]] as TransformOp[]) : OPS;
+    const ops = big ? ([OPS[0]] as GeometricOp[]) : OPS;
     it.each(ops.map((op) => [JSON.stringify(op), op] as const))(
       '%s: refused cleanly, or every move lands where the map says',
       (_, op) => {
@@ -241,6 +241,50 @@ export function corpusSuite(entries: [string, Dialect][]): void {
       },
       60_000,
     );
+
+    // Units (parcel 4b, ADR-0034): a conversion moves nothing, and mm → inch → mm lands
+    // within a micrometre (the plan's acceptance).
+    it('converting units moves nothing: every step lands where it did', () => {
+      for (const to of ['inch', 'mm'] as const) {
+        const r = transform(parse(src), [{ op: 'units', to }], { dialect });
+        if (!r.ok) {
+          expect(write(r.program)).toBe(src);
+          continue;
+        }
+        const after = motions(write(r.program), dialect);
+        expect(after.length).toBe(before.length);
+        for (let i = 0; i < before.length; i++) {
+          const b = before[i] as Motion;
+          const a = after[i] as Motion;
+          expect(a.kind).toBe(b.kind);
+          for (const k of ['X', 'Y', 'Z'] as const)
+            expect(Math.abs(a.to[k] - b.to[k]), `${to}: line ${b.line} ${k}`).toBeLessThan(0.002);
+          if (a.kind === 'arc' && b.kind === 'arc') expect(a.clockwise).toBe(b.clockwise);
+        }
+      }
+    }, 60_000);
+
+    it('mm → inch → mm lands within a micrometre', () => {
+      const r = transform(
+        parse(src),
+        [
+          { op: 'units', to: 'inch' },
+          { op: 'units', to: 'mm' },
+        ],
+        {
+          dialect,
+        },
+      );
+      if (!r.ok) return;
+      const after = motions(write(r.program), dialect);
+      expect(after.length).toBe(before.length);
+      for (let i = 0; i < before.length; i++)
+        for (const k of ['X', 'Y', 'Z'] as const)
+          expect(
+            Math.abs((after[i] as Motion).to[k] - (before[i] as Motion).to[k]),
+            `line ${(before[i] as Motion).line} ${k}`,
+          ).toBeLessThanOrEqual(0.001);
+    }, 60_000);
 
     it('rotating a quarter turn four times gives the file back, byte for byte', () => {
       let p = parse(src);

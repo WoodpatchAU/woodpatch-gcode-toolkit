@@ -137,6 +137,13 @@ export interface InterpretOptions {
   /** Machine position before the first line. Default: all zeros. */
   readonly start?: Partial<Position>;
   /**
+   * The units in force before the program states any (G20/G21): the user's units
+   * preference (operator decision, 2026-09-28). Default mm. Given explicitly, a program
+   * that moves before stating its units also gets a warning (SEMANTIC_UNITS_ASSUMED),
+   * since a controller would read it in whatever units IT defaults to.
+   */
+  readonly units?: 'mm' | 'inch';
+  /**
    * Supplies a subprogram that lives in its own file (parcel 2c-3, ADR-0021): LinuxCNC
    * `o<name> call` (name lower-cased, e.g. "myfile" for myfile.ngc) or Masso
    * `M98 P<n>` (name "10" for 10.nc). Return the file's text, or undefined if there is

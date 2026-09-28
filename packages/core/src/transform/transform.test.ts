@@ -11,6 +11,7 @@ import {
   parse,
   transformText,
   type Dialect,
+  type GeometricOp,
   type TransformOp,
 } from '../index.js';
 
@@ -175,7 +176,7 @@ describe('what a transform leaves alone, and what stops it', () => {
       { op: 'rotate', degrees: 30 },
       { op: 'rotate', degrees: 10 },
       { op: 'scale', x: 1 / 3, z: 1 / 3 },
-    ] as TransformOp[]) {
+    ] as GeometricOp[]) {
       const r = t(src.join('\n'), [op]);
       expect(r.ok).toBe(true);
       const steps = interpret(parse(r.text)).steps.filter((s) => s.kind === 'linear');

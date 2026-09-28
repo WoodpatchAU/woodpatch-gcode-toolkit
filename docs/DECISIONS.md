@@ -1610,6 +1610,57 @@ and a scale of 1e20 wrote 21-digit numbers, both with ok=true. Now:
 A fast-check property over huge scales, moves and rotation centres checks that every
 result either refuses or writes only plain numbers in range.
 
+## ADR-0034: Units conversion, and the units preference
+
+**Status:** Accepted, 2026-09-28. Parcel 4b. Operator decisions of 2026-09-28.
+
+**Decision.** A `units` op in the transform recipe, `{ op: 'units', to, assume }`,
+converts a program between millimetres and inches. Nothing moves: interpreting the
+result gives the same toolpath.
+
+- **What converts.** Every length the program writes: X/Y/Z, arc centres (I/J/K) and
+  radii (R), canned-cycle retract heights and peck depths (R, Q), and G64's
+  tolerances. Also feeds in per-minute and per-revolution modes.
+  - Offsets (G10, G52, G92), machine positions (G53) and homes (G28/G30) convert too.
+    Unlike a geometric transform, which leaves them alone, a unit conversion must
+    convert them: the controller reads them in the program's units.
+  - Not converted: dwell times (G4 P), turns (G2 P), spindle speeds, tool numbers,
+    Masso's canned-cycle repeat count (K), and inverse-time feeds (a rate).
+- **Line by line, from its own units.** A program that switches units part way comes
+  out in one. Every G20/G21 word is rewritten to the target. F on a line that also
+  changes units converts from the units the dialect reads it in.
+- **Precision** (operator decision): values are rounded to 5 decimals in inches
+  (0.00001 in, about 0.25 µm) or 3 in millimetres, then trailing zeros are dropped.
+  25.4 mm is written 1.0 in; 10 mm is 0.3937 in; 254 mm/min is 10 in/min.
+  - The source's own decimal places aren't kept (unlike a geometric transform): they
+    mean nothing across units.
+  - mm → inch → mm lands within 1 µm on every fixture (the plan's acceptance).
+    Transforms keep their 4 inch decimals.
+- **The units preference** (operator decision). The user sets a units preference,
+  default mm, stored persistently: a secure cookie or equivalent in the playground, and per user in a
+  consuming application.
+  - A program that moves before stating its units is READ in the preference: the
+    interpreter takes a `units` option, and warns (SEMANTIC_UNITS_ASSUMED) when it's
+    given and relied on.
+  - It's CONVERTED from the preference (`assume`): the conversion inserts an explicit
+    G20/G21 at the first line of G-code, and warns (TRANSFORM_UNITS_ASSUMED).
+  - "Convert units" converts TO the preference, with an info note saying what was
+    converted. The UI for both comes in parcel 4e.
+- **Refused:**
+  - an expression or parameter in a length word;
+  - a G code whose words aren't all lengths or aren't modelled (G68's R is an angle);
+  - M98 calling another file, which would stay in the old units;
+  - O-word subroutines or loops in a program that switches units, since a subroutine
+    runs in its caller's units.
+
+  O-word control flow in a single-unit program is fine: each word converts the same
+  wherever it runs.
+
+**Evidence.** On every fixture, converting to inches and to mm moves nothing: every
+step lands where it did, within 2 µm, with arc directions unchanged. mm → inch → mm is
+within 1 µm. 40 of the 47 fixtures convert; the rest are refused for expressions, or
+for G87/G88.
+
 ## ADR-0035: Whole-job checks
 
 **Status:** Accepted, 2026-09-28. Operator request.
