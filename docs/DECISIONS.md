@@ -1707,6 +1707,37 @@ skipped `/` line), and refuses any line of this file whose run-time units, dista
 mode, feed mode or relied-on motion differ from the text's. The message names the
 cause. A sub called in the modes its text says still converts.
 
+**Corrected in the third review.** The run-time guard sees only lines the interpreter
+RUNS, and compares only what it models. So:
+
+- **Relied-on motion the text doesn't know counts as different:** none yet, G80, or a
+  motion the interpreter doesn't model. A body line `X1 Y1 Q0.2`, read with no motion
+  but run under the caller's G83, had its Q (a peck depth) left unconverted.
+- **Subprograms the preview doesn't run are refused:** in-file (Fanuc-style) M98/M99 on
+  LinuxCNC, and a call to a subroutine not defined in this file, which stays in the old
+  units.
+- **A run that stops before the end is refused.** The lines after the stop were never
+  checked.
+- **Only the modes a line reads are compared:**
+  - units, for a length or a feed;
+  - distance mode, for X/Y/Z/R;
+  - feed mode, for F;
+  - motion, where the line relies on it.
+
+  A code that takes the line's own words (G4, G10, G28, G30, G52, G64, G92) relies on no
+  motion. So a body of `M9` and `G4 P1`, called under G91 or G93, converts.
+
+- **Block-deletable incremental lines carry their rounding in a chain of their own.**
+  The lines that always run sum exactly whether the `/` lines run or not, and so do the
+  `/` lines. With 1,000 of each, the end is within 0.04 µm either way. One shared chain
+  was 0.23 µm off with block delete on. Isolating the `/` lines instead would have been
+  94 µm off with it off.
+- **One cause names its first 20 lines, then counts the rest.**
+- **Not changed:** a file with its subroutines at the top, stating G21 when the
+  preference is inch, is still refused. Its body text reads in the preference, but runs
+  after the G21. Converting each line under its run-time state would accept it. That's a
+  bigger change, which the text-order refusal keeps safe for now.
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long

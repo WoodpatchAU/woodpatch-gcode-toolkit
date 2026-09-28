@@ -32,6 +32,8 @@ const UNITS_G = new Set([
 ]);
 const CYCLES = new Set([73, 81, 82, 83, 84, 85, 86, 89]);
 const MOTION = new Set([0, 1, 2, 3, 38.2, 73, 80, 81, 82, 83, 84, 85, 86, 89]);
+/** Codes that use the line's axis, P or Q words themselves, so no motion reads them. */
+const OWN_WORDS = new Set([4, 10, 28, 30, 52, 64, 92]);
 /** Letters that are never lengths. */
 const NOT_LENGTH = new Set(['G', 'M', 'N', 'T', 'H', 'D', 'S', 'A', 'B', 'C', 'L', 'O']);
 
@@ -65,8 +67,28 @@ export function convertUnits(
   // condition like [#5422 GT -10] compares a position with a number in the old units.
   // Control flow (O-words, M98/M99) means lines run out of text order.
   let flow = false;
+  const defined = new Set<string>();
+  const calls: { name: string; line: number }[] = [];
+  const inFileM98 = dialect.interpreter.subprograms.m98 !== 'file';
   for (const line of program.lines)
     for (const t of line.tokens) {
+      if (t.kind === 'oword' && (t.keyword === 'sub' || t.keyword === 'call')) {
+        const name = line.text.slice(t.label.start, t.label.end).toLowerCase().replace(/\s+/g, '');
+        if (t.keyword === 'sub') defined.add(name);
+        else calls.push({ name, line: line.lineNo });
+      }
+      if (
+        inFileM98 &&
+        t.kind === 'word' &&
+        t.letter === 'M' &&
+        t.value?.kind === 'number' &&
+        (t.value.value === 98 || t.value.value === 99)
+      )
+        error(
+          line.lineNo,
+          'TRANSFORM_CONTROL_FLOW',
+          `M${t.value.value} (a subprogram in this file, Fanuc style) isn't run by the preview on this controller, so the modes its body runs in can't be checked. Refusing`,
+        );
       if (
         t.kind === 'assignment' ||
         t.kind === 'argument' ||
@@ -99,11 +121,25 @@ export function convertUnits(
         );
     }
 
+  // A call to a subroutine that isn't in this file runs another file, which a
+  // conversion of this one would leave in the old units.
+  for (const c of calls)
+    if (!defined.has(c.name))
+      error(
+        c.line,
+        'TRANSFORM_CONTROL_FLOW',
+        `o${c.name} isn't defined in this file: it calls a subroutine in another file, which would stay in the old units`,
+      );
+
   let units: Units = assume;
   let absolute = true;
   let feedMode: FeedMode = 'per-minute';
   let motion: number | null = null;
-  const carry: Record<Axis, number> = { X: 0, Y: 0, Z: 0 };
+  // Two carry chains: lines that always run, and block-deletable ones (see skippable).
+  const carries: [Record<Axis, number>, Record<Axis, number>] = [
+    { X: 0, Y: 0, Z: 0 },
+    { X: 0, Y: 0, Z: 0 },
+  ];
   const seen = new Set<Units>();
   let converted = 0;
 
@@ -181,6 +217,14 @@ export function convertUnits(
     // after it). In the OUTPUT that's always the target: the units are stated first.
     const feedFactor = factor(feedAtEndOfLine ? units : before, to);
     // A repeat that steps in G91 re-applies each rounded increment.
+    // A block-deletable line may not run (where "/" is a switch). So such lines carry
+    // their rounding in a chain of their own: the lines that always run sum exactly
+    // whether they run or not, and so do they (review of #37). An absolute word on a line
+    // that always runs fixes the position for both chains.
+    const skippable =
+      dialect.interpreter.blockDelete === 'switch' &&
+      line.tokens.some((t) => t.kind === 'block-delete');
+    const carry = carries[skippable ? 1 : 0];
     const repeats =
       cycleRuns &&
       !absolute &&
@@ -197,7 +241,10 @@ export function convertUnits(
       if (L === 'X' || L === 'Y' || L === 'Z') {
         f = lengthFactor;
         if (!absolute && !offsetLine) axis = L;
-        else if (absolute) carry[L] = 0;
+        else if (absolute) {
+          carry[L] = 0;
+          if (!skippable) carries[1][L] = 0;
+        }
       } else if (L === 'I' || L === 'J' || L === 'K') {
         if (L === 'K' && cycleRuns && repeatLetter === 'K') continue; // Masso's repeat count
         if (!arc) {
@@ -276,6 +323,7 @@ export function convertUnits(
   // One that appears only with it ON comes from a skipped "/" line.
   let assumed = false;
   const refused = new Set<number>();
+  const MAX_MODE_ERRORS = 20;
   // Only worth running when nothing else refused: a refused loop may never end.
   for (const blockDelete of errors.length ? [] : [false, true]) {
     const run = interpret(program, {
@@ -289,6 +337,8 @@ export function convertUnits(
         const differs = modeDifference(t, state, program.lines[n - 1]);
         if (!differs) return;
         refused.add(n);
+        // One cause usually refuses many lines: name the first few, count the rest.
+        if (refused.size > MAX_MODE_ERRORS) return;
         error(
           n,
           'TRANSFORM_CONTROL_FLOW',
@@ -301,7 +351,23 @@ export function convertUnits(
       },
     });
     if (blockDelete) assumed = run.diagnostics.some((d) => d.code === 'SEMANTIC_UNITS_ASSUMED');
+    // A run that stopped never checked the lines after the stop (review of #37).
+    if (!run.completed) {
+      const why = [...run.diagnostics].reverse().find((d) => d.severity === 'error');
+      error(
+        why?.line ?? 0,
+        'TRANSFORM_CONTROL_FLOW',
+        `The preview's run stopped here${why ? ` (${why.message})` : ''}, so the modes of the lines after it can't be checked. Refusing`,
+      );
+      break;
+    }
   }
+  if (refused.size > MAX_MODE_ERRORS)
+    error(
+      0,
+      'TRANSFORM_CONTROL_FLOW',
+      `…and ${refused.size - MAX_MODE_ERRORS} more lines run in other modes than their text says`,
+    );
 
   if (seen.size > 1 && flow)
     error(
@@ -408,28 +474,32 @@ function firstMainLine(program: Program): Line | undefined {
 
 /**
  * How the modes a line runs under differ from the text's, in words, or null if they
- * don't. Motion matters only to a line that relies on it (no motion code of its own,
- * but words a motion reads), and only for the motions the interpreter models.
+ * don't. Only the modes the line READS are compared (review of #37): units for any
+ * length or feed, distance mode for X/Y/Z/R, feed mode for F, and the modal motion
+ * where the line relies on it (no motion code of its own, but words a motion reads).
+ * Relied-on motion the text doesn't know, or the interpreter doesn't model (none yet,
+ * G80, G38.x…), counts as different: unknown is never assumed to match.
  */
 function modeDifference(t: TextState, run: ModalState, line: Line | undefined): string | null {
+  const words = (line?.tokens ?? []).filter((x): x is WordToken => x.kind === 'word');
+  const has = (letters: string) => words.some((w) => letters.includes(w.letter));
+  const g64 = words.some((w) => w.letter === 'G' && num0(w) === 64);
   const diffs: string[] = [];
-  if (run.units !== t.units) diffs.push(`in ${run.units === 'inch' ? 'inches' : 'mm'}`);
-  if ((run.distance === 'absolute') !== t.absolute) diffs.push(`in ${run.distance} mode`);
-  if (run.feedMode !== t.feedMode) diffs.push(`with ${run.feedMode} feed`);
-  if (t.motion !== null && line) {
-    const words = line.tokens.filter((x): x is WordToken => x.kind === 'word');
-    const own = words.some((w) => w.letter === 'G' && MOTION.has(num0(w) ?? -1));
-    const reads = words.some((w) => 'XYZIJKRQP'.includes(w.letter));
+  if (has('XYZIJKRQF') || (g64 && has('P')))
+    if (run.units !== t.units) diffs.push(`in ${run.units === 'inch' ? 'inches' : 'mm'}`);
+  if (has('XYZR') && (run.distance === 'absolute') !== t.absolute)
+    diffs.push(`in ${run.distance} mode`);
+  if (has('F') && run.feedMode !== t.feedMode) diffs.push(`with ${run.feedMode} feed`);
+  // A code that takes the line's words itself (a dwell's P, G10/G28/G30/G52/G92's axes)
+  // leaves nothing for a modal motion to read.
+  const own = words.some(
+    (w) => w.letter === 'G' && (MOTION.has(num0(w) ?? -1) || OWN_WORDS.has(num0(w) ?? -1)),
+  );
+  if (!own && has('XYZIJKRQP')) {
     const modelled = ['G0', 'G1', 'G2', 'G3', 'G73', 'G81', 'G82', 'G83'];
-    const text = `G${t.motion}`;
-    if (
-      !own &&
-      reads &&
-      modelled.includes(text) &&
-      modelled.includes(run.motion) &&
-      run.motion !== text
-    )
-      diffs.push(`under ${run.motion}`);
+    const text = t.motion === null ? null : `G${t.motion}`;
+    if (text === null || !modelled.includes(text) || text !== run.motion)
+      diffs.push(`under ${run.motion}${text === null ? '' : ` (the text says ${text})`}`);
   }
   return diffs.length ? diffs.join(', ') : null;
 }

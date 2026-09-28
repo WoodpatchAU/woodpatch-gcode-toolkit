@@ -322,3 +322,70 @@ describe('units: the second review of #37 (modes the text says vs modes the line
     ).toBe(true);
   });
 });
+
+describe('units: the third review of #37 (what the run-time guard cannot see)', () => {
+  const refusedAt = (src: string, d: Dialect = GENERIC) => {
+    const r = u(src, 'inch', 'mm', d);
+    expect(r.ok, src).toBe(false);
+    expect(r.text).toBe(src);
+    return r.diagnostics.filter((x) => x.severity === 'error');
+  };
+
+  it('relied-on motion the text does not know counts as different', () => {
+    // Text motion: none yet. Run motion: the caller's G83, so Q is a peck depth.
+    const none = refusedAt(
+      'o100 sub\nX1 Y1 Q0.2\no100 endsub\nG21 G90 G83 X0 Y0 Z-1 R1 Q0.5 F100\no100 call\nG80\nM2',
+    );
+    expect(none.map((d) => `${d.code}@${d.line}`)).toContain('TRANSFORM_CONTROL_FLOW@2');
+    expect(none[0]?.message).toContain('under G83');
+    // Text motion: G80 (not a motion at all).
+    const g80 = refusedAt(
+      'G21 G90\nG80\no100 sub\nX1 Y1 Q0.2\no100 endsub\nG83 X0 Y0 Z-1 R1 Q0.5 F100\no100 call\nG80\nM2',
+    );
+    expect(g80[0]?.message).toContain('the text says G80');
+  });
+
+  it('refuses subprograms the preview does not run: in-file M98/M99, another file', () => {
+    const m98 = refusedAt('G21\nG93\nM98 P100\nM2\nO100\nG1 X1 F2\nM99', LINUXCNC);
+    expect(m98.map((d) => d.line)).toEqual([3, 7]);
+    expect(m98[0]?.message).toContain('Fanuc style');
+    const ext = refusedAt('G21\no<ext> call\nG1 X1 F10\nM2');
+    expect(ext[0]?.message).toContain("o<ext> isn't defined in this file");
+  });
+
+  it('refuses when the run stops before the end', () => {
+    const deep = refusedAt('G21\no100 sub\no100 call\no100 endsub\no100 call\nM2');
+    expect(deep.at(-1)?.message).toContain("The preview's run stopped here");
+  });
+
+  it('compares only the modes a line reads', () => {
+    // A body with only M9 and a dwell, called under G91 and under G93: nothing to convert.
+    expect(
+      u('G21\no100 sub\nM9\nG4 P1\no100 endsub\nG91\no100 call\nG93\no100 call\nG94\nM2', 'inch')
+        .ok,
+    ).toBe(true);
+  });
+
+  it('names the first 20 lines one cause refuses, and counts the rest', () => {
+    const src = `G21 G90\n/G91\n${'G1 X1 F10\n'.repeat(30)}M2`;
+    const errs = refusedAt(src);
+    expect(errs.filter((d) => d.line > 0)).toHaveLength(20);
+    expect(errs.at(-1)?.message).toContain('and 10 more lines');
+  });
+
+  it('block-deletable G91 lines carry their rounding in a chain of their own', () => {
+    // 1,000 skippable inexact moves between plain ones: with block delete on or off,
+    // the program ends within 0.1 µm of exact (measured: 0.02 and 0.04 µm; one shared
+    // chain was 0.23 µm off with block delete on).
+    const src = `G21 G91\n${'G1 X0.01 F100\n/G1 X0.01\n'.repeat(1000)}M2`;
+    const r = u(src, 'inch');
+    expect(r.ok).toBe(true);
+    for (const blockDelete of [true, false]) {
+      const end = interpret(parse(r.text), { blockDelete })
+        .steps.filter((s) => s.kind === 'linear')
+        .at(-1);
+      const want = blockDelete ? 10 : 20;
+      expect(Math.abs((end?.to.X ?? 0) - want), `blockDelete ${blockDelete}`).toBeLessThan(0.0001);
+    }
+  });
+});
