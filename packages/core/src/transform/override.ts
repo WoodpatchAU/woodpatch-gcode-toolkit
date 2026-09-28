@@ -5,7 +5,7 @@ import type { Dialect } from '../dialect/profiles.js';
 import { interpret } from '../interp/interpret.js';
 import { editLine, type LineEdit } from '../syntax/program.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
-import { formatLike } from './format.js';
+import { formatLike, MAX_WRITTEN, writable } from './format.js';
 import type { LineRange } from './map.js';
 
 /**
@@ -43,6 +43,26 @@ function feedMoves(
     }
   }
   return { moves: out, completed: run.completed };
+}
+
+/**
+ * Refuses a `letter` word whose value times `k` no controller could read (beyond
+ * MAX_WRITTEN, ADR-0033). Every value an override writes is an original or an original
+ * times `k`, so checking those first means the formatter never meets one.
+ */
+function outOfRange(program: Program, letter: string, k: number, errors: Diagnostic[]): void {
+  for (const line of program.lines)
+    for (const t of line.tokens)
+      if (t.kind === 'word' && t.letter === letter && t.value?.kind === 'number') {
+        const v = t.value.value * k;
+        if (!writable(v))
+          errors.push({
+            severity: 'error',
+            code: 'TRANSFORM_OUT_OF_RANGE',
+            message: `${letter} would be ${Number.isFinite(v) ? String(v) : 'infinite'}: beyond ±${MAX_WRITTEN.toLocaleString('en-AU')}, no controller reads it. Refusing`,
+            line: line.lineNo,
+          });
+      }
 }
 
 const inRange = (n: number, r: LineRange | undefined) => !r || (n >= r.from && n <= r.to);
@@ -117,6 +137,8 @@ export function overrideFeed(
         });
     }
 
+  outOfRange(program, 'F', k, errors);
+  if (errors.length) return { ok: false, program, diagnostics: errors };
   let inch = false;
   let original: number | null = null; // the program's F, in its own terms
   let written: number | null = null; // the F the controller has after our edits
@@ -206,6 +228,8 @@ export function overrideSpindle(
 ): { ok: boolean; program: Program; diagnostics: Diagnostic[] } {
   const k = percent / 100;
   const errors: Diagnostic[] = [];
+  outOfRange(program, 'S', k, errors);
+  if (errors.length) return { ok: false, program, diagnostics: errors };
   let changed = 0;
   const out: Line[] = [];
   for (const line of program.lines) {

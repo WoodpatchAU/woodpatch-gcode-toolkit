@@ -115,4 +115,18 @@ describe('override ops are validated', () => {
       ]).ok,
     ).toBe(true);
   });
+
+  it('refuses an override whose result no controller reads, rather than write an exponent', () => {
+    for (const op of [
+      { op: 'feed', percent: 1e300 },
+      { op: 'feed', percent: 1e300, only: 'plunge' },
+      { op: 'spindle', percent: 1e300 },
+    ] as const) {
+      const src = 'G21 G90\nM3 S18000\nG1 X1 F300\nG1 Z-1\nM2';
+      const r = transformText(src, [op]);
+      expect(r.ok, JSON.stringify(op)).toBe(false);
+      expect(r.text).toBe(src);
+      expect(r.diagnostics.map((d) => d.code)).toContain('TRANSFORM_OUT_OF_RANGE');
+    }
+  });
 });
