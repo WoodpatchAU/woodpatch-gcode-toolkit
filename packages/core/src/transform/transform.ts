@@ -6,6 +6,7 @@ import { editLine, parse, write, type LineEdit } from '../syntax/program.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
 import { formatLike, MAX_WRITTEN, writable } from './format.js';
 import { invalidOp, mapOf, type GeometricOp, type TransformOp } from './map.js';
+import { overrideFeed, overrideSpindle } from './override.js';
 import { convertUnits } from './units.js';
 
 /**
@@ -57,7 +58,11 @@ export function transform(
     const r =
       op.op === 'units'
         ? convertUnits(current, op.to, op.assume ?? 'mm', dialect)
-        : applyOne(current, op, dialect);
+        : op.op === 'feed'
+          ? overrideFeed(current, op.percent, op.only, op.lines, dialect)
+          : op.op === 'spindle'
+            ? overrideSpindle(current, op.percent, op.lines)
+            : applyOne(current, op, dialect);
     diagnostics.push(...r.diagnostics);
     if (!r.ok) return { program, diagnostics, changedLines: 0, ok: false };
     current = r.program;
