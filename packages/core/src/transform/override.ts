@@ -23,10 +23,14 @@ import type { LineRange } from './map.js';
 type MoveKind = 'cut' | 'plunge';
 
 /** Each line's feed moves: plunge if all are vertical (Z only), cut if any isn't. */
-function feedMoves(program: Program, dialect: Dialect): Map<number, MoveKind> {
+function feedMoves(
+  program: Program,
+  dialect: Dialect,
+): { moves: Map<number, MoveKind>; completed: boolean } {
   const out = new Map<number, MoveKind>();
   // Block delete off, so "/" lines are classified too.
-  for (const s of interpret(program, { dialect, blockDelete: false }).steps) {
+  const run = interpret(program, { dialect, blockDelete: false });
+  for (const s of run.steps) {
     if (s.file) continue;
     if (s.kind === 'arc') out.set(s.line, 'cut');
     else if (s.kind === 'linear' && !s.rapid) {
@@ -38,7 +42,7 @@ function feedMoves(program: Program, dialect: Dialect): Map<number, MoveKind> {
       else if (out.get(s.line) !== 'cut') out.set(s.line, 'plunge');
     }
   }
-  return out;
+  return { moves: out, completed: run.completed };
 }
 
 const inRange = (n: number, r: LineRange | undefined) => !r || (n >= r.from && n <= r.to);
@@ -76,7 +80,19 @@ export function overrideFeed(
         'An override limited to plunges, cuts or a range of lines needs each line to run once, in order: subroutines, calls and loops make that unknowable. A plain override of every feed works',
       line: 0,
     });
-  const moves = selective ? feedMoves(program, dialect) : new Map<number, MoveKind>();
+  const classified = selective ? feedMoves(program, dialect) : null;
+  const moves = classified?.moves ?? new Map<number, MoveKind>();
+  // A run that stopped early never classified the lines after the stop. Defensive:
+  // the causes of a stop other than the safety limits (2 million steps and the like)
+  // are control flow, which a selective override has refused already.
+  if (classified && !classified.completed)
+    errors.push({
+      severity: 'error',
+      code: 'TRANSFORM_CONTROL_FLOW',
+      message:
+        "The preview's run stopped before the end, so which later lines are plunges or cuts is unknown: an override limited to plunges, cuts or lines can't be applied. A plain override of every feed works",
+      line: 0,
+    });
   // The walker tracks F in text order. Where "/" is an operator's switch, a block-
   // deletable line that feeds or sets the feed may not run, and the F in force after
   // it then differs from the one tracked (as the second review of #37 found for units).
