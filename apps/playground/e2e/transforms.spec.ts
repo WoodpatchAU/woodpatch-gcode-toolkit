@@ -17,6 +17,8 @@ function watch(page: Page): string[] {
 const PART = 'G21 G90\nG0 X0 Y0\nG1 X10 Y5 F300\nM2\n';
 const code = (page: Page) => page.locator('.cm-content');
 const status = (page: Page) => page.locator('#status');
+/** The panel's own status line (the page's is overwritten by each re-read). */
+const said = (page: Page) => page.locator('#transform-status');
 
 /** Opens `text` as a file, and the transform panel. */
 async function openPart(page: Page, text = PART, name = 'part.nc'): Promise<void> {
@@ -37,7 +39,7 @@ test('a move is applied, undone and redone, and listed in the recipe', async ({ 
   const problems = watch(page);
   await openPart(page);
   await move(page, '5');
-  await expect(status(page)).toContainText('Move X 5, Y 0, Z 0 mm: 2 lines changed');
+  await expect(said(page)).toContainText('Move X 5, Y 0, Z 0 mm: 2 lines changed');
   await expect(code(page)).toContainText('G1 X15 Y5 F300');
   await expect(page.locator('#recipe')).toContainText('Move X 5, Y 0, Z 0 mm');
 
@@ -74,7 +76,7 @@ test('a refused transform changes nothing, and says why, by line', async ({ page
   await page.selectOption('#op', 'rotate');
   await page.fill('input[name="deg"]', '90');
   await page.click('#apply');
-  await expect(status(page)).toContainText('refused, nothing changed');
+  await expect(said(page)).toContainText('refused, nothing changed');
   await expect(page.locator('#transform-notes')).toContainText('TRANSFORM_EXPRESSION');
   await expect(code(page)).toContainText('G1 X#1 Y0 F100');
   await expect(page.locator('#undo')).toBeDisabled();
@@ -89,7 +91,7 @@ test('an edit by hand starts the history again', async ({ page }) => {
   await code(page).click();
   await page.keyboard.press('ControlOrMeta+End');
   await page.keyboard.type('(note)');
-  await expect(status(page)).toContainText('Edited by hand');
+  await expect(said(page)).toContainText('Edited by hand');
   await expect(page.locator('#undo')).toBeDisabled();
   await expect(page.locator('#recipe li')).toHaveCount(0);
   expect(problems).toEqual([]);
@@ -131,7 +133,7 @@ test('the recipe and the result are saved, and a recipe applies to another file'
     buffer: Buffer.from(json),
   });
   await expect(code(page)).toContainText('G1 X6 Y2 F100');
-  await expect(status(page)).toContainText('part.recipe.json: 1 steps applied');
+  await expect(said(page)).toContainText('part.recipe.json: 1 step applied');
 
   // A recipe with a misspelt field is refused, naming the step.
   await page.setInputFiles('#import-recipe', {

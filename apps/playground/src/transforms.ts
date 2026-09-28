@@ -24,7 +24,6 @@ export interface PanelHost {
   goToLine(n: number): void;
   /** The open file's name, for saved files. */
   fileName(): string;
-  status(message: string): void;
 }
 
 export interface Panel {
@@ -55,6 +54,10 @@ export function installTransformPanel(host: PanelHost, makeWorker: () => Worker)
   const exportBtn = $<HTMLButtonElement>('export-recipe');
   const importInput = $<HTMLInputElement>('import-recipe');
   const saveBtn = $<HTMLButtonElement>('save-gcode');
+  // The panel's own status line: the page's is overwritten by the re-read that follows
+  // every transform, and the outcome would flash past unseen.
+  const statusEl = $('transform-status');
+  const say = (m: string) => (statusEl.textContent = m);
 
   const history = new TransformHistory();
   const runner = new TransformRunner(makeWorker);
@@ -128,29 +131,29 @@ export function installTransformPanel(host: PanelHost, makeWorker: () => Worker)
     }
     const before = host.getText();
     setBusy(true);
-    host.status('Transforming…');
+    say('Transforming…');
     let r: TransformResponse;
     try {
       r = await runner.run(before, [op], host.dialect());
     } catch (e) {
-      host.status(`Transform failed: ${(e as Error).message}`);
+      say(`Transform failed: ${(e as Error).message}`);
       return false;
     } finally {
       setBusy(false);
     }
     // Typed into while it ran: the result is for text that's gone.
     if (host.getText() !== before) {
-      host.status('The text changed while transforming; not applied');
+      say('The text changed while transforming; not applied');
       return false;
     }
     showNotes(r.diagnostics);
     if (!r.ok) {
-      host.status(`${describeOp(op)}: refused, nothing changed`);
+      say(`${describeOp(op)}: refused, nothing changed`);
       return false;
     }
     history.push(before, op, r.text);
     host.setText(r.text);
-    host.status(`${describeOp(op)}: ${r.changedLines.toLocaleString()} lines changed`);
+    say(`${describeOp(op)}: ${r.changedLines.toLocaleString()} lines changed`);
     refresh();
     return true;
   }
@@ -188,26 +191,27 @@ export function installTransformPanel(host: PanelHost, makeWorker: () => Worker)
   });
   async function applyRecipe(f: File): Promise<void> {
     if (f.size > MAX_RECIPE) {
-      host.status(`${f.name} is too big to be a recipe`);
+      say(`${f.name} is too big to be a recipe`);
       return;
     }
     const parsed = parseRecipe(await f.text());
     if (!parsed.ok) {
       showNotes([{ severity: 'error', code: 'RECIPE_INVALID', message: parsed.error, line: 0 }]);
-      host.status(`${f.name}: not applied`);
+      say(`${f.name}: not applied`);
       return;
     }
     // Applied one at a time, so each can be undone, stopping at the first refusal.
     for (const [i, op] of parsed.ops.entries())
       if (!(await apply(op))) {
-        host.status(`${f.name}: stopped at step ${i + 1} of ${parsed.ops.length}`);
+        say(`${f.name}: stopped at step ${i + 1} of ${parsed.ops.length}`);
         return;
       }
     const other =
       parsed.dialect !== null && parsed.dialect !== host.dialect()
         ? ` (it was saved for ${parsed.dialect})`
         : '';
-    host.status(`${f.name}: ${parsed.ops.length} steps applied${other}`);
+    const n = parsed.ops.length;
+    say(`${f.name}: ${n} step${n === 1 ? '' : 's'} applied${other}`);
   }
 
   // ── Display ──
@@ -271,6 +275,7 @@ export function installTransformPanel(host: PanelHost, makeWorker: () => Worker)
     reset() {
       history.reset();
       notes.replaceChildren();
+      say('');
       refresh();
     },
     handEdited() {
@@ -278,7 +283,7 @@ export function installTransformPanel(host: PanelHost, makeWorker: () => Worker)
       history.reset();
       notes.replaceChildren();
       refresh();
-      host.status('Edited by hand: the transform history starts again from here');
+      say('Edited by hand: the transform history starts again from here');
     },
     dialectChanged() {
       ghostKey = '';

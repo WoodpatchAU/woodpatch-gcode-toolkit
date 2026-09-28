@@ -1686,6 +1686,9 @@ and arc-to-line controls follow when their core parcels merge (4e-2).
 - **A refused transform changes nothing.** Its reasons are listed with their lines, as
   diagnostics are. A result for text that was typed into while the transform ran is
   discarded, not applied.
+- **The panel has its own status line.** Each transform is followed by a re-read,
+  which writes the page's status ("Read in … ms"). So an outcome posted there flashed
+  past unseen (found by the browser tests).
 - **Recipes** are a small JSON file (`woodpatch-gcode-recipe`, version 1: the ops and
   the controller they were made for). On the way in, every op is checked as the core
   checks it, so a misspelt field is refused, naming the step, never read as zero. The

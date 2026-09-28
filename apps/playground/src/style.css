@@ -144,6 +144,11 @@ button:hover:not(:disabled) {
   margin: 0;
   padding-left: 1.4rem;
 }
+.transform-status {
+  margin: 0;
+  color: var(--muted);
+  min-height: 1.2em;
+}
 .recipe:empty,
 #transform-notes:empty {
   display: none;

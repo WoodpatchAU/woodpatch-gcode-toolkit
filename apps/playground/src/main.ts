@@ -326,7 +326,6 @@ const panel = installTransformPanel(
     },
     goToLine,
     fileName: () => currentName,
-    status: (m) => (status.textContent = m),
   },
   makeWorker,
 );
