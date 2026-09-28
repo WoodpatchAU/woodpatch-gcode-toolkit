@@ -309,6 +309,50 @@ export function corpusSuite(entries: [string, Dialect][]): void {
           ).toBeLessThanOrEqual(0.001);
     }, 60_000);
 
+    // Overrides (parcel 4c, ADR-0036): the geometry is untouched, and each move's
+    // actual feed (as the interpreter reads the result) is EXACTLY the original times the
+    // override where it applies, and exactly the original where it doesn't. A line is a
+    // plunge when all its feed moves are vertical (Z only), else a cut.
+    it("a feed override changes each move's feed as it should, and nothing else", () => {
+      const kind = new Map<number, 'cut' | 'plunge'>();
+      for (const b of before) {
+        if (b.kind === 'linear' && b.rapid) continue;
+        const vertical =
+          b.kind === 'linear' &&
+          Math.hypot(b.to.X - b.from.X, b.to.Y - b.from.Y) < 1e-9 &&
+          b.to.Z !== b.from.Z;
+        if (!vertical) kind.set(b.line, 'cut');
+        else if (kind.get(b.line) !== 'cut') kind.set(b.line, 'plunge');
+      }
+      for (const only of [undefined, 'plunge', 'cut'] as const) {
+        const r = transform(parse(src), [{ op: 'feed', percent: 80, ...(only ? { only } : {}) }], {
+          dialect,
+        });
+        if (!r.ok) {
+          expect(write(r.program)).toBe(src);
+          continue;
+        }
+        const after = motions(write(r.program), dialect);
+        expect(after.length).toBe(before.length);
+        for (let i = 0; i < before.length; i++) {
+          const b = before[i] as Motion;
+          const a = after[i] as Motion;
+          for (const k of ['X', 'Y', 'Z'] as const) expect(a.to[k]).toBe(b.to[k]);
+          if (b.kind === 'linear' && b.rapid) continue;
+          const fb = b.feed;
+          const fa = a.kind === 'arc' || !a.rapid ? a.feed : null;
+          if (fb?.mode !== 'per-minute' || fa?.mode !== 'per-minute') continue;
+          const applies = only === undefined || kind.get(b.line) === only;
+          const want = applies ? fb.mmPerMinute * 0.8 : fb.mmPerMinute;
+          // F is written to 1 decimal in mm, 2 in inches (0.127 mm/min).
+          expect(
+            Math.abs(fa.mmPerMinute - want),
+            `${only ?? 'all'}: line ${b.line}`,
+          ).toBeLessThanOrEqual(0.13);
+        }
+      }
+    }, 60_000);
+
     it('rotating a quarter turn four times gives the file back, byte for byte', () => {
       let p = parse(src);
       for (let i = 0; i < 4; i++) {
