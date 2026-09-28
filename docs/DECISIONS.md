@@ -1925,6 +1925,78 @@ the result) is exactly the original times the override where it applies, and exa
 original where it doesn't. A mutation that skips the restore after an overridden plunge
 fails both it and a unit test.
 
+## ADR-0037: Arc to line conversion
+
+**Status:** Accepted, 2026-09-28. Operator decisions on the plan's Phase 4 issue.
+
+**Decision.** `{ op: 'arcs' }` turns G2/G3 arcs into runs of G1 chords, for
+controllers or tools that handle arcs badly. The operator's decisions:
+
+- The default tolerance is **0.01 mm**: the most any chord may stray from the true arc.
+  A user can set their own.
+- **Every arc** is converted by default. Optional filters narrow it: a line range,
+  and/or a radius band (for example, only the tiny arcs a controller chokes on).
+- **G91 arcs carry rounding** from chord to chord, as the units conversion does
+  (ADR-0034). So the arc ends exactly where it did.
+
+How it works:
+
+- **The geometry is the interpreter's**: the same centre, sweep, helix and spiral
+  that the viewer draws, sampled by the viewer's own arc function. Chords are evenly
+  spaced in angle. There are enough of them that the chord's sagitta **plus** the
+  rounding of the written numbers stays within the tolerance. Numbers get at least
+  3 decimals in mm and 4 in inches, and more when the tolerance needs them. The
+  tolerance is always in mm, converted for inch lines.
+- **What happens to the arc's line.** The first chord keeps everything else on the
+  line: its N number, F, S, M codes and comments. G2/G3 becomes G1, or G1 is added if
+  the arc motion was modal. The first chord's end replaces the arc's words (X/Y/Z,
+  I/J/K, R, P). Later chords carry only the moving axes: the plane's two, plus the
+  normal axis on a helix. They follow the source's letter case and spacing.
+- **The end is exact.** In G90 the last chord uses the line's own end words,
+  verbatim. An axis the line doesn't name (a full circle's start) is written at the
+  precision that makes it exact. In G91 the carried rounding makes the increments sum
+  exactly.
+- **Modal motion.** After the chords, G1 is in force, not G2/G3. So an arc that is
+  left out by a filter, and relied on the modal G2/G3, gets G2/G3 written on it again.
+  Under control flow, where the text order isn't the run order, that happens whenever
+  anything was converted.
+- **Block delete.** Every chord of a block-deleted arc is block-deleted too. The
+  program is interpreted with the switch on and off.
+- **Every run must agree.** A line that runs more than once (a subroutine, a loop, or
+  with block delete on and off) must convert the same way every time, or it's refused.
+  A G91 arc in a loop is fine: its chords are relative, and so identical each time. An
+  arc in a G90 subroutine called from two places isn't.
+- **Refused:**
+  - expressions or parameters on an arc's line;
+  - other axes (A/B/C/U/V/W) on the line;
+  - M codes that act after the move (M0, M1, M2, M30, M60, M98, M99), which would end
+    up after the first chord;
+  - inverse-time feed (G93), where each chord would need its own F;
+  - cutter compensation in force: the controller would offset the chords, not the arc,
+    and short chords can stop it on an inside corner;
+  - more than 100,000 chords for one arc, or 2,000,000 lines in all;
+  - with control flow, a program that switches units or distance mode, or uses
+    compensation anywhere, because the mode at each arc can't be known from the text.
+- **Not refused: coordinate rotation** (G68, G10 R). The interpreter doesn't simulate
+  it, so its coordinates are the programmed ones. A rotation maps the chords of an arc
+  onto the chords of the rotated arc, so the conversion is right either way.
+- **An arc that never runs** (a branch not taken, after the end, or rejected by the
+  interpreter) is left as it is, with a warning.
+
+**Verified.**
+
+- A fast-check property over random arcs: any plane, clockwise or not, helical or not,
+  G90 or G91, mm or inch, at tolerances from 0.001 to 0.2 mm. Every chord is compared
+  at five points with the arc at the same fraction of its sweep, which bounds the
+  distance from above. The last chord ends on the arc's end (within 1 nm), and the move
+  after it lands where it did.
+- The transform corpus runs the same check on every fixture. Twelve convert, including
+  Aztec's 240 arcs (1,153 chords), and none are refused.
+- 10,000 small G91 arcs end within 1 µm.
+- Removing any guard (the carry, the rounding allowance, block-delete prefixes, modal
+  re-statement, the every-run check, the verbatim end, the compensation refusal) fails
+  a test.
+
 **Out-of-range results** (after the fix to the other transforms, ADR-0033): an override
 whose scaled F or S would be beyond ±1,000,000 is refused (`TRANSFORM_OUT_OF_RANGE`)
 before anything is written.

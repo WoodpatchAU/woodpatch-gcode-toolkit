@@ -66,6 +66,18 @@ export type TransformOp =
       readonly op: 'spindle';
       readonly percent: number;
       readonly lines?: LineRange;
+    }
+  | {
+      /**
+       * Arc to line conversion (parcel 4d, ADR-0037): G2/G3 arcs become G1 chords within
+       * `tolerance` mm of the true arc (default 0.01). `lines` and `radius` (mm,
+       * inclusive) limit which arcs. `assume` is the units of a program that states none.
+       */
+      readonly op: 'arcs';
+      readonly tolerance?: number;
+      readonly lines?: LineRange;
+      readonly radius?: { readonly min?: number; readonly max?: number };
+      readonly assume?: 'mm' | 'inch';
     };
 
 /** Source lines `from`..`to`, inclusive, 1-based. */
@@ -75,7 +87,7 @@ export interface LineRange {
 }
 
 /** The ops that are geometric maps. */
-export type GeometricOp = Exclude<TransformOp, { op: 'units' | 'feed' | 'spindle' }>;
+export type GeometricOp = Exclude<TransformOp, { op: 'units' | 'feed' | 'spindle' | 'arcs' }>;
 
 export interface AffineMap {
   readonly a: number;
@@ -168,18 +180,21 @@ export function invalidOp(op: TransformOp): string | null {
         return 'an override needs a positive percent';
       if (o['only'] !== undefined && o['only'] !== 'cut' && o['only'] !== 'plunge')
         return "only is 'cut' or 'plunge'";
-      const r = o['lines'] as Record<string, unknown> | undefined;
-      if (
-        r !== undefined &&
-        (typeof r !== 'object' ||
-          r === null ||
-          Object.keys(r).some((k) => k !== 'from' && k !== 'to') ||
-          !Number.isInteger(r['from']) ||
-          !Number.isInteger(r['to']) ||
-          (r['from'] as number) < 1 ||
-          (r['to'] as number) < (r['from'] as number))
-      )
-        return 'lines is {from, to}: whole line numbers, from 1, from <= to';
+      return lineRange(o['lines']);
+    }
+    case 'arcs': {
+      const bad = only('tolerance', 'lines', 'radius', 'assume');
+      if (bad) return bad;
+      if (o['tolerance'] !== undefined && !(num(o['tolerance']) && (o['tolerance'] as number) > 0))
+        return 'tolerance is a positive number of mm';
+      const badLines = lineRange(o['lines']);
+      if (badLines) return badLines;
+      if (!point(o['radius'], ['min', 'max'], false)) return 'radius is {min?, max?} in mm';
+      const r = o['radius'] as { min?: number; max?: number } | undefined;
+      if (r?.min !== undefined && r.max !== undefined && r.min > r.max)
+        return 'radius min is more than max';
+      if (o['assume'] !== undefined && o['assume'] !== 'mm' && o['assume'] !== 'inch')
+        return "assume is 'mm' or 'inch'";
       return null;
     }
     default:
@@ -248,4 +263,21 @@ export function mapOf(op: GeometricOp): AffineMap {
       };
     }
   }
+}
+
+/** Why `v` isn't a valid optional {@link LineRange}, or null. */
+function lineRange(v: unknown): string | null {
+  const r = v as Record<string, unknown> | undefined;
+  if (
+    r !== undefined &&
+    (typeof r !== 'object' ||
+      r === null ||
+      Object.keys(r).some((k) => k !== 'from' && k !== 'to') ||
+      !Number.isInteger(r['from']) ||
+      !Number.isInteger(r['to']) ||
+      (r['from'] as number) < 1 ||
+      (r['to'] as number) < (r['from'] as number))
+  )
+    return 'lines is {from, to}: whole line numbers, from 1, from <= to';
+  return null;
 }
