@@ -125,6 +125,25 @@ export function arcsToLines(
     ),
   );
 
+  // A Masso subprogram file (M99) starts where its caller left the tool, in the
+  // caller's modes; the preview runs it as a program of its own, from the origin, so its
+  // chords would start from the wrong place (review of #37). A LinuxCNC library sub,
+  // never called here, never runs: its arcs are left as arcs, with the warning below.
+  if (executions.size && dialect.interpreter.subprograms.m98 === 'file')
+    for (const l of program.lines)
+      for (const t of l.tokens)
+        if (
+          t.kind === 'word' &&
+          t.letter === 'M' &&
+          t.value?.kind === 'number' &&
+          t.value.value === 99
+        )
+          error(
+            l.lineNo,
+            'TRANSFORM_CONTROL_FLOW',
+            "M99: this is a subprogram file, which starts where its caller left the tool. Its arcs can't be converted on their own: convert the program that calls it, with it",
+          );
+
   const selects = (n: number, runs: readonly Arc[]) =>
     runs.length > 0 &&
     inRange(n, options.lines) &&
