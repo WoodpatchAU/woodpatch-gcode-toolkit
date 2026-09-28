@@ -142,10 +142,19 @@ describe('programChecks', () => {
   });
 
   it('falls back to the LinuxCNC defaults for a dialect without programChecks', () => {
-    const rules: Record<string, unknown> = { ...LINUXCNC.interpreter };
-    delete rules['programChecks'];
-    const old = { ...LINUXCNC, interpreter: rules } as unknown as Dialect;
+    // No casts: the type allows rules without programChecks, or with only some fields.
+    const old: Dialect = {
+      ...LINUXCNC,
+      interpreter: { ...LINUXCNC.interpreter, programChecks: undefined },
+    };
     expect(codes(JOB.replace('M30', ''), old)).toEqual(['PROGRAM_END@8']);
+    const some: Dialect = {
+      ...LINUXCNC,
+      interpreter: { ...LINUXCNC.interpreter, programChecks: { end: 'M30' } },
+    };
+    expect(codes(JOB.replace('M30', 'M2'), some)).toEqual(['PROGRAM_END@9']);
+    // The rest are LinuxCNC's: M30 with the spindle on is fine.
+    expect(codes(JOB.replace('M5\n', ''), some)).toEqual([]);
   });
 
   it('nits: S0 while running, an empty file', () => {

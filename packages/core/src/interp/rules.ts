@@ -40,8 +40,12 @@ export interface ProgramChecks {
 }
 
 export interface InterpreterRules {
-  /** Whole-program checks (see {@link ProgramChecks}). */
-  readonly programChecks: ProgramChecks;
+  /**
+   * Whole-program checks (see {@link ProgramChecks}). Optional, and each field too: a
+   * rules object written before a check existed, or a custom one that sets only some,
+   * gets LinuxCNC's for the rest (review of toolkit #38).
+   */
+  readonly programChecks?: Partial<ProgramChecks> | undefined;
   /**
    * The units of an F word on a line that also switches G20/G21.
    * - `at-feed-step`: F is read in the units in force BEFORE the line's G20/G21.
