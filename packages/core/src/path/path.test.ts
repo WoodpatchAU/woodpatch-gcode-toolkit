@@ -138,7 +138,8 @@ describe('tessellate', () => {
       ),
       { numRuns: 300 },
     );
-  });
+    // About 4 s alone; more beside the corpus suites, which run in parallel.
+  }, 30_000);
 });
 
 describe('pathBounds', () => {

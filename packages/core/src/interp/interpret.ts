@@ -404,8 +404,7 @@ class Interpreter {
   // ── One line ────────────────────────────────────────────────────────────
 
   private line(line: Line, index: number): void {
-    // The fast path does what the general one does, minus the hook: skip it when watched.
-    if (!this.onBlock && this.fastLine(line)) return;
+    if (this.fastLine(line)) return;
     const n = line.lineNo;
     const tokens = line.tokens;
     if (tokens.length === 0) return;
@@ -500,10 +499,7 @@ class Interpreter {
     }
     if (!this.checkLine(n, words)) return;
 
-    if (this.onBlock) {
-      const file = this.frame.program.name;
-      this.onBlock({ line: n, ...(file === null ? {} : { file }), state: this.state() });
-    }
+    this.reportBlock(n);
     this.execute(n, words);
     for (const a of assignments) this.assign(line, a.target, a.value);
     // M98/M99 act after the rest of the line (their parameters are already set).
@@ -555,6 +551,8 @@ class Interpreter {
     }
     const motion = g ?? this.motion;
     if (motion !== 'G0' && motion !== 'G1') return false;
+    // The line will run: report it before it changes anything, as the general path does.
+    this.reportBlock(line.lineNo);
     this.motion = motion;
     // An ordinary motion ends a run of canned cycles (as the general path does).
     this.cycleInitial = null;
@@ -571,6 +569,13 @@ class Interpreter {
     if (this.settleLine !== null && motion === 'G1') this.adviseSettle(line.lineNo);
     this.move(line.lineNo, words, false, NO_USED);
     return true;
+  }
+
+  /** Tells the `onBlock` hook, if any, that line `n` is about to run, and in what state. */
+  private reportBlock(n: number): void {
+    if (!this.onBlock) return;
+    const file = this.frame.program.name;
+    this.onBlock({ line: n, ...(file === null ? {} : { file }), state: this.state() });
   }
 
   /** Letters, repeats and modal groups. False means: do not run the line. */
