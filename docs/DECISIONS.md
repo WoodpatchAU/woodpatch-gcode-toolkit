@@ -2013,6 +2013,10 @@ How it works:
 whose scaled F or S would be beyond ±1,000,000 is refused (`TRANSFORM_OUT_OF_RANGE`)
 before anything is written.
 
+**Out-of-range chords** (after the fix to the other transforms, ADR-0033): a chord can
+bulge past the arc's end points. One beyond ±1,000,000 refuses the arc
+(`TRANSFORM_OUT_OF_RANGE`) rather than reaching the formatter.
+
 ## ADR-0038: The playground's transform panel
 
 **Status:** Accepted, 2026-09-28. Parcel 4e-1.

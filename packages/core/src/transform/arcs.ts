@@ -7,7 +7,7 @@ import type { ModalState, Plane, Step } from '../interp/types.js';
 import { arcPoint, chordsNeeded, startAngle } from '../path/path.js';
 import { editLine, parse, type LineEdit } from '../syntax/program.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
-import { formatLike } from './format.js';
+import { formatLike, MAX_WRITTEN, writable } from './format.js';
 import type { LineRange } from './map.js';
 
 /**
@@ -265,8 +265,14 @@ export function arcsToLines(
         motionWord: explicitArc,
       }),
     );
-    const ref = texts[0] as { count: number; lines: string[] };
-    if (ref.count > MAX_CHORDS_PER_ARC)
+    const ref = texts[0] as { count: number; lines: string[]; outOfRange?: boolean };
+    if (texts.some((t) => t.outOfRange))
+      error(
+        n,
+        'TRANSFORM_OUT_OF_RANGE',
+        `A chord of this arc would be beyond ±${MAX_WRITTEN.toLocaleString('en-AU')}: no controller reads that. Refusing`,
+      );
+    else if (ref.count > MAX_CHORDS_PER_ARC)
       error(
         n,
         'TRANSFORM_TOO_LARGE',
@@ -376,7 +382,7 @@ function chordLines(
     sagitta: number;
     motionWord: boolean;
   },
-): { count: number; lines: string[] } {
+): { count: number; lines: string[]; outOfRange?: boolean } {
   const count = chordsNeeded(arc, o.sagitta);
   if (!Number.isFinite(count) || count > MAX_CHORDS_PER_ARC) return { count, lines: [] };
   const [a, b, normal] = PLANE_AXES[arc.plane];
@@ -408,6 +414,7 @@ function chordLines(
   const carry: Record<Axis3, number> = { X: 0, Y: 0, Z: 0 };
   let previous: Record<Axis3, number> = { X: arc.from.X, Y: arc.from.Y, Z: arc.from.Z };
   const sep = separator(line);
+  let outOfRange = false;
   const chords = points.map((p, i) => {
     const last = i === points.length - 1;
     const parts = axes.map((x) => {
@@ -418,6 +425,11 @@ function chordLines(
         return line.text.slice(own.span.start, own.span.end);
       // Incremental: this chord's step plus the rounding carried so far.
       const value = o.absolute ? work(p, x) : (p[x] - previous[x]) * o.k + carry[x];
+      // A chord can bulge past the arc's ends: beyond what a controller reads, refuse.
+      if (!writable(value)) {
+        outOfRange = true;
+        return '';
+      }
       // The last chord's end, on an axis the line doesn't name (a full circle's start),
       // is written exactly where it can be, so the tool ends where the arc did.
       const text = formatLike(
@@ -431,6 +443,8 @@ function chordLines(
     previous = p;
     return parts.join(sep);
   });
+
+  if (outOfRange) return { count, lines: [], outOfRange };
 
   // The first chord replaces the arc's words on the original line, in place of the
   // first of them; G2/G3 becomes G1 (or G1 is added, if the arc motion was modal).
