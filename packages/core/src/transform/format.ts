@@ -11,27 +11,7 @@
  * no negative zero. A source that omits the leading zero (".5") or ends in a point
  * ("2.") keeps that style.
  */
-/**
- * The largest magnitude a transform writes: 1,000,000 (1 km in mm, 25 km in inches),
- * far beyond any machine, and no real feed or speed comes near it. Beyond it, `toFixed`
- * drifts into digits a float doesn't hold, and past 1e21 into exponents ("1e+21") and
- * "Infinity", which no controller reads.
- */
-export const MAX_WRITTEN = 1_000_000;
-
-/** Whether `value` can be written as a G-code number. */
-export function writable(value: number): boolean {
-  return Number.isFinite(value) && Math.abs(value) <= MAX_WRITTEN;
-}
-
-function assertWritable(value: number): void {
-  // The transforms refuse such values first; reaching here is a bug, not bad input.
-  if (!writable(value))
-    throw new RangeError(`${value} is out of range for a G-code number (|v| ≤ ${MAX_WRITTEN})`);
-}
-
 export function formatLike(value: number, source: string, minDecimals: number): string {
-  assertWritable(value);
   const point = source.indexOf('.');
   const decimals = point < 0 ? 0 : source.length - point - 1;
   const exact = Math.abs(roundTo(value, decimals) - value) <= 1e-9 * Math.max(1, Math.abs(value));
