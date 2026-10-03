@@ -1599,17 +1599,6 @@ approximation.
 217k changed lines. It's acceptable in a worker for now; a later parcel can avoid the
 re-tokenizing.
 
-**Corrected after review (out-of-range results).** `invalidOp` checked that each
-number was finite but not its size. So a scale of 1e308 wrote `X1e+308 YInfinity`,
-and a scale of 1e20 wrote 21-digit numbers, both with ok=true. Now:
-
-- any result that is non-finite, or beyond ±1,000,000 (`MAX_WRITTEN`: 1 km in mm, far
-  past any machine) is refused as `TRANSFORM_OUT_OF_RANGE`, naming the line;
-- the formatter throws rather than write an exponent or "Infinity", as a backstop.
-
-A fast-check property over huge scales, moves and rotation centres checks that every
-result either refuses or writes only plain numbers in range.
-
 ## ADR-0035: Whole-job checks
 
 **Status:** Accepted, 2026-09-28. Operator request.

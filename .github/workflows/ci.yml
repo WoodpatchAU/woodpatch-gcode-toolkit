@@ -124,6 +124,15 @@ jobs:
       - name: DCO sign-off on every PR commit
         if: github.event_name == 'pull_request'
         run: .github/ci/check-dco.sh "$BASE_SHA" "$HEAD_SHA"
+      - name: No references to private work in the PR
+        # Added lines, commit messages (merges too), and the PR's title and body (from
+        # the event payload, read as data by the script, never interpolated here). Not
+        # re-run when only the title or body is edited (operator decision, 2026-09-28):
+        # review covers those edits.
+        if: github.event_name == 'pull_request'
+        run: |
+          node --test .github/ci/private-refs.test.mjs
+          .github/ci/check-private-refs.sh "$BASE_SHA" "$HEAD_SHA"
 
   # ── Publish the playground (pushes to main only, after every check passes) ──
   deploy-playground:
