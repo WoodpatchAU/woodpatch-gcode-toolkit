@@ -516,3 +516,58 @@ describe('units: the sixth review of #37', () => {
     refused('G20\nG1 X99999999999999999999 F10\nM2', 'mm', 'TRANSFORM_OUT_OF_RANGE', 2);
   });
 });
+
+describe('units: the seventh review of #37 (the final check, both ways)', () => {
+  const refusedWith = (src: string, to: 'mm' | 'inch', text: string, d: Dialect = LINUXCNC) => {
+    const r = u(src, to, 'mm', d);
+    expect(r.ok, src).toBe(false);
+    expect(r.text).toBe(src);
+    expect(r.diagnostics.map((x) => x.message).join('\n'), src).toContain(text);
+  };
+
+  it('a sliver of arc whose rounded end lands on its start is not a full circle', () => {
+    refusedWith('G20 G90\nG1 X1 Y0 F10\nG2 X1 Y-0.00001 I-1 J0\nM2', 'mm', 'then 360.000°');
+    refusedWith('G21 G90\nG1 X10 Y0 F100\nG3 X10 Y0.0001 I-10\nM2', 'inch', 'then 360.000°');
+  });
+
+  it('an R-format half circle whose centre moves when rounded is refused, with a hint', () => {
+    refusedWith('G21 G91\nG1 X1 F100\nG2 X-3 Y4 R2.5\nM2', 'inch', 'give the centre with I/J');
+    // A big one: the centre moves 0.8 mm while the sweep changes under 1 mrad.
+    refusedWith(
+      'G21 G90\nG1 X0 Y0 F100\nG2 X5000 Y0 R2500\nM2',
+      'inch',
+      'its arc centre or radius moves',
+    );
+  });
+
+  it('a line that runs only once converted (an off-radius arc) is refused', () => {
+    refusedWith('G21 G90\nG1 X0 Y0 F100\nG2 X10 Y0 I5.025 J0\nM2', 'inch', '0 steps, then 1');
+  });
+
+  it('a letter an M code also reads is refused, on cycle and arc lines too', () => {
+    refusedWith(
+      'G21 G90\nG83 X0 Y0 Z-2 R1 Q0.5 F100\nX1 M66 P1 L3 Q5\nG80\nM30',
+      'inch',
+      'M66 on this line may read Q',
+      MASSO_G3,
+    );
+    refusedWith(
+      'G21 G90\nG81 X0 Y0 Z-1 R1 F100\nX1 R2 M19\nG80\nM2',
+      'inch',
+      'M19 on this line may read R',
+    );
+    refusedWith(
+      'G21 G90\nG83 X0 Y0 Z-2 R1 Q0.5 F100\nX1 Q0.4 M101\nG80\nM2',
+      'inch',
+      'M101 on this line may read Q',
+    );
+    // An M66 line that doesn't move reads its own words only: it converts.
+    expect(u('G21 G90\nM66 P0 L3 Q5\nG1 X1 F100\nM2', 'inch').text).toBe(
+      'G20 G90\nM66 P0 L3 Q5\nG1 X0.03937 F3.93701\nM2',
+    );
+  });
+
+  it('a feed per revolution keeps two more places', () => {
+    expect(u('G21 G95\nG1 X1 F0.1\nM2', 'inch').text).toBe('G20 G95\nG1 X0.03937 F0.003937\nM2');
+  });
+});

@@ -4,7 +4,7 @@
 import type { Dialect } from '../dialect/profiles.js';
 import { interpret } from '../interp/interpret.js';
 import { editLine, parse, write, type LineEdit } from '../syntax/program.js';
-import type { ModalState } from '../interp/types.js';
+import type { ModalState, Position, Step } from '../interp/types.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
 import { formatConverted, MAX_WRITTEN, writable } from './format.js';
 
@@ -31,6 +31,8 @@ const UNITS_G = new Set([
   91, 91.1, 92, 92.1, 92.2, 92.3, 93, 94, 95, 97, 98, 99,
 ]);
 const CYCLES = new Set([73, 81, 82, 83, 84, 85, 86, 89]);
+/** M codes that read no letters of their own (M6 reads T, which is never converted). */
+const M_NO_WORDS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 30, 48, 49, 60]);
 /** G codes that read neither P nor Q: beside them, G64's P and Q are G64's alone. */
 const NO_PQ_READER = new Set([
   0, 1, 17, 18, 19, 20, 21, 40, 49, 54, 55, 56, 57, 58, 59, 59.1, 59.2, 59.3, 61, 61.1, 64, 80, 90,
@@ -280,6 +282,19 @@ export function convertUnits(
         arc ||
         cycleRuns);
     const cycleRuns = !offsetLine && motion !== null && CYCLES.has(motion) && axes;
+    // An M code that reads letters of its own (M66's P/L/Q, M19's R as an angle, user
+    // M-codes' P/Q): a letter converted for the motion must have no second reader on the
+    // line, or it's refused (review of #37: the allow-list rule, for every converted letter).
+    const mReader = words.find((w) => w.letter === 'M' && !M_NO_WORDS.has(num0(w) ?? -1));
+    const sharedWithM = (L: string) => {
+      if (!mReader) return false;
+      error(
+        n,
+        'TRANSFORM_UNSUPPORTED_WORD',
+        `M${num0(mReader) ?? '?'} on this line may read ${L} too, so no one conversion of it is right. Put the M code on a line of its own`,
+      );
+      return true;
+    };
     const lengthFactor = factor(units, to);
     // F is read in the units in force before the line (or, on end-of-line controllers,
     // after it). In the OUTPUT that's always the target: the units are stated first.
@@ -334,6 +349,7 @@ export function convertUnits(
             );
           continue;
         }
+        if (sharedWithM('R')) continue;
         f = lengthFactor;
       } else if (L === 'Q') {
         if (gs.has(64) && g64Shared()) {
@@ -357,6 +373,7 @@ export function convertUnits(
           );
           continue;
         }
+        if (sharedWithM('Q')) continue;
         f = lengthFactor;
       } else if (L === 'P') {
         if (!gs.has(64)) continue; // dwell, turns, an index…
@@ -413,7 +430,13 @@ export function convertUnits(
         );
         continue;
       }
-      const text = formatConverted(target, src, places);
+      // A feed per revolution is small (0.1 mm/rev is 0.003937 in/rev): two more places
+      // keep it within 0.01% (review of #37), where 5 inch decimals were 0.08% off.
+      const text = formatConverted(
+        target,
+        src,
+        L === 'F' && feedMode === 'per-revolution' ? places + 2 : places,
+      );
       // A feed, a peck (Q) or a blending tolerance (G64 P/Q) that rounds to zero means
       // something else at zero: no feed, an endless peck, no blending (review of #37).
       if ((L === 'F' || L === 'Q' || L === 'P') && w.value.value !== 0 && Number(text) === 0) {
@@ -441,6 +464,7 @@ export function convertUnits(
   // Block delete OFF first: every line runs, so a difference there is control flow.
   // One that appears only with it ON comes from a skipped "/" line.
   let assumed = false;
+  let originalRun: ReturnType<typeof interpret> | undefined;
   const refused = new Set<number>();
   const MAX_MODE_ERRORS = 20;
   // Only worth running when nothing else refused: a refused loop may never end.
@@ -470,6 +494,7 @@ export function convertUnits(
       },
     });
     if (blockDelete) assumed = run.diagnostics.some((d) => d.code === 'SEMANTIC_UNITS_ASSUMED');
+    else originalRun = run; // reused by the final check
     // A run that stopped never checked the lines after the stop (review of #37).
     if (!run.completed) {
       const why = [...run.diagnostics].reverse().find((d) => d.severity === 'error');
@@ -528,34 +553,42 @@ export function convertUnits(
       stated = true;
     }
   }
-  // Finally, the result must RUN as the original did, line for line: the same steps,
-  // arcs with the same turns, dwells of the same length. It catches what no word-by-word
-  // rule can see, such as a rounded peck depth that adds a peck (review of #37).
-  const runs = (p: Program, units: Units) => {
-    const m = new Map<number, string[]>();
-    for (const st of interpret(p, { dialect, units, blockDelete: false }).steps) {
-      if (st.file) continue;
-      const k =
-        st.kind === 'arc'
-          ? `arc×${st.turns}`
-          : st.kind === 'dwell'
-            ? `dwell ${st.seconds}s`
-            : st.kind;
-      (m.get(st.line) ?? m.set(st.line, []).get(st.line))?.push(k);
-    }
+  // Finally, the result must RUN as the original did, line for line, both ways round:
+  // every line either run has, the same steps in the same order, ending in the same
+  // places (2 µm), arcs with the same turns, sweep (1 mrad), centre and radius (2 µm),
+  // dwells and waits the same. It catches what no word rule can see: a rounded peck
+  // depth that adds a peck, a sliver of arc whose rounded end lands on its start and
+  // becomes a full circle, a near-semicircle R arc whose centre jumps, an off-radius arc
+  // that only runs in the looser units (review of #37). The tolerances are the corpus
+  // check's; one output quantum in inches is 0.25 µm.
+  const steps = (list: readonly Step[]) => {
+    const m = new Map<number, Step[]>();
+    for (const st of list)
+      if (!st.file) (m.get(st.line) ?? m.set(st.line, []).get(st.line))?.push(st);
     return m;
   };
-  const was = runs(program, assume);
-  const now = runs(result, to);
-  const moved = (n: number) => (stated && first && n >= first.lineNo ? n + 1 : n);
-  for (const [n, steps] of was) {
-    const after = now.get(moved(n)) ?? [];
-    if (after.join() !== steps.join())
-      error(
-        n,
-        'TRANSFORM_UNITS_CHANGED',
-        `This line runs differently once converted (${steps.length} steps, then ${after.length}; e.g. a rounded peck adds a peck). Refusing`,
-      );
+  const was = steps(
+    originalRun?.steps ?? interpret(program, { dialect, units: assume, blockDelete: false }).steps,
+  );
+  const now = steps(interpret(result, { dialect, units: to, blockDelete: false }).steps);
+  const shift = stated && first ? first.lineNo : Infinity;
+  const back = (n: number) => (n > shift ? n - 1 : n); // a result line, as an original one
+  const ran = new Set([...was.keys(), ...[...now.keys()].filter((n) => n !== shift).map(back)]);
+  for (const n of [...ran].sort((x, y) => x - y)) {
+    const a = was.get(n) ?? [];
+    const b = now.get(n >= shift ? n + 1 : n) ?? [];
+    const why = runDifference(a, b);
+    if (!why) continue;
+    // An R-format arc near a half circle is ill-conditioned: rounding its end moves its
+    // centre a long way (25 µm for a 2.5 mm half circle in inches).
+    const rArc =
+      a.some((st) => st.kind === 'arc') &&
+      (program.lines[n - 1]?.tokens ?? []).some((t) => t.kind === 'word' && t.letter === 'R');
+    error(
+      n,
+      'TRANSFORM_UNITS_CHANGED',
+      `This line runs differently once converted (${why}). ${rArc ? 'An R-format arc near a half circle moves its centre when its end is rounded: give the centre with I/J instead. ' : ''}Refusing`,
+    );
   }
   if (errors.length) return { ok: false, program, diagnostics: errors };
 
@@ -648,9 +681,14 @@ function modeDifference(t: TextState, run: ModalState, line: Line | undefined): 
     .filter((w) => w.letter === 'G')
     .map((w) => OWN_WORDS.get(num0(w) ?? -1) ?? '')
     .join('');
-  const motionReads = words.some(
-    (w) => 'XYZIJKRQP'.includes(w.letter) && !owned.includes(w.letter),
-  );
+  // A modal motion only runs, and reads the line's words, when the line moves: axis
+  // words, or an arc's centre (a full circle). Without them (`M66 P0 L3 Q5`) nothing
+  // is the motion's.
+  const moves =
+    words.some((w) => 'XYZ'.includes(w.letter) && !owned.includes(w.letter)) ||
+    ((t.motion === 2 || t.motion === 3) && has('IJK'));
+  const motionReads =
+    moves && words.some((w) => 'XYZIJKRQP'.includes(w.letter) && !owned.includes(w.letter));
   if (!ownMotion && motionReads) {
     const modelled = ['G0', 'G1', 'G2', 'G3', 'G73', 'G81', 'G82', 'G83'];
     const text = t.motion === null ? null : `G${t.motion}`;
@@ -658,4 +696,33 @@ function modeDifference(t: TextState, run: ModalState, line: Line | undefined): 
       diffs.push(`under ${run.motion}${text === null ? '' : ` (the text says ${text})`}`);
   }
   return diffs.length ? diffs.join(', ') : null;
+}
+
+/** How two runs of one line differ, in words, or null if they don't (see the final check). */
+function runDifference(a: readonly Step[], b: readonly Step[]): string | null {
+  if (a.length !== b.length) return `${a.length} steps, then ${b.length}`;
+  const far = (p: Position, q: Position) => Math.hypot(p.X - q.X, p.Y - q.Y, p.Z - q.Z) > 0.002;
+  for (let i = 0; i < a.length; i++) {
+    const s = a[i] as Step;
+    const t = b[i] as Step;
+    if (s.kind !== t.kind) return `a ${s.kind}, then a ${t.kind}`;
+    if ((s.kind === 'linear' || s.kind === 'arc') && (t.kind === 'linear' || t.kind === 'arc'))
+      if (far(s.to, t.to)) return 'it ends somewhere else';
+    if (s.kind === 'arc' && t.kind === 'arc') {
+      if (s.turns !== t.turns) return `${s.turns} turns, then ${t.turns}`;
+      if (Math.abs(s.sweep - t.sweep) > 0.001)
+        return `an arc of ${((Math.abs(s.sweep) * 180) / Math.PI).toFixed(3)}°, then ${((Math.abs(t.sweep) * 180) / Math.PI).toFixed(3)}°`;
+      if (far(s.centre, t.centre) || Math.abs(s.radius - t.radius) > 0.002)
+        return 'its arc centre or radius moves';
+    }
+    if (s.kind === 'dwell' && t.kind === 'dwell' && s.seconds !== t.seconds)
+      return `a dwell of ${s.seconds} s, then ${t.seconds} s`;
+    if (
+      s.kind === 'wait' &&
+      t.kind === 'wait' &&
+      (s.input !== t.input || s.timeoutSeconds !== t.timeoutSeconds || s.skipLines !== t.skipLines)
+    )
+      return 'its wait changes';
+  }
+  return null;
 }

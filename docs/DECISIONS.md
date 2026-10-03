@@ -1786,11 +1786,37 @@ RUNS, and compares only what it models. So:
   on the line, the preview drops the whole line, units word and all.
 - The corpus check compares arcs' turns too.
 
+**Corrected in the seventh review.**
+
+- **The final check compares what each line DOES, both ways round.** It covers every
+  line either run has (an off-radius arc that runs only in the looser inch tolerance is
+  caught). For each line it compares:
+  - the same steps in order, ending within 2 µm;
+  - arcs with the same turns, sweep within 1 mrad, and centre and radius within 2 µm;
+  - dwells and waits unchanged.
+
+  It caught two classes:
+  - a sliver of arc whose rounded end lands on its start becomes a full circle;
+  - an R-format arc near a half circle whose centre jumps when its end is rounded. It
+    is inherently ill-conditioned: 25 µm for a 2.5 mm half circle in inches, 0.8 mm for
+    a 2.5 m one. One test fixture has one (`abs-then-inc.ngc` line 14), and is now
+    refused when converted to inches. The message suggests giving the centre with I/J.
+
+  The original's side reuses the mode check's run (block delete off).
+
+- **A letter an M code also reads is refused**, on any line it would be converted on:
+  M66's P/L/Q, M19's R (an angle), user M-codes. M codes that read nothing (M0–M9,
+  M30, M48/M49, M60) don't count.
+- A modal motion reads a line's words only when the line moves (axis words, or an arc's
+  centre). So `M66 P0 L3 Q5` alone converts, as M66's.
+- A feed per revolution keeps two more places: 0.1 mm/rev was 0.08% off at 5 inch
+  decimals.
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long
 random G91 programs without drift, and each of the review's probes is a unit test. mm → inch → mm is
-within 1 µm. 39 of the 47 fixtures convert. The rest are refused: for expressions,
+within 1 µm. 39 of the 47 fixtures convert (38 to inches: see the seventh review). The rest are refused: for expressions,
 for G87/G88, or for an exponent's E word. The run-time mode guard refuses none of them.
 
 ## ADR-0035: Whole-job checks
