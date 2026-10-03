@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 //
 // The playground's bundle budget (parcel 3f, ADR-0031; operator decision 2026-09-27):
-// gzipped, the page's JavaScript must stay within 300 kB and the worker's within 40 kB.
+// gzipped, the page's JavaScript must stay within 300 kB and the worker's within 50 kB
+// (raised from 40 kB by the operator on 2026-09-28, once the worker carried transforms).
 // Fails the build otherwise. Real growth (a new heavy dependency, say) has to be a
 // deliberate budget change in the same PR, not something that just happens.
 import { readdirSync, readFileSync } from 'node:fs';
@@ -10,7 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
-const BUDGET_KB = { page: 300, worker: 40 };
+const BUDGET_KB = { page: 300, worker: 50 };
 
 const assets = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'dist/assets');
 const js = readdirSync(assets).filter((f) => f.endsWith('.js'));
