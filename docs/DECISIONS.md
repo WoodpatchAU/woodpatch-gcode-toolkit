@@ -1610,6 +1610,215 @@ and a scale of 1e20 wrote 21-digit numbers, both with ok=true. Now:
 A fast-check property over huge scales, moves and rotation centres checks that every
 result either refuses or writes only plain numbers in range.
 
+## ADR-0034: Units conversion, and the units preference
+
+**Status:** Accepted, 2026-09-28. Parcel 4b. Operator decisions of 2026-09-28.
+
+**Decision.** A `units` op in the transform recipe, `{ op: 'units', to, assume }`,
+converts a program between millimetres and inches. Nothing moves: interpreting the
+result gives the same toolpath.
+
+- **What converts.** Every length the program writes: X/Y/Z, arc centres (I/J/K) and
+  radii (R), canned-cycle retract heights and peck depths (R, Q), and G64's
+  tolerances. Also feeds in per-minute and per-revolution modes.
+  - Offsets (G10, G52, G92), machine positions (G53) and homes (G28/G30) convert too.
+    Unlike a geometric transform, which leaves them alone, a unit conversion must
+    convert them: the controller reads them in the program's units.
+  - Not converted: dwell times (G4 P), turns (G2 P), spindle speeds, tool numbers,
+    Masso's canned-cycle repeat count (K), and inverse-time feeds (a rate).
+- **Line by line, from its own units.** A program that switches units part way comes
+  out in one. Every G20/G21 word is rewritten to the target. F on a line that also
+  changes units converts from the units the dialect reads it in.
+- **Precision** (operator decision): values are rounded to 5 decimals in inches
+  (0.00001 in, about 0.25 µm) or 3 in millimetres, then trailing zeros are dropped.
+  25.4 mm is written 1.0 in; 10 mm is 0.3937 in; 254 mm/min is 10 in/min.
+  - The source's own decimal places aren't kept (unlike a geometric transform): they
+    mean nothing across units.
+  - mm → inch → mm lands within 1 µm on every fixture (the plan's acceptance).
+    Transforms keep their 4 inch decimals.
+- **The units preference** (operator decision). The user sets a units preference,
+  default mm, stored persistently: a secure cookie or equivalent in the playground, and per user in a
+  consuming application.
+  - A program that moves before stating its units is READ in the preference: the
+    interpreter takes a `units` option, and warns (SEMANTIC_UNITS_ASSUMED) when it's
+    given and relied on.
+  - It's CONVERTED from the preference (`assume`): the conversion inserts an explicit
+    G20/G21 at the first line of G-code, and warns (TRANSFORM_UNITS_ASSUMED).
+  - "Convert units" converts TO the preference, with an info note saying what was
+    converted. The UI for both comes in parcel 4e.
+- **Refused:**
+  - an expression or parameter in a length word;
+  - a G code whose words aren't all lengths or aren't modelled (G68's R is an angle);
+  - M98 calling another file, which would stay in the old units;
+  - O-word subroutines or loops in a program that switches units, since a subroutine
+    runs in its caller's units.
+
+  O-word control flow in a single-unit program is fine: each word converts the same
+  wherever it runs.
+
+**Corrected in review (toolkit #37). The rule is now: the only safe failure is a
+refusal.** The first cut returned wrong G-code as success in several ways. Now:
+
+- **The units go on a line of their own,** before the first line the main program runs
+  (outside any O-word subroutine; after %, the program number and leading comments).
+  The first line keeps its own units word only if it's a clean statement: a G20/G21,
+  no F, and not block-deletable.
+  - On the same line, an F was read by at-feed-step controllers in the units BEFORE the
+    line, the controller's default, 25.4× off.
+  - The old placement also put the units inside a subroutine, onto a block-delete line,
+    or ahead of the N-number.
+- **Every word must be KNOWN to be a length, a feed or not a length, in its context;
+  anything else refuses.**
+  - X/Y/Z always.
+  - I/J/K only on arc lines. Masso's cycle K is a repeat count.
+  - R only as an arc radius or on a line that runs a canned cycle.
+  - Q only on a line that runs a cycle, or with G64 (M66's Q is a timeout).
+  - P only with G64. F unless inverse time.
+  - G10 only as a work offset (L2/L20, and Masso's L2.1/L20.1), and never with R (a
+    rotation).
+  - Refused: G41.1/G42.1 (D is a diameter), G43.1 and G38.3–5 (not modelled), G96
+    (surface speed), and U/V/W/E words.
+- **G91 drift.** Each incremental X/Y/Z absorbs the rounding carried along its axis, so
+  a long incremental program ends where the exact conversion would, within one rounding
+  step. Where an increment would repeat (a loop, a subroutine, a stepping L-repeat),
+  a carry can't work, so an inexact increment there refuses.
+- **Parameters and expressions refuse anywhere,** loop conditions included: a condition
+  like `[#5422 GT -10]` compares a position with a number in the old units.
+- **M98/M99 count as control flow,** alongside O-words.
+- **The units-assumed warning is exact.** The interpreter records when a G20/G21 first
+  RUNS, so a G21 in a subroutine called before the first move counts, and one in a
+  skipped branch or on a block-deleted line doesn't. The conversion uses the same rule
+  for its own warning.
+
+**Corrected in the second review.** The conversion reads each line's modes (units,
+distance mode, feed mode, motion) from the text above it. Two cases ran a line in other
+modes, and it came out converted for the wrong ones:
+
+- **A block-deleted line that changes a mode** (`/G20`, `/G93`, `/G91`). On LinuxCNC
+  and generic, `/` is a switch, so whether the line runs is the operator's choice. Masso
+  runs it, so it's fine there.
+- **A subroutine body runs in its CALLER's modes**, not those of the text above it:
+  feed mode, distance mode and the modal motion a body line relies on.
+
+The general guard: the interpreter's new `onBlock` hook reports the modal state each
+executed block RUNS under. The conversion runs the program with block delete off (every
+line runs, so a difference is control flow) and on (a new difference comes from a
+skipped `/` line), and refuses any line of this file whose run-time units, distance
+mode, feed mode or relied-on motion differ from the text's. The message names the
+cause. A sub called in the modes its text says still converts.
+
+**Corrected in the third review.** The run-time guard sees only lines the interpreter
+RUNS, and compares only what it models. So:
+
+- **Relied-on motion the text doesn't know counts as different:** none yet, G80, or a
+  motion the interpreter doesn't model. A body line `X1 Y1 Q0.2`, read with no motion
+  but run under the caller's G83, had its Q (a peck depth) left unconverted.
+- **Subprograms the preview doesn't run are refused:** in-file (Fanuc-style) M98/M99 on
+  LinuxCNC, and a call to a subroutine not defined in this file, which stays in the old
+  units.
+- **A run that stops before the end is refused.** The lines after the stop were never
+  checked.
+- **Only the modes a line reads are compared:**
+  - units, for a length or a feed;
+  - distance mode, for X/Y/Z/R;
+  - feed mode, for F;
+  - motion, where the line relies on it.
+
+  A code that takes some of the line's words for itself leaves only those out of the
+  motion check: G4 takes P, G64 P and Q, and G10/G28/G30/G52/G92 their axes. So a body of
+  `M9` and `G4 P1`, called under G91 or G93, converts. (Round 3 had G4 take the whole
+  line, which let `G4 P0.1 X1 Y1 Q0.2` under a caller's G83 through with its peck Q
+  unconverted. The fourth review caught it.)
+
+- **Block-deletable incremental lines carry their rounding in a chain of their own.**
+  The lines that always run sum exactly whether the `/` lines run or not, and so do the
+  `/` lines. With 1,000 of each, the end is within about one output quantum either way (0.25 µm in
+  inches; 0.02–0.05 µm measured, depending on the values). One shared chain
+  was 0.23 µm off with block delete on. Isolating the `/` lines instead would have been
+  94 µm off with it off.
+- **One cause names its first 20 lines, then counts the rest.**
+- **Not changed:** a file with its subroutines at the top, stating G21 when the
+  preference is inch, is still refused. Its body text reads in the preference, but runs
+  after the G21. Converting each line under its run-time state would accept it. That's a
+  bigger change, which the text-order refusal keeps safe for now.
+
+**Corrected in the fourth review.**
+
+- The G4 regression above.
+- **O-words on a controller without them (Masso) are refused.** The controller skips
+  those lines and runs a `sub` body in place, before the units line the conversion adds.
+- **Subprogram files are refused:**
+  - a Masso file with M99, which runs in its caller's units, where an added units line
+    would carry back into the caller;
+  - a LinuxCNC library (an `o<name> sub` never called in the file), whose body runs in
+    other programs' modes.
+- **A nonzero F, Q, or G64 P that would round to zero is refused.** Zero means
+  something else: no feed, an endless peck, no blending.
+- Per-line subroutine refusals are capped like the mode ones (20 named, then counted).
+
+**Corrected in the fifth review.**
+
+- **A P shared by G64 and a dwell is refused.** On `G4 G64 P1`, or `G64 G82 … P1`
+  (explicit or modal G82/G86/G89), LinuxCNC reads the one P as both the blending
+  tolerance (a length) and the dwell (seconds), so no conversion of it is right. The
+  corpus check now also asserts every dwell's seconds are unchanged, so this class is
+  caught generally, not only for moves.
+- **A Q on a G10/G28/G30/G52/G92 line is refused.** Those codes take the axes and
+  suspend the motion, so nothing reads the Q.
+- **A Masso program-number header** (a lone `O1234` on the first line of code) is
+  allowed. Every other O-word on Masso is still refused.
+
+**Corrected in the sixth review.**
+
+- **G64's P and Q are converted only where G64 is their only reader on the line.**
+  That's an allow-list. Beside G0/G1, the plane, units, distance, feed-mode, offset and
+  path-control codes, it converts. Beside anything else it's refused: an arc (its P is
+  turns, explicit or modal), a cycle, G10 (its P), or any M code (M64's output number,
+  M66's input and timeout, user M-codes). The previous round's list of dwell readers
+  missed those.
+- **A final check: the result must run as the original did, line for line.** The same
+  steps, arcs with the same turns, and dwells of the same length. This catches what no
+  word rule can see. For example, `Q0.0123` in → `Q0.312` mm turns 10 pecks into 11.
+- **Converted values beyond ±1,000,000 are refused** (`TRANSFORM_OUT_OF_RANGE`), as
+  for the other transforms (ADR-0033). `formatConverted` throws rather than write an
+  exponent.
+- **The Masso header must be alone on its line** (comments aside). With anything else
+  on the line, the preview drops the whole line, units word and all.
+- The corpus check compares arcs' turns too.
+
+**Corrected in the seventh review.**
+
+- **The final check compares what each line DOES, both ways round.** It covers every
+  line either run has (an off-radius arc that runs only in the looser inch tolerance is
+  caught). For each line it compares:
+  - the same steps in order, ending within 2 µm;
+  - arcs with the same turns, sweep within 1 mrad, and centre and radius within 2 µm;
+  - dwells and waits unchanged.
+
+  It caught two classes:
+  - a sliver of arc whose rounded end lands on its start becomes a full circle;
+  - an R-format arc near a half circle whose centre jumps when its end is rounded. It
+    is inherently ill-conditioned: 25 µm for a 2.5 mm half circle in inches, 0.8 mm for
+    a 2.5 m one. One test fixture has one (`abs-then-inc.ngc` line 14), and is now
+    refused when converted to inches. The message suggests giving the centre with I/J.
+
+  The original's side reuses the mode check's run (block delete off).
+
+- **A letter an M code also reads is refused**, on any line it would be converted on:
+  M66's P/L/Q, M19's R (an angle), user M-codes. M codes that read nothing (M0–M9,
+  M30, M48/M49, M60) don't count.
+- A modal motion reads a line's words only when the line moves (axis words, or an arc's
+  centre). So `M66 P0 L3 Q5` alone converts, as M66's.
+- A feed per revolution keeps two more places: 0.1 mm/rev was 0.08% off at 5 inch
+  decimals.
+
+**Evidence.** On every fixture, converting to inches and to mm, with both unit
+assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
+(within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long
+random G91 programs without drift, and each of the review's probes is a unit test. mm → inch → mm is
+within 1 µm. 39 of the 47 fixtures convert (38 to inches: see the seventh review). The rest are refused: for expressions,
+for G87/G88, or for an exponent's E word. The run-time mode guard refuses none of them.
+
 ## ADR-0035: Whole-job checks
 
 **Status:** Accepted, 2026-09-28. Operator request.

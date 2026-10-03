@@ -137,6 +137,13 @@ export interface InterpretOptions {
   /** Machine position before the first line. Default: all zeros. */
   readonly start?: Partial<Position>;
   /**
+   * The units in force before the program states any (G20/G21): the user's units
+   * preference (operator decision, 2026-09-28). Default mm. Given explicitly, a program
+   * that moves before stating its units also gets a warning (SEMANTIC_UNITS_ASSUMED),
+   * since a controller would read it in whatever units IT defaults to.
+   */
+  readonly units?: 'mm' | 'inch';
+  /**
    * Supplies a subprogram that lives in its own file (parcel 2c-3, ADR-0021): LinuxCNC
    * `o<name> call` (name lower-cased, e.g. "myfile" for myfile.ngc) or Masso
    * `M98 P<n>` (name "10" for 10.nc). Return the file's text, or undefined if there is
@@ -156,6 +163,18 @@ export interface InterpretOptions {
   };
   /** Safety caps for untrusted input. Hitting one stops the run with an error. */
   readonly limits?: Partial<InterpretLimits>;
+  /**
+   * Called before each block that executes, with the modal state it runs under: the
+   * state the controller is in at that line, whatever the text above it says. A
+   * transform that reads modes from the text uses it to check that the run agrees
+   * (review of toolkit #37: a subroutine runs in its caller's modes; a block-deleted
+   * line may not run). Not called for skipped lines or O-word flow lines.
+   */
+  readonly onBlock?: (block: {
+    readonly line: number;
+    readonly file?: string;
+    readonly state: ModalState;
+  }) => void;
 }
 
 export interface ProgramRequest {
