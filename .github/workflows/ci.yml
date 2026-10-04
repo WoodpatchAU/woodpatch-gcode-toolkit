@@ -22,7 +22,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a PR supersedes the older run. Not on main: two merges in a row
+  # would cancel the first one's checks, the private-refs alarm among them.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Values from the event, passed through env rather than interpolated into
@@ -124,6 +126,70 @@ jobs:
       - name: DCO sign-off on every PR commit
         if: github.event_name == 'pull_request'
         run: .github/ci/check-dco.sh "$BASE_SHA" "$HEAD_SHA"
+      - name: No references to private work in the PR
+        # Added lines, commit messages (merges too), and the PR's title and body (from
+        # the event payload, read as data by the script, never interpolated here). Not
+        # re-run when only the title or body is edited (operator decision, 2026-09-28):
+        # review covers those edits. Runs even if the DCO step failed.
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          node --test .github/ci/private-refs.test.mjs
+          # The checker from the BASE branch, so a PR can't loosen what judges it. The PR
+          # that adds the check has no base copy yet, and bootstraps with its own.
+          refs="$RUNNER_TEMP/private-refs"
+          mkdir -p "$refs"
+          for f in check-private-refs.sh private-refs.mjs; do
+            # Decided on the base TREE, which is always local (this clone is blobless):
+            # a blob that fails to fetch must fail the step, not fall back to the PR's copy.
+            if [ -n "$(git ls-tree --name-only "$BASE_SHA" -- ".github/ci/$f")" ]; then
+              git show "$BASE_SHA:.github/ci/$f" >"$refs/$f"
+            else
+              cp ".github/ci/$f" "$refs/$f"
+            fi
+          done
+          # Canaries: the checker must catch a leak it's handed, on both paths, or it is
+          # failing open. The commit one is an added line starting "++ ", which a diff
+          # parser can mistake for a header.
+          printf '{"pull_request":{"title":"canary","body":"see %s1999"}}' '#' >"$refs/canary.json"
+          if GITHUB_EVENT_PATH="$refs/canary.json" bash "$refs/check-private-refs.sh" >/dev/null; then
+            echo "::error::the private-refs check missed its title/body canary: it is failing open"
+            exit 1
+          fi
+          c="$refs/canary-repo"
+          git init -q "$c"
+          git -C "$c" -c user.name=canary -c user.email=canary@invalid commit -q --allow-empty -m base
+          printf '++ see %s1999\n' '#' >"$c/canary.txt"
+          git -C "$c" add canary.txt
+          git -C "$c" -c user.name=canary -c user.email=canary@invalid commit -q -m canary
+          if (cd "$c" && env -u GITHUB_EVENT_PATH bash "$refs/check-private-refs.sh" HEAD~1 HEAD >/dev/null); then
+            echo "::error::the private-refs check missed its commit canary: it is failing open"
+            exit 1
+          fi
+          bash "$refs/check-private-refs.sh" "$BASE_SHA" "$HEAD_SHA"
+
+  # ── An alarm on main: squash-merge messages are written at merge time, after the PR
+  # checks ran. Its own job, so an alarm never holds up the playground deploy. ──
+  private-refs-on-main:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      BEFORE_SHA: ${{ github.event.before }}
+    steps:
+      - name: Checkout (full history, blobless)
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --filter=blob:none origin "${GITHUB_SHA}"
+          git checkout -q --detach "${GITHUB_SHA}"
+      - name: No references to private work in what was pushed
+        run: |
+          case "$BEFORE_SHA" in '' | 0000000000000000000000000000000000000000)
+            echo "::warning::no previous commit for this push, so nothing was scanned"
+            exit 0
+            ;;
+          esac
+          .github/ci/check-private-refs.sh "$BEFORE_SHA" "$GITHUB_SHA"
 
   # ── Publish the playground (pushes to main only, after every check passes) ──
   deploy-playground:
