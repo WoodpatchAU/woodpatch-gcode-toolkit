@@ -785,6 +785,22 @@ class Interpreter {
         );
       this.tool = this.selectedTool;
       this.steps.push({ kind: 'tool-change', line: n, tool: this.tool });
+      // A tool change leaves the spindle stopped (LinuxCNC's M6: "When the tool change
+      // is complete: The spindle will be stopped"; assumed on Masso, the safe way round).
+      // RS274 changes the tool before it starts a spindle on the same line, so `M6 M3`
+      // still ends with the spindle running.
+      const stops = this.behaviour.programChecks?.toolChangeStopsSpindle ?? true;
+      if (stops && this.spindle.state !== 'off') {
+        this.settleLine = null;
+        this.spindle = { ...this.spindle, state: 'off' };
+        this.steps.push({
+          kind: 'spindle',
+          line: n,
+          state: 'off',
+          rpm: this.spindle.rpm,
+          by: 'tool-change',
+        });
+      }
     }
     for (const [code, state] of SPINDLE_CODES) {
       if (m.has(code)) {

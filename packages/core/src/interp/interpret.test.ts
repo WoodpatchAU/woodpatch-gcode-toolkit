@@ -292,6 +292,27 @@ describe('events and program end', () => {
     expect(r.diagnostics).toEqual([]);
   });
 
+  it('a tool change stops the spindle; M6 M3 on one line ends with it running', () => {
+    const r = run('G21\nT1 M6\nS12000 M3\nT2 M6\nM3\nT3 M6 M3');
+    expect(r.steps.map((s) => (s.kind === 'spindle' ? `spindle ${s.state}` : s.kind))).toEqual([
+      'tool-change',
+      'spindle cw',
+      'tool-change',
+      'spindle off',
+      'spindle cw',
+      'tool-change',
+      'spindle off',
+      'spindle cw',
+    ]);
+    expect(r.steps[3]).toMatchObject({ by: 'tool-change', rpm: 12000 });
+    expect(r.state.spindle.state).toBe('cw');
+    // Stopped already: no extra step.
+    expect(run('G21\nT1 M6\nT2 M6').steps.map((s) => s.kind)).toEqual([
+      'tool-change',
+      'tool-change',
+    ]);
+  });
+
   it('stops at M2/M30 and reports what was not run (fixes R8)', () => {
     const r = run('G21 G90 F100\nG1 X10\nM30\nG1 X20\nG1 X30');
     expect(moves(r.steps).map((s) => s.to.X)).toEqual([10]);

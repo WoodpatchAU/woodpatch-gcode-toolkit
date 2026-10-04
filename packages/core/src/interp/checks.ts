@@ -63,7 +63,7 @@ export function programChecks(
       cutArmed = true;
       if (s.state === 'off') {
         on = false;
-        stoppedBy = { line: s.line, file: s.file, by: 'M5' };
+        stoppedBy = { line: s.line, file: s.file, by: s.by === 'tool-change' ? 'M6' : 'M5' };
         continue;
       }
       on = true;

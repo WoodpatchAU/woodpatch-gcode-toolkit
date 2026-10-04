@@ -167,4 +167,9 @@ describe('programChecks', () => {
     expect(check('', MASSO_G3)).toEqual([]);
     expect(check('(just a comment)\n', MASSO_G3)).toEqual([]);
   });
+
+  it('says a cut after a tool change is stopped by the tool change, not an M5', () => {
+    const w = check('G21 G90\nT1 M6\nM3 S18000\nG1 Z-1 F300\nT2 M6\nG1 Z-2\nM5\nM30', LINUXCNC);
+    expect(w[0]?.message).toContain('the tool change at line 5 stops it');
+  });
 });
