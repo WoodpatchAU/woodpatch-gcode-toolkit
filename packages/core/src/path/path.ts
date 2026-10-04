@@ -92,7 +92,7 @@ export function arcChords(arc: Arc, tol: number, cap = 100_000): number {
 }
 
 /** The uncapped chord count for the tolerance (at least 1; Infinity if unbounded). */
-function chordsNeeded(arc: Arc, tol: number): number {
+export function chordsNeeded(arc: Arc, tol: number): number {
   const r = Math.max(arc.radius, arc.endRadius);
   const sweep = Math.abs(arc.sweep);
   if (!(r > 0) || !(sweep > 0)) return 1;
