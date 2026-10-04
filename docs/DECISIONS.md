@@ -1812,6 +1812,24 @@ RUNS, and compares only what it models. So:
 - A feed per revolution keeps two more places: 0.1 mm/rev was 0.08% off at 5 inch
   decimals.
 
+**Corrected in the eighth review.**
+
+- **Masso's `M66 … S<n>` skip ranges are treated like block-deletable lines.** When the
+  input condition is met, the next n lines are skipped, a path the preview never takes.
+  So a mode word (G20/G21, G90/G91, G93–G95) inside the range is refused, and the
+  range's G91 rounding has its own carry chain. The range is counted generously: up to
+  the n-th line of code after the M66.
+- **The final check compares WHERE an arc goes:** its midpoint, centre and radius,
+  within 2 µm, plus a coarse sweep check (0.1 rad) so a sliver can never become a full
+  circle. A 1 mrad absolute sweep tolerance had refused most small arcs (up to 152 of
+  200 random 90° arcs at 0.1 mm radius); now none.
+- **It also compares feeds** (mode, and the rate within 0.01 mm/min or 0.01%) and
+  spindle speeds, as the corpus check does.
+- **A G91 canned cycle's Z isn't a net move** (G98 returns to the initial Z), so it takes
+  no part in the rounding carry. Under G99 the cycle ends at R, so R carries on Z. 120
+  G91 drill cycles now convert, where they were refused before. Before that, they
+  drifted 3 µm.
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long

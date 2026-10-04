@@ -11,6 +11,8 @@ import {
   transformText,
   type Dialect,
 } from '../index.js';
+import type { Step } from '../interp/types.js';
+import { runDifference } from './units.js';
 
 // Parcel 4b (ADR-0034): units conversion. Operator decisions, 2026-09-28: inches get
 // at least 5 decimals; a program that states no units is read in the user's preference.
@@ -532,11 +534,11 @@ describe('units: the seventh review of #37 (the final check, both ways)', () => 
 
   it('an R-format half circle whose centre moves when rounded is refused, with a hint', () => {
     refusedWith('G21 G91\nG1 X1 F100\nG2 X-3 Y4 R2.5\nM2', 'inch', 'give the centre with I/J');
-    // A big one: the centre moves 0.8 mm while the sweep changes under 1 mrad.
+    // A big one: the arc bulges 0.8 mm elsewhere while its sweep changes under 1 mrad.
     refusedWith(
       'G21 G90\nG1 X0 Y0 F100\nG2 X5000 Y0 R2500\nM2',
       'inch',
-      'its arc centre or radius moves',
+      'its arc bulges somewhere else',
     );
   });
 
@@ -569,5 +571,116 @@ describe('units: the seventh review of #37 (the final check, both ways)', () => 
 
   it('a feed per revolution keeps two more places', () => {
     expect(u('G21 G95\nG1 X1 F0.1\nM2', 'inch').text).toBe('G20 G95\nG1 X0.03937 F0.003937\nM2');
+  });
+});
+
+describe('units: the eighth review of #37', () => {
+  const refusedWith = (src: string, to: 'mm' | 'inch', text: string, d: Dialect = LINUXCNC) => {
+    const r = u(src, to, 'mm', d);
+    expect(r.ok, src).toBe(false);
+    expect(r.text).toBe(src);
+    expect(r.diagnostics.map((x) => x.message).join('\n'), src).toContain(text);
+  };
+
+  it("refuses a mode change inside a Masso M66 skip range (the met path isn't previewed)", () => {
+    refusedWith(
+      'G21 G90\nM66 P1 L3 Q5000 S1\nG20\nG1 X1 F10\nM30',
+      'mm',
+      'M66 at line 2 skips this line',
+      MASSO_G3,
+    );
+    refusedWith(
+      'G21 G90 G94\nG1 X0 F100\nM66 P1 L3 Q5000 S1\nG93\nG1 X10 F2\nM30',
+      'inch',
+      'M66 at line 3 skips this line',
+      MASSO_G3,
+    );
+    // A range of moves only: converts (their rounding has its own carry chain).
+    expect(
+      u('G21 G90\nM66 P1 L3 Q5000 S2\nG1 X1 F100\nG1 X2\nM30', 'inch', 'mm', MASSO_G3).ok,
+    ).toBe(true);
+    // An M66 with no skip count is just a wait.
+    expect(u('G21 G90\nM66 P1 L3 Q5000\nG20\nG1 X1 F10\nM30', 'mm', 'mm', MASSO_G3).ok).toBe(true);
+  });
+
+  it('G91 canned cycles convert without drift: their Z is not a net move', () => {
+    let src = 'G21 G90 G98\nG0 X0 Y0 Z5\nG91 G1 F100\n';
+    for (let i = 0; i < 120; i++) src += 'G81 X1 Z-0.3 R-0.1\nG80\nG1 Z0.3\n';
+    const r = u(src + 'M2', 'inch');
+    expect(r.ok).toBe(true);
+    const end = interpret(parse(r.text))
+      .steps.filter((s) => s.kind === 'linear')
+      .at(-1);
+    expect(Math.abs((end?.to.Z ?? 0) - (5 + 120 * 0.3))).toBeLessThan(0.001);
+    // Under G99 the cycle ends at R: that's a net move, and it carries.
+    let g99 = 'G21 G90 G99\nG0 X0 Y0 Z5\nG91 G1 F100\n';
+    for (let i = 0; i < 120; i++) g99 += 'G81 X1 Z-0.3 R-0.1\nG80\nG1 Z0.1\n';
+    expect(u(g99 + 'M2', 'inch').ok).toBe(true);
+  });
+
+  it('small arcs convert: where an arc goes is compared, not its sweep to 1 mrad', () => {
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0.05, max: 1, noNaN: true }),
+        fc.double({ min: 0, max: 2 * Math.PI, noNaN: true }),
+        (r, a) => {
+          const x0 = 5;
+          const y0 = 5;
+          const cx = x0 - r * Math.cos(a);
+          const cy = y0 - r * Math.sin(a);
+          const b = a - Math.PI / 2;
+          const f = (v: number) => v.toFixed(4);
+          const src = `G21 G90\nG1 X${x0} Y${y0} F100\nG2 X${f(cx + r * Math.cos(b))} Y${f(cy + r * Math.sin(b))} I${f(cx - x0)} J${f(cy - y0)}\nM2`;
+          const out = u(src, 'inch');
+          // The interpreter may reject the input arc (radius mismatch from the 4 places);
+          // otherwise the conversion must not be refused for the arc's shape.
+          expect(
+            out.diagnostics.some((d) => d.code === 'TRANSFORM_UNITS_CHANGED'),
+            src,
+          ).toBe(false);
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
+  it('the final check compares feeds, spindle speeds and the arc itself (direct)', () => {
+    const at = (X: number, Y = 0) => ({ X, Y, Z: 0, A: 0, B: 0, C: 0 });
+    const line = (f: number, mode: 'per-minute' | 'per-revolution' = 'per-minute') =>
+      ({
+        kind: 'linear',
+        line: 1,
+        rapid: false,
+        from: at(0),
+        to: at(1),
+        feed: mode === 'per-minute' ? { mode, mmPerMinute: f } : { mode, mmPerRevolution: f },
+        offset: at(0),
+      }) as Step;
+    expect(runDifference([line(100)], [line(100.005)])).toBeNull();
+    expect(runDifference([line(100)], [line(100.5)])).toContain('a feed of 100');
+    expect(
+      runDifference([line(0.1, 'per-revolution')], [line(0.1001, 'per-revolution')]),
+    ).toContain('feed');
+    expect(runDifference([line(100)], [line(100, 'per-revolution')])).toContain('per-revolution');
+    const spin = (rpm: number) => ({ kind: 'spindle', line: 1, state: 'cw', rpm }) as Step;
+    expect(runDifference([spin(18000)], [spin(17999)])).toBe('its spindle speed changes');
+    const arc = (cy: number) =>
+      ({
+        kind: 'arc',
+        line: 1,
+        from: at(0),
+        to: at(2),
+        plane: 'XY',
+        clockwise: true,
+        centre: at(1, cy),
+        radius: Math.hypot(1, cy),
+        endRadius: Math.hypot(1, cy),
+        sweep: -2 * Math.atan2(1, -cy),
+        turns: 1,
+        feed: { mode: 'per-minute', mmPerMinute: 100 },
+        offset: at(0),
+      }) as Step;
+    expect(runDifference([arc(0)], [arc(0)])).toBeNull();
+    expect(runDifference([arc(0)], [arc(0.01)])).toBe('its arc bulges somewhere else');
   });
 });
