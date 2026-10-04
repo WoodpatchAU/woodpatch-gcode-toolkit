@@ -190,4 +190,11 @@ describe('summarise on the corpus', () => {
     // start points counted, Aztec's rapids appeared to reach -12.885).
     if (f === 'aztec_calendar') expect(s.extent.rapid?.min.Z).toBeCloseTo(5.08, 9);
   });
+
+  it('counts a cut after a tool change with no new M3 as cutting with the spindle off', () => {
+    const t = sum('G21 G90\nT1 M6\nM3 S18000\nG1 X10 F300\nT2 M6\nG1 X20\nM5\nM30');
+    expect(t.spindle.cutWhileOff).toMatchObject({ moves: 1, firstLine: 6 });
+    // The tool change's stop isn't counted as a spindle command.
+    expect(t.spindle.changes).toBe(2);
+  });
 });

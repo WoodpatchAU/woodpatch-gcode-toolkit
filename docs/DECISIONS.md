@@ -1673,6 +1673,14 @@ with the spindle stopped, and gave a false end warning. Fixed:
   `PROGRAM_SPINDLE_NO_SPEED`, and the message says that's expected there. A custom
   controller (roadmap) can turn the check off.
 
+**The interpreter now stops the spindle at a tool change too** (follow-up). The checks
+modelled it first; the interpreter kept the spindle running across M6, so the summary
+missed a cut after a tool change with no new M3. On a dialect whose tool change stops
+the spindle (`toolChangeStopsSpindle`, true for LinuxCNC and, the safe way round,
+Masso), M6 now leaves it off. That's a spindle step with `by: 'tool-change'`. It comes
+after the tool change and before any M3/M4 on the same line, in RS274's order, so
+`M6 M3` ends with it running. The summary doesn't count it as a spindle command.
+
 ## ADR-0038: The playground's transform panel
 
 **Status:** Accepted, 2026-09-28. Parcel 4e-1.
