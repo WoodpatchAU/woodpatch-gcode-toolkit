@@ -5,6 +5,7 @@ import {
   GENERIC,
   interpret,
   LINUXCNC,
+  LINUXCNC_INTERPRETER_RULES,
   MASSO_G3,
   parse,
   programChecks,
@@ -76,6 +77,26 @@ describe('programChecks', () => {
     expect(codes(TWO_TOOLS.replace('T2 M6', 'M5\nT2 M6'), MASSO_G3)).toEqual([
       'PROGRAM_CUT_SPINDLE_OFF@10',
     ]);
+  });
+
+  it('reads the run, not its own dialect, for whether a tool change stopped the spindle', () => {
+    // The interpreter is the one source of truth (review of #49): run under rules whose
+    // tool change keeps the spindle running, the cut after T2 M6 is fine, even though
+    // the dialect given to the checks would have stopped it.
+    const p = parse(TWO_TOOLS);
+    const keeps = {
+      ...LINUXCNC_INTERPRETER_RULES,
+      programChecks: { toolChangeStopsSpindle: false },
+    };
+    const r = interpret(p, { interpreterRules: keeps });
+    expect(programChecks(p, r, LINUXCNC).map((d) => d.code)).not.toContain(
+      'PROGRAM_CUT_SPINDLE_OFF',
+    );
+    // And the other way round: run under LinuxCNC, checked under the keeping rules.
+    const stopped = interpret(p, { dialect: LINUXCNC });
+    expect(
+      programChecks(p, stopped, { ...LINUXCNC, interpreter: keeps }).map((d) => d.code),
+    ).toEqual(['PROGRAM_CUT_SPINDLE_OFF']);
   });
 
   it('follows the run into subprogram files, naming the file', () => {
