@@ -11,8 +11,11 @@ cut time from calibrated machine parameters, and edit programs (translate, rotat
 mirror, scale, unit conversion, feed override) while leaving untouched lines
 byte-for-byte identical.
 
-> **Status: early development (Phase 0, scaffold).** There is nothing to use yet. The
-> packages below are placeholders apart from `@woodpatch/gcode-core`'s skeleton.
+> **Status: early development, not yet released.** The core (parser, interpreter,
+> diagnostics and transforms), the viewer, the editor mode and the Svelte components
+> work, and the playground puts them together. Nothing is published to npm yet, and the
+> APIs may still change. The time estimator, the server and the machine database are
+> still to come.
 
 ## Acknowledgements
 
@@ -39,12 +42,13 @@ are kept exactly as upstream left them.
 
 | Path                 | What                                                                                                                                                                                                 |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/core`      | `@woodpatch/gcode-core`: parser, interpreter, transforms, estimator (no deps)                                                                                                                        |
-| `packages/viewer`    | `@woodpatch/gcode-viewer`: 3D/2D path view _(placeholder)_                                                                                                                                           |
-| `packages/editor`    | `@woodpatch/gcode-editor`: CodeMirror 6 G-code mode _(placeholder)_                                                                                                                                  |
-| `packages/svelte`    | `@woodpatch/gcode-svelte`: Svelte 5 components _(placeholder)_                                                                                                                                       |
+| `packages/core`      | `@woodpatch/gcode-core`: parser, interpreter, diagnostics, transforms (no deps); estimator to come                                                                                                   |
+| `packages/viewer`    | `@woodpatch/gcode-viewer`: 3D/2D path view (three.js)                                                                                                                                                |
+| `packages/editor`    | `@woodpatch/gcode-editor`: CodeMirror 6 G-code mode, with diagnostics                                                                                                                                |
+| `packages/svelte`    | `@woodpatch/gcode-svelte`: Svelte 5 components, shipped as source                                                                                                                                    |
 | `packages/server`    | `@woodpatch/gcode-server`: HTTP analyse/transform/estimate _(placeholder)_                                                                                                                           |
 | `packages/db-schema` | `@woodpatch/gcode-db`: machine/tool/material schema _(placeholder)_                                                                                                                                  |
+| `apps/playground`    | The playground: open a file, see its path and diagnostics, transform it                                                                                                                              |
 | `tools/`             | Dev tooling: the legacy-parser harness, golden generator, benchmarks and licence generator                                                                                                           |
 | `legacy/`            | Upstream webgcode, parked: not built, linted or shipped                                                                                                                                              |
 | `fixtures/`          | Test corpus and characterisation goldens ([`fixtures/README.md`](fixtures/README.md))                                                                                                                |
