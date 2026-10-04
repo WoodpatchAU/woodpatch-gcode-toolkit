@@ -27,8 +27,11 @@ export interface ProgramChecks {
   /**
    * A tool change (M6) leaves the spindle stopped, so cutting after one needs a new
    * M3/M4. LinuxCNC's M6: "When the tool change is complete: The spindle will be
-   * stopped." Masso's docs ask for M5 before M6; what it does without one is
-   * unconfirmed, so it's assumed to stop too (the safe way round).
+   * stopped." (LinuxCNC refuses the change with the spindle on unless the INI sets
+   * `[EMCIO] TOOL_CHANGE_WITH_SPINDLE_ON`, default 0.) Masso's docs ask for M5 before
+   * M6; what it does without one is unconfirmed, so it's assumed to stop too (the safe
+   * way round). The generic dialect inherits LinuxCNC's true. Masso's M6.1 (unload)
+   * counts as a tool change. The interpreter applies it; the checks read its steps.
    */
   readonly toolChangeStopsSpindle: boolean;
   /** Warn when the spindle is still on at the end (Masso: M5 before M30). */

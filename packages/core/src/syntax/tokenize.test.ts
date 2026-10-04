@@ -43,6 +43,17 @@ describe('the tokenizer on hostile lines', () => {
     expect(value('XSQRTY')).toBeNull(); // not a function: X has no value
   });
 
+  it('reports a malformed "##" from its innermost "#", as it did before the loop', () => {
+    const at = (src: string) =>
+      tokenizeLine(src, 1)
+        .diagnostics.filter((d) => d.code !== 'SYNTAX_UNEXPECTED_CHARACTER')
+        .map((d) => `${d.code} ${d.span?.start}-${d.span?.end}`);
+    expect(at('X##')).toContain('SYNTAX_MISSING_VALUE 2-3');
+    expect(at('X# #')).toContain('SYNTAX_MISSING_VALUE 3-4');
+    expect(at('##<abc')).toEqual(['SYNTAX_UNTERMINATED_NAME 1-6']);
+    expect(at('X-##')).toContain('SYNTAX_MISSING_VALUE 3-4');
+  });
+
   it('property: no line makes it throw, and every line writes back as it was', () => {
     const piece = fc.constantFrom(
       '-',
@@ -84,14 +95,10 @@ describe('the tokenizer on hostile lines', () => {
   });
 
   it('runs in time linear in the line length on the patterns that were quadratic', () => {
-    // Each was quadratic before: M words re-walking every earlier token, a word's value
-    // scanning every following letter, long sign and "#" chains (recursive).
-    const lines = (n: number) => [
-      'N1 '.repeat(n / 2) + 'M3 '.repeat(n / 2),
-      'X'.repeat(n),
-      `X${'-'.repeat(n)}#1`,
-      `#${'#'.repeat(n)}1=2`,
-    ];
+    // Both were quadratic before: M words re-walking every earlier token, and a word's
+    // value scanning every following letter. (The sign and "#" chains were recursive,
+    // not slow: the no-throw test above covers them.)
+    const lines = (n: number) => ['N1 '.repeat(n / 2) + 'M3 '.repeat(n / 2), 'X'.repeat(n)];
     const time = (n: number) =>
       lines(n).map((l) => {
         let best = Infinity;
@@ -102,13 +109,14 @@ describe('the tokenizer on hostile lines', () => {
         }
         return best;
       });
-    const small = time(20_000);
+    const small = time(10_000);
     const large = time(80_000);
-    // Four times the length: about four times the time if linear, sixteen if quadratic.
-    // The bound is loose for noisy CI machines, and a floor ignores sub-millisecond runs.
+    // Eight times the length: about 8x the time if linear, 64x if quadratic. A bound of
+    // 32x leaves room for a busy CI machine (the review saw up to 8.4x on 4x lengths
+    // under load) and still fails a quadratic scan. The floor ignores sub-ms runs.
     large.forEach((t, i) =>
       expect(t, `pattern ${i}: ${small[i]} ms → ${t} ms`).toBeLessThan(
-        Math.max(10 * (small[i] as number), 20),
+        Math.max(32 * (small[i] as number), 40),
       ),
     );
   }, 60_000);

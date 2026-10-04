@@ -516,7 +516,10 @@ class LineScanner {
     // `##2` (and deeper): a run of "#", read as a loop, not recursion, so a long run
     // can't overflow the stack.
     let c: number;
+    // The innermost "#": errors are reported from it, as when this recursed.
+    let last: number;
     do {
+      last = this.i;
       this.i++; // #
       this.skipWs();
       c = text.charCodeAt(this.i);
@@ -525,7 +528,7 @@ class LineScanner {
       const close = text.indexOf('>', this.i + 1);
       if (close === -1) {
         this.report('error', 'SYNTAX_UNTERMINATED_NAME', 'Parameter name "<" is never closed', {
-          start,
+          start: last,
           end: text.length,
         });
         this.i = text.length;
@@ -547,7 +550,7 @@ class LineScanner {
       'SYNTAX_MISSING_VALUE',
       '"#" is not followed by a parameter number or name',
       {
-        start,
+        start: last,
         end: this.i,
       },
     );

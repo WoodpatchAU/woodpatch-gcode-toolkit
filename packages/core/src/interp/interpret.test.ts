@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   LINUXCNC_INTERPRETER_RULES,
+  MASSO_G3,
   interpret,
   parse,
   type InterpretOptions,
@@ -294,23 +295,56 @@ describe('events and program end', () => {
 
   it('a tool change stops the spindle; M6 M3 on one line ends with it running', () => {
     const r = run('G21\nT1 M6\nS12000 M3\nT2 M6\nM3\nT3 M6 M3');
+    // The stop comes before the tool change (LinuxCNC's convert_tool_change), and an M3
+    // on the same line after it.
     expect(r.steps.map((s) => (s.kind === 'spindle' ? `spindle ${s.state}` : s.kind))).toEqual([
       'tool-change',
       'spindle cw',
-      'tool-change',
       'spindle off',
+      'tool-change',
       'spindle cw',
-      'tool-change',
       'spindle off',
+      'tool-change',
       'spindle cw',
     ]);
-    expect(r.steps[3]).toMatchObject({ by: 'tool-change', rpm: 12000 });
+    expect(r.steps[2]).toMatchObject({ by: 'tool-change', rpm: 12000 });
     expect(r.state.spindle.state).toBe('cw');
     // Stopped already: no extra step.
     expect(run('G21\nT1 M6\nT2 M6').steps.map((s) => s.kind)).toEqual([
       'tool-change',
       'tool-change',
     ]);
+  });
+
+  it("a dialect whose tool change doesn't stop the spindle keeps it running", () => {
+    const keeps = {
+      ...LINUXCNC_INTERPRETER_RULES,
+      programChecks: { toolChangeStopsSpindle: false },
+    };
+    const r = run('G21\nT1 M6\nS12000 M3\nT2 M6\nG1 X1 F100', { interpreterRules: keeps });
+    expect(
+      r.steps.filter((s) => s.kind === 'spindle').map((s) => s.kind === 'spindle' && s.state),
+    ).toEqual(['cw']);
+    expect(r.state.spindle.state).toBe('cw');
+  });
+
+  it('a tool change clears a pending spin-up advice (the restart waits for itself)', () => {
+    // Masso advises a dwell after a speed change while running. A tool change stops the
+    // spindle, and an M3 from stopped waits for spin-up: nothing left to advise.
+    // Cutting after the tool change with no M3: the spindle is off, so a "not settled"
+    // advice would be wrong (and an M3 would have cleared it anyway).
+    const r = run('G21 G90\nM3 S1000\nS2000\nT2 M6\nG1 X1 F100', { dialect: MASSO_G3 });
+    expect(r.diagnostics.map((d) => d.code)).not.toContain('SEMANTIC_SPINDLE_NOT_SETTLED');
+    // Without the tool change, the advice is given.
+    const plain = run('G21 G90\nM3 S1000\nS2000\nG1 X1 F100', { dialect: MASSO_G3 });
+    expect(plain.diagnostics.map((d) => d.code)).toContain('SEMANTIC_SPINDLE_NOT_SETTLED');
+  });
+
+  it('Masso M6.1 (unload) stops the spindle too', () => {
+    const r = run('G21\nM3 S1000\nM6.1\nG1 X1 F100', { dialect: MASSO_G3 });
+    expect(r.steps.find((s) => s.kind === 'spindle' && s.state === 'off')).toMatchObject({
+      by: 'tool-change',
+    });
   });
 
   it('stops at M2/M30 and reports what was not run (fixes R8)', () => {
