@@ -96,8 +96,12 @@ jobs:
           git fetch -q --depth=1 origin "${GITHUB_SHA}"
           git checkout -q --detach "${GITHUB_SHA}"
       - name: reuse lint
-        # Pinned version; pipx runs it in a throwaway venv.
-        run: pipx run 'reuse==6.2.0' lint
+        # Every package pinned by hash (.github/ci/reuse-requirements.txt): pip refuses
+        # any file whose hash isn't listed, and any dependency that isn't pinned there.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/reuse"
+          "$RUNNER_TEMP/reuse/bin/pip" install -q --require-hashes -r .github/ci/reuse-requirements.txt
+          "$RUNNER_TEMP/reuse/bin/reuse" lint
 
   # ── The fork's inheritance is intact, and PR commits carry a DCO sign-off ──
   provenance:
