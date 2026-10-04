@@ -22,7 +22,9 @@
 // Known gaps, accepted in review (so they're deliberate): a private number in the 5000s
 // on a line about G-code; glued forms (issue#NNNN, PR#NNNN, a private repo's name glued
 // to #NNNN); a fullwidth or zero-width "#", or &#35;; another owner's x/y#NNNN; and a
-// private number smuggled into an outside list ("LinuxCNC #1528/#NNNN").
+// private number smuggled into an outside list ("LinuxCNC #1528/#NNNN"); and shapes that
+// are valid G-code too: "#NNNN = 3 open items", "#NNNN = [WIP]", "#NNNN = ...",
+// "#NNNN=1 of 3", "[#NNNN and #44]", "[#NNNN - 2 follow-ups]".
 import { realpathSync } from 'node:fs';
 import process from 'node:process';
 import { createInterface } from 'node:readline';

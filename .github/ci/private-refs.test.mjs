@@ -9,44 +9,48 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { leaks } from './private-refs.mjs';
 
-// The leak cases are built at run time, from a separate "#" and made-up numbers, so this
+// The leak cases are built at run time, from a separate "#" and made-up five-digit numbers
+// the tracker won't reach for years (a failing assert prints its line in the public log), so this
 // public file never contains a reference itself (and passes the check it tests).
 const H = '#';
 const ORG = 'Woodpatch' + 'AU';
 
 test('refuses references to private work', () => {
   for (const line of [
-    `see ${H}1999 here`,
-    `see ${H}2001`,
-    `Masso O-words refused (${H}1999)`,
-    `LinuxCNC dialect: fixes ${H}1999`,
-    `upstream behaviour kept, see ${H}1999`,
-    `fix for \`${H}1999\``,
-    `see '${H}2001'`,
-    `G64 P tolerance (${H}1999)`,
-    `param ${H}5210 = 0 (${H}1999)`,
+    `see ${H}99901 here`,
+    `see ${H}99902`,
+    `Masso O-words refused (${H}99901)`,
+    `LinuxCNC dialect: fixes ${H}99901`,
+    `upstream behaviour kept, see ${H}99901`,
+    `fix for \`${H}99901\``,
+    `see '${H}99902'`,
+    `G64 P tolerance (${H}99901)`,
+    `param ${H}5210 = 0 (${H}99901)`,
     `fixes ${H}5210 today`,
     `https://github.com/${ORG}/some-private-repo`,
     `https://github.com/${ORG.toLowerCase()}/other/pull/3`,
-    'something/issues/' + '1999',
-    `${ORG}/private-thing${H}1999`,
+    'something/issues/' + '99901',
+    `${ORG}/private-thing${H}99901`,
     // Round 3 of the review: names whose trackers never reach four digits, and syntax
     // that only looks like G-code.
-    `Masso ${H}1999 refused`,
-    `webgcode issue ${H}1999`,
-    `[${H}1999]`,
-    `ref=${H}1999`,
-    `${H}100=${H}1999`.replace(`${H}100=`, 'x='),
+    `Masso ${H}99901 refused`,
+    `webgcode issue ${H}99901`,
+    `[${H}99901]`,
+    `ref=${H}99901`,
+    `${H}100=${H}99901`.replace(`${H}100=`, 'x='),
     `git@github.com:${ORG}/private-thing.git`,
     `https://raw.githubusercontent.com/${ORG}/private-thing/main/x`,
-    `https://github.com/${ORG}/woodpatch-gcode-toolkit/pull/` + '1999',
+    `https://github.com/${ORG}/woodpatch-gcode-toolkit/pull/` + '99901',
+    // Paths, as the check feeds them: "/" made a space.
+    `docs notes-${H}99901.md`,
+    `${H}99901 notes.md`,
     // Round 4: "assigned" to prose, and an operator with no operand after it.
-    `${H}1999 = launch prerequisite`,
-    `see ${H}1999= notes`,
-    `[${H}1999 - relay]`,
-    `[${H}1999 + follow-ups]`,
-    `[${H}1999 or later]`,
-    `[${H}1999 / the guard]`,
+    `${H}99901 = launch prerequisite`,
+    `see ${H}99901= notes`,
+    `[${H}99901 - relay]`,
+    `[${H}99901 + follow-ups]`,
+    `[${H}99901 or later]`,
+    `[${H}99901 / the guard]`,
   ])
     assert.equal(leaks(line), true, line);
 });
