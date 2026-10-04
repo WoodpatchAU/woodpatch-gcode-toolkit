@@ -7,7 +7,8 @@
 # its title and body. What counts as a reference (links, and tracker numbers told apart
 # from G-code parameters by context, with the digit floor to raise if this repository's
 # own numbers ever reach four digits) is in private-refs.mjs, beside this script.
-# Hits print where (commit and file, or "PR title/body"), never the matched text.
+# Hits print where (commit and file, or "PR title/body"), not the matched text; a hit
+# in a path prints the path, which is where it is.
 #
 # Usage: check-private-refs.sh <base-sha> <head-sha>   the PR's commits, and its text
 #        check-private-refs.sh                         only the PR's title and body
@@ -37,12 +38,17 @@ if [ $# -ge 2 ]; then
         # merge itself brought in). --text and no textconv: binaries and files marked
         # -diff are scanned as they are.
         git log -1 --format='%B' "$sha" | awk -v c="${sha:0:10}" '{ print c " (message)\t" $0 }'
+        # Paths, NUL-separated (a name can hold spaces), with "/" made a space so a
+        # directory name can't read as an outside owner's "owner/repo#NNNN".
+        git diff-tree -r -z --root --name-only --no-commit-id -m --first-parent "$sha" |
+          while IFS= read -r -d '' path; do
+            printf '%s %s (path)\t%s\n' "${sha:0:10}" "$path" "${path//\// }"
+          done
         git show --format= --no-color --text --no-textconv --no-ext-diff -m --first-parent -p "$sha" |
           awk -v c="${sha:0:10}" '
             # A file header runs from "diff --git" to its first "@@": only there are
             # ---/+++ lines headers. In a hunk, an added "++ …" line is content.
-            # The path is scanned too: a file can be named with a reference.
-            /^diff --git / { f = $4; sub(/^b\//, "", f); head = 1; print c " " f " (path)\t" f; next }
+            /^diff --git / { f = $4; sub(/^b\//, "", f); head = 1; next }
             /^@@/ { head = 0; next }
             head && (/^\+\+\+ / || /^--- /) { next }
             !head && /^\+/ { print c " " f "\t" substr($0, 2) }
