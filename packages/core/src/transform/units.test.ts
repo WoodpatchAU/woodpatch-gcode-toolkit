@@ -785,6 +785,52 @@ describe('units: the eleventh review of #37', () => {
       src += `G81 X0 Z-1.016 R${i % 2 ? '0.087' : '0.040'}\nM66 P1 L3 Q5000 S1\nX0 R0.254\nX0\nG80\nG1 Z${i % 2 ? '-0.341' : '-0.294'}\n`;
     const r = u(src + 'M30', 'inch', 'mm', MASSO_G3);
     expect(r.ok).toBe(false);
-    expect(r.diagnostics[0]?.message).toContain('R would then not restate the level');
+    expect(r.diagnostics[0]?.message).toContain('R would then not set the retract level');
+  });
+});
+
+describe('units: the twelfth review of #37', () => {
+  const RANGE = 'M66 P1 L3 Q5000 S1';
+  it('a motion code in an M66 range that a later line relies on is refused (arcdir3)', () => {
+    const arc = (y: string, i: string, unit: string) =>
+      `${unit} G90 G17 G94\nG0 X0 Y0 Z5\nG1 Z-1 F100\nG3 X0 Y0 I${i} J0\n${RANGE}\nG2 X0 Y0 I${i} J0\nX0 Y${y} I${i} J0\nG0 Z5\nM5\nM30`;
+    for (const [src, to] of [
+      [arc('0.0001', '-1', 'G21'), 'inch'],
+      [arc('0.00001', '-0.04', 'G20'), 'mm'],
+    ] as const) {
+      const r = u(src, to, undefined, MASSO_G3);
+      expect(r.ok, src).toBe(false);
+      expect(r.diagnostics[0]).toMatchObject({ code: 'TRANSFORM_CONTROL_FLOW', line: 6 });
+      expect(r.diagnostics[0]?.message).toContain('relies on the motion this line sets');
+    }
+  });
+
+  it("a cycle's Q after a range that changes the motion is refused (qleak2)", () => {
+    const src = `G21 G90 G17\nG99 G83 X0 Y0 Z-3 R1 Q1 F100\n${RANGE}\nG0 Z5\nX5 Y5 Q1\nG80\nM30`;
+    const r = u(src, 'inch', 'mm', MASSO_G3);
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics[0]).toMatchObject({ code: 'TRANSFORM_CONTROL_FLOW', line: 4 });
+  });
+
+  it('a motion code in a range is allowed when nothing after it relies on it', () => {
+    // The next always-run line states its own motion, and lines in the same range run
+    // only with it; a Q read by M66 is M66's, and a G28's X is G28's.
+    for (const src of [
+      `G21 G90\n${RANGE.replace('S1', 'S2')}\nG0 Z5\nX1\nG1 X2 F100\nM30`,
+      `G21 G90\nG1 X0 F100\n${RANGE}\nG0 Z5\n${RANGE.replace('S1', 'S0')}\nG28 X0\nG1 X1\nM30`,
+    ])
+      expect(u(src, 'inch', 'mm', MASSO_G3).ok, src).toBe(true);
+    // Masso ignores "/": the line always runs, so its G1 ends the reliance.
+    expect(u(`G21 G90\n${RANGE}\nG0 Z5\n/G1 X1 F100\nX2\nM30`, 'inch', 'mm', MASSO_G3).ok).toBe(
+      true,
+    );
+  });
+
+  it('a plane or cutter compensation code in an M66 range is refused', () => {
+    for (const g of ['G17', 'G18', 'G19', 'G40', 'G41', 'G42']) {
+      const r = u(`G21 G90\n${RANGE}\n${g}\nG1 X1 F100\nM30`, 'inch', 'mm', MASSO_G3);
+      expect(r.ok, g).toBe(false);
+      expect(r.diagnostics[0]?.message).toContain('changes a mode');
+    }
   });
 });

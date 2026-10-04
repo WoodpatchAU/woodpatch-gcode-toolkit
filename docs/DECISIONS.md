@@ -1868,6 +1868,21 @@ RUNS, and compares only what it models. So:
   - A feed keeps five significant digits with no lower limit on decimals. What Masso
     reads below that is unconfirmed (machine tests).
 
+**Corrected in the twelfth review.**
+
+- **A motion code inside an M66 skip range is refused when a later line relies on it,**
+  with or without G91 cycles. "Relies" means a line outside the range carries a word the
+  modal motion reads (X/Y/Z/I/J/K/R, or a Q no M code reads) before the next motion
+  code that always runs. On the met path that line runs under the motion before the
+  range. Unrefused, a G2 in a range turned a 0.0001 mm sliver of G3 into a full circle,
+  and a G0 in a range left the next line's G83 peck in inches.
+- **Plane and cutter-compensation codes (G17–G19, G40–G42) inside a range are refused**
+  like mode codes. On the met path they decide whether the cycle lines after them run at
+  all.
+- **Not changed, and noted:** an R inside a range is still refused whenever the file has
+  G91 canned cycles, an arc's R and a G90 cycle's R included. That's conservative, and
+  the message now says why.
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long

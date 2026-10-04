@@ -34,6 +34,12 @@ const UNITS_G = new Set([
 const CYCLES = new Set([73, 81, 82, 83, 84, 85, 86, 89]);
 /** Codes that set a mode the conversion reads: units, distance, feed mode, retract mode. */
 const MODE_G = new Set([20, 21, 90, 91, 93, 94, 95, 98, 99]);
+/**
+ * Modes that aren't read by the conversion, but decide whether a line runs at all: the
+ * plane and cutter compensation (a cycle off the XY plane, or under compensation, is an
+ * error). Refused in an M66 range with MODE_G (review of #37).
+ */
+const RANGE_MODE_G = new Set([17, 18, 19, 40, 41, 42]);
 /** M codes that read no letters of their own (M6 reads T, which is never converted). */
 const M_NO_WORDS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 30, 48, 49, 60]);
 /** G codes that read neither P nor Q: beside them, G64's P and Q are G64's alone. */
@@ -221,6 +227,52 @@ export function convertUnits(
       // Only a range that moves can disturb a carry (a dwell alone can't).
       if (moves) skipRanges++;
     });
+  // A motion word inside a range sets the modal motion only when the range runs. If a
+  // line after the range relies on that motion (a word the motion reads, before the next
+  // motion word that always runs), the met path runs it under the OLD motion, which this
+  // conversion never sees (review of #37: a G2 in a range turned a 0.0001 mm sliver of
+  // G3 into a full circle, and a cycle's Q stayed in inches). Such a motion word is refused.
+  const reliedOn = new Set<number>(); // a line in a range whose motion word is relied on
+  const wordsOf = (l: Line) => l.tokens.filter((t): t is WordToken => t.kind === 'word');
+  const motionWord = (ws: WordToken[]) =>
+    ws.some((w) => w.letter === 'G' && MOTION.has(num0(w) ?? -1));
+  const alwaysRuns = (l: Line) =>
+    !skipFrom.has(l.lineNo) &&
+    !(
+      dialect.interpreter.blockDelete === 'switch' &&
+      l.tokens.some((t) => t.kind === 'block-delete')
+    );
+  // The words a modal motion would read on a line: those no G code takes for itself, and
+  // a Q no M code reads (M66's timeout). Generous: a word is enough, moving or not.
+  const reliesOnMotion = (ws: WordToken[]) => {
+    const owned = ws
+      .filter((w) => w.letter === 'G')
+      .map((w) => OWN_WORDS.get(num0(w) ?? -1) ?? '')
+      .join('');
+    const mReads = ws.some((w) => w.letter === 'M' && !M_NO_WORDS.has(num0(w) ?? -1));
+    return ws.some(
+      (w) =>
+        'XYZIJKRQ'.includes(w.letter) && !owned.includes(w.letter) && !(w.letter === 'Q' && mReads),
+    );
+  };
+  program.lines.forEach((line, i) => {
+    const range = skipFrom.get(line.lineNo);
+    if (range === undefined || !motionWord(wordsOf(line))) return;
+    for (let j = i + 1; j < program.lines.length; j++) {
+      const l = program.lines[j] as Line;
+      // Skipped together with the motion word: it runs only when the motion word does.
+      if (skipFrom.get(l.lineNo) === range) continue;
+      const ws = wordsOf(l);
+      if (motionWord(ws)) {
+        if (alwaysRuns(l)) return;
+        continue;
+      }
+      if (reliesOnMotion(ws)) {
+        reliedOn.add(line.lineNo);
+        return;
+      }
+    }
+  });
   // G91 canned cycles anywhere: then a motion word inside a skip range can merge two
   // cycle series on the met path, and a G91 R is measured from where its series began.
   const g91Cycles =
@@ -353,11 +405,17 @@ export function convertUnits(
       (dialect.interpreter.blockDelete === 'switch' &&
         line.tokens.some((t) => t.kind === 'block-delete')) ||
       skippedBy !== undefined;
-    if (skippedBy !== undefined && [...gs].some((g) => MODE_G.has(g)))
+    if (skippedBy !== undefined && [...gs].some((g) => MODE_G.has(g) || RANGE_MODE_G.has(g)))
       error(
         n,
         'TRANSFORM_CONTROL_FLOW',
         `M66 at line ${skippedBy} skips this line when its input condition is met, and this line changes a mode: the result would depend on the input. Refusing`,
+      );
+    else if (reliedOn.has(n))
+      error(
+        n,
+        'TRANSFORM_CONTROL_FLOW',
+        `M66 at line ${skippedBy} skips this line when its input condition is met, and a later line relies on the motion this line sets: it would then run under the motion before it, which isn't converted for. Refusing`,
       );
     // A motion word (G80, G0–G3, G38.x, a cycle) inside a range ends a G91 cycle series,
     // and an R restates its level, only when the range runs: skipped, two series merge or
@@ -370,7 +428,7 @@ export function convertUnits(
       error(
         n,
         'TRANSFORM_CONTROL_FLOW',
-        `M66 at line ${skippedBy} skips this line when its input condition is met, and this ${[...gs].some((g) => MOTION.has(g)) ? 'motion code would then not end' : 'R would then not restate the level of'} a G91 cycle series: the result would depend on the input. Refusing`,
+        `M66 at line ${skippedBy} skips this line when its input condition is met, and this ${[...gs].some((g) => MOTION.has(g)) ? 'motion code would then not end a G91 cycle series' : 'R would then not set the retract level (the file has G91 canned cycles, whose R is measured from where their series began)'}: the result would depend on the input. Refusing`,
       );
     const carry = carries[skippable ? 1 : 0];
     const repeats =
