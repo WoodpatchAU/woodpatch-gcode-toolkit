@@ -148,11 +148,10 @@ owner's own repositories, pinned to full commit SHAs, so `actions/checkout` and
   version means bumping its hash in the same commit.
 - `permissions: contents: read`. Event values reach shell through `env`, never
   through `${{ }}` interpolation into script text.
-- One tool is version-pinned but not hash-pinned: `reuse`, run via
-  `pipx run 'reuse==6.2.0'`. That is accepted because its blast radius is its own
-  job, which has `contents: read`, no secrets and no artefact output. Hash-pin it
-  (`--require-hashes`) if that job ever gains write access or produces output
-  anything else consumes.
+- `reuse` and its dependencies are pinned by hash in `.github/ci/reuse-requirements.txt`
+  and installed with `pip --require-hashes`. _Until 2026-10-04 it ran as
+  `pipx run 'reuse==6.2.0'`, version-pinned only; an external review asked for the
+  hash pin (ADR-0039)._
 - The jobs (`checks`, `reuse`, `provenance`) are the required status checks on `main`.
   Renaming a job means updating branch protection.
 
@@ -1735,3 +1734,24 @@ and arc-to-line controls follow when their core parcels merge (4e-2).
 - an edit by hand resetting the history;
 - the recipe and G-code downloads, and a saved recipe applied to another file;
 - a misspelt recipe refused.
+
+## ADR-0039: Security policy, Dependabot, and reuse pinned by hash
+
+**Status:** Accepted, 2026-10-04. Operator decisions on an external review's findings.
+
+**Decision.**
+
+- **Vulnerabilities are reported through GitHub's private vulnerability reporting**
+  (`SECURITY.md`), so no address has to be published. The setting is turned on in
+  the repository's settings.
+- **Dependabot watches the pnpm workspace only**, weekly, with a **7-day cooldown** to
+  match `minimumReleaseAge`. Minor and patch bumps are grouped into one PR. There are
+  no GitHub Actions to watch (ADR-0006). Node, pnpm and reuse stay pinned by hash in
+  `.github/ci` and are bumped by hand.
+- **`reuse` is pinned by hash** (see ADR-0006).
+
+**Consequences.** Dependabot's commits carry no DCO sign-off, so the DCO check fails
+its PRs. That's deliberate: the check isn't weakened for a bot. Either the repository
+requires sign-off on web-based commits (Dependabot then signs off), or a maintainer
+re-commits the update with a sign-off. Whether Dependabot reads this pnpm major's
+lockfile is still to be seen. If it can't, its log says so and nothing else breaks.
