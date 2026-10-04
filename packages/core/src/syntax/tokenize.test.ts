@@ -133,6 +133,19 @@ describe('the tokenizer keeps its diagnostics bounded', () => {
     const capped = tokenizeLine(mixed, 1).diagnostics;
     expect(capped).toHaveLength(101);
     expect(capped.at(-1)?.message).toContain('not listed');
+    // Every kind of finding is capped, not just unexpected characters (review of #51): a
+    // line of bare letters made one SYNTAX_MISSING_VALUE per letter.
+    const letters = tokenizeLine('X'.repeat(2_000_000), 1).diagnostics;
+    expect(letters).toHaveLength(101);
+    expect(letters.at(-1)?.span).toEqual({ start: 100, end: 2_000_000 });
+    // The note carries the worst severity it stands for: an error past 100 infos is
+    // still an error.
+    const quiet = tokenizeLine(`${'X1 2 '.repeat(101)}@`, 1).diagnostics;
+    expect(quiet.slice(0, 100).every((d) => d.severity === 'info')).toBe(true);
+    expect(quiet.at(-1)).toMatchObject({
+      severity: 'error',
+      message: expect.stringContaining('not listed'),
+    });
     // X-## once read "##" twice (after the failed sign chain): one report now.
     const twice = tokenizeLine('X-##', 1).diagnostics.filter(
       (d) => d.code === 'SYNTAX_MISSING_VALUE' && d.span?.start !== 0,
