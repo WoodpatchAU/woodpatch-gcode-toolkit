@@ -417,12 +417,11 @@ describe('units: the fourth review of #37', () => {
     expect(e[0]?.message).toContain('no O-word subroutines');
   });
 
-  it('refuses a feed, peck or blending tolerance that would round to zero', () => {
-    const e = errs('G21\nG64 P0.0001\nG1 X1 F0.0001\nM2', 'inch');
-    expect(e.map((d) => `${d.code}@${d.line}`)).toEqual([
-      'TRANSFORM_UNITS_PRECISION@2',
-      'TRANSFORM_UNITS_PRECISION@3',
-    ]);
+  it('refuses a blending tolerance that would round to zero; a slow feed keeps its digits', () => {
+    const e = errs('G21\nG64 P0.0001\nG1 X1 F100\nM2', 'inch');
+    expect(e.map((d) => `${d.code}@${d.line}`)).toEqual(['TRANSFORM_UNITS_PRECISION@2']);
+    // A feed keeps five significant digits (the ninth review), so it never rounds to zero.
+    expect(u('G21\nG1 X1 F0.0001\nM2', 'inch').text).toBe('G20\nG1 X0.03937 F0.000003937\nM2');
   });
 
   it('refuses subprogram files: a Masso file ending M99, a LinuxCNC library', () => {
@@ -682,5 +681,77 @@ describe('units: the eighth review of #37', () => {
       }) as Step;
     expect(runDifference([arc(0)], [arc(0)])).toBeNull();
     expect(runDifference([arc(0)], [arc(0.01)])).toBe('its arc bulges somewhere else');
+  });
+});
+
+describe('units: the ninth review of #37', () => {
+  const refusedWith = (src: string, to: 'mm' | 'inch', text: string, d: Dialect = LINUXCNC) => {
+    const r = u(src, to, 'mm', d);
+    expect(r.ok, src).toBe(false);
+    expect(r.text).toBe(src);
+    expect(r.diagnostics.map((x) => x.message).join('\n'), src).toContain(text);
+  };
+  const cycles = (head: string, body: string, n: number, tail: string) =>
+    head + body.repeat(n) + tail;
+
+  it('a retract-mode change (G98/G99) in a "/" line or an M66 range is refused', () => {
+    refusedWith(
+      cycles(
+        'G20 G90 G98 G17 G94\nG0 X0 Y0 Z1\nG1 F10\n/G99\nG91\n',
+        'G81 X0.05 Z-0.012 R-0.004\nG80\nG1 Z0.004\n',
+        10,
+        'G90\nM2',
+      ),
+      'mm',
+      'G98 retract',
+    );
+    refusedWith(
+      cycles(
+        'G21 G90\nG0 X0 Y0 Z5\nG91 G1 F100\nM66 P1 L3 Q5000 S1\nG99\n',
+        'G81 X1 Z-0.3 R-0.1\nG80\nG1 Z0.1\n',
+        5,
+        'M30',
+      ),
+      'inch',
+      'M66 at line 4 skips this line',
+      MASSO_G3,
+    );
+  });
+
+  it('several M66 skip ranges: an inexact increment inside one is refused', () => {
+    refusedWith(
+      cycles(
+        'G21 G90\nG0 X0 Y0\nG91 G1 F100\n',
+        'M66 P1 L3 Q5000 S1\nG1 X0.0007\nG1 Y0.0007\n',
+        20,
+        'M30',
+      ),
+      'inch',
+      'several M66 skip ranges',
+      MASSO_G3,
+    );
+    // One range, or exact increments: fine.
+    expect(
+      u('G21 G90\nG91 G1 F100\nM66 P1 L3 Q5000 S1\nG1 X0.0007\nM30', 'inch', 'mm', MASSO_G3).ok,
+    ).toBe(true);
+  });
+
+  it('a bare N line does not count toward an M66 range (generous)', () => {
+    refusedWith(
+      'G21 G90\nM66 P1 L3 Q5000 S1\nN20\nG20\nG1 X1 F10\nM30',
+      'mm',
+      'M66 at line 2 skips this line',
+      MASSO_G3,
+    );
+  });
+
+  it('G98 with R above the start: R is a net move, and converts', () => {
+    const src = cycles(
+      'G21 G90 G98\nG0 X0 Y0 Z5\nG91 G1 F100\n',
+      'G81 X1 Z-1 R0.513\nG80\nG1 Z-0.513\n',
+      120,
+      'M2',
+    );
+    expect(u(src, 'inch').ok).toBe(true);
   });
 });

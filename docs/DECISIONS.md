@@ -1830,6 +1830,22 @@ RUNS, and compares only what it models. So:
   G91 drill cycles now convert, where they were refused before. Before that, they
   drifted 3 µm.
 
+**Corrected in the ninth review.**
+
+- **The retract mode (G98/G99) is a mode word**, since last round's carry depends on it.
+  A change in a `/` line or an M66 skip range is refused, and the run-time comparison
+  includes it on cycle lines.
+- **The final check runs with block delete on as well as off.** It's a backstop for the
+  whole class; every case found so far is caught earlier, by a specific rule.
+- **Several M66 skip ranges are each met on their own,** so one carry chain can't serve
+  them. An inexact G91 increment inside one is refused when the file has more than one.
+- **G98 with R above the start:** the cycle returns to the higher level, so R is then a
+  net move and carries.
+- **A feed keeps five significant digits,** and the final check compares feeds
+  relatively (0.01%). A slow feed can then neither round to zero nor hide behind an
+  absolute allowance.
+- An M66 range counts lines of code, not a line holding only an N number (generous).
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long

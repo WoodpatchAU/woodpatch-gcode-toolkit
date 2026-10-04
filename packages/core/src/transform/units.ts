@@ -32,8 +32,8 @@ const UNITS_G = new Set([
   91, 91.1, 92, 92.1, 92.2, 92.3, 93, 94, 95, 97, 98, 99,
 ]);
 const CYCLES = new Set([73, 81, 82, 83, 84, 85, 86, 89]);
-/** Codes that set a mode the conversion reads: units, distance, feed mode. */
-const MODE_G = new Set([20, 21, 90, 91, 93, 94, 95]);
+/** Codes that set a mode the conversion reads: units, distance, feed mode, retract mode. */
+const MODE_G = new Set([20, 21, 90, 91, 93, 94, 95, 98, 99]);
 /** M codes that read no letters of their own (M6 reads T, which is never converted). */
 const M_NO_WORDS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 30, 48, 49, 60]);
 /** G codes that read neither P nor Q: beside them, G64's P and Q are G64's alone. */
@@ -68,6 +68,8 @@ interface TextState {
   readonly absolute: boolean;
   readonly feedMode: FeedMode;
   readonly motion: number | null;
+  /** G99 (cycles end at R) rather than G98: decides what of a G91 cycle carries. */
+  readonly retractToR: boolean;
 }
 
 export function convertUnits(
@@ -201,16 +203,19 @@ export function convertUnits(
   // rounding has its own carry chain (review of #37). Counted generously: up to the n-th
   // line of code after, so blank and comment lines can't shorten the range.
   const skipFrom = new Map<number, number>(); // a line in a range → its M66 line
+  let skipRanges = 0;
   if (dialect.interpreter.m66 === 'masso-wait')
     program.lines.forEach((line, i) => {
       const ws = line.tokens.filter((t): t is WordToken => t.kind === 'word');
       if (!ws.some((w) => w.letter === 'M' && num0(w) === 66)) return;
       const sWord = ws.find((w) => w.letter === 'S');
       let left = sWord ? Math.round(num0(sWord) ?? 0) : 0;
+      if (left > 0) skipRanges++;
       for (let j = i + 1; j < program.lines.length && left > 0; j++) {
         const l = program.lines[j] as Line;
         skipFrom.set(l.lineNo, line.lineNo);
-        if (l.tokens.some((t) => t.kind === 'word')) left--;
+        // A line of code counts; one holding only an N number doesn't (generous).
+        if (l.tokens.some((t) => t.kind === 'word' && t.letter !== 'N')) left--;
       }
     });
 
@@ -238,7 +243,7 @@ export function convertUnits(
     const num = (w: WordToken | undefined) => (w?.value?.kind === 'number' ? w.value.value : null);
     const edits: LineEdit[] = [];
     const before = units;
-    textState.set(n, { units, absolute, feedMode, motion });
+    textState.set(n, { units, absolute, feedMode, motion, retractToR });
     const gs = new Set<number>();
     let ownMotion: number | null = null;
     for (const w of words) {
@@ -392,8 +397,9 @@ export function convertUnits(
         }
         if (sharedWithM('R')) continue;
         f = lengthFactor;
-        // Under G99 a G91 cycle ends at R: that IS a net Z move, and carries.
-        if (!absolute && cycleRuns && retractToR) axis = 'Z';
+        // Under G99 a G91 cycle ends at R: that IS a net Z move, and carries. So it is
+        // under G98 when R is above the start (it returns to the higher of the two).
+        if (!absolute && cycleRuns && (retractToR || w.value.value > 0)) axis = 'Z';
       } else if (L === 'Q') {
         if (gs.has(64) && g64Shared()) {
           error(
@@ -461,6 +467,16 @@ export function convertUnits(
           );
           continue;
         }
+        // Each M66 skip range is met (or not) on its own, so one carry chain can't serve
+        // several: an inexact increment inside one is refused when there are more.
+        if (loose && skippedBy !== undefined && skipRanges > 1) {
+          error(
+            n,
+            'TRANSFORM_UNITS_DRIFT',
+            `This incremental ${L} doesn't convert exactly, inside one of several M66 skip ranges that are each met on their own, so their rounding can't be carried. Refusing`,
+          );
+          continue;
+        }
         target = exact + carry[axis];
       }
       // Beyond what any controller reads (ADR-0033's MAX_WRITTEN): refuse, never write
@@ -475,11 +491,11 @@ export function convertUnits(
       }
       // A feed per revolution is small (0.1 mm/rev is 0.003937 in/rev): two more places
       // keep it within 0.01% (review of #37), where 5 inch decimals were 0.08% off.
-      const text = formatConverted(
-        target,
-        src,
-        L === 'F' && feedMode === 'per-revolution' ? places + 2 : places,
-      );
+      // A feed keeps enough digits to stay within 0.01% (five significant): a feed per
+      // revolution is small (0.1 mm/rev is 0.003937 in/rev), and so is a slow feed.
+      const fPlaces =
+        L === 'F' && target > 0 ? Math.max(places, Math.ceil(4 - Math.log10(target))) : places;
+      const text = formatConverted(target, src, fPlaces);
       // A feed, a peck (Q) or a blending tolerance (G64 P/Q) that rounds to zero means
       // something else at zero: no feed, an endless peck, no blending (review of #37).
       if ((L === 'F' || L === 'Q' || L === 'P') && w.value.value !== 0 && Number(text) === 0) {
@@ -507,7 +523,7 @@ export function convertUnits(
   // Block delete OFF first: every line runs, so a difference there is control flow.
   // One that appears only with it ON comes from a skipped "/" line.
   let assumed = false;
-  let originalRun: ReturnType<typeof interpret> | undefined;
+  const originalRuns: (ReturnType<typeof interpret> | undefined)[] = [undefined, undefined];
   const refused = new Set<number>();
   const MAX_MODE_ERRORS = 20;
   // Only worth running when nothing else refused: a refused loop may never end.
@@ -537,7 +553,7 @@ export function convertUnits(
       },
     });
     if (blockDelete) assumed = run.diagnostics.some((d) => d.code === 'SEMANTIC_UNITS_ASSUMED');
-    else originalRun = run; // reused by the final check
+    originalRuns[blockDelete ? 1 : 0] = run; // reused by the final check
     // A run that stopped never checked the lines after the stop (review of #37).
     if (!run.completed) {
       const why = [...run.diagnostics].reverse().find((d) => d.severity === 'error');
@@ -610,29 +626,36 @@ export function convertUnits(
       if (!st.file) (m.get(st.line) ?? m.set(st.line, []).get(st.line))?.push(st);
     return m;
   };
-  const was = steps(
-    originalRun?.steps ?? interpret(program, { dialect, units: assume, blockDelete: false }).steps,
-  );
-  const now = steps(interpret(result, { dialect, units: to, blockDelete: false }).steps);
-  const shift = stated && first ? first.lineNo : Infinity;
-  const back = (n: number) => (n > shift ? n - 1 : n); // a result line, as an original one
-  const ran = new Set([...was.keys(), ...[...now.keys()].filter((n) => n !== shift).map(back)]);
-  for (const n of [...ran].sort((x, y) => x - y)) {
-    const a = was.get(n) ?? [];
-    const b = now.get(n >= shift ? n + 1 : n) ?? [];
-    const why = runDifference(a, b);
-    if (!why) continue;
-    // An R-format arc near a half circle is ill-conditioned: rounding its end moves its
-    // centre a long way (25 µm for a 2.5 mm half circle in inches).
-    const rArc =
-      /arc|°/.test(why) &&
-      a.some((st) => st.kind === 'arc') &&
-      (program.lines[n - 1]?.tokens ?? []).some((t) => t.kind === 'word' && t.letter === 'R');
-    error(
-      n,
-      'TRANSFORM_UNITS_CHANGED',
-      `This line runs differently once converted (${why}). ${rArc ? 'An R-format arc near a half circle moves its centre when its end is rounded: give the centre with I/J instead. ' : ''}Refusing`,
+  // With block delete off AND on: a mode or carry that differs only when "/" lines are
+  // skipped shows only there (review of #37).
+  for (const blockDelete of [false, true]) {
+    const was = steps(
+      originalRuns[blockDelete ? 1 : 0]?.steps ??
+        interpret(program, { dialect, units: assume, blockDelete }).steps,
     );
+    const now = steps(interpret(result, { dialect, units: to, blockDelete }).steps);
+    const shift = stated && first ? first.lineNo : Infinity;
+    const back = (n: number) => (n > shift ? n - 1 : n); // a result line, as an original one
+    const ran = new Set([...was.keys(), ...[...now.keys()].filter((n) => n !== shift).map(back)]);
+    for (const n of [...ran].sort((x, y) => x - y)) {
+      const a = was.get(n) ?? [];
+      const b = now.get(n >= shift ? n + 1 : n) ?? [];
+      const why = runDifference(a, b);
+      if (!why) continue;
+      if (errors.some((e) => e.line === n && e.code === 'TRANSFORM_UNITS_CHANGED')) continue;
+      // An R-format arc near a half circle is ill-conditioned: rounding its end moves
+      // its centre a long way (25 µm for a 2.5 mm half circle in inches), or collapses a
+      // sliver.
+      const rArc =
+        a.some((st) => st.kind === 'arc') &&
+        (/arc|°/.test(why) || !b.some((st) => st.kind === 'arc')) &&
+        (program.lines[n - 1]?.tokens ?? []).some((t) => t.kind === 'word' && t.letter === 'R');
+      error(
+        n,
+        'TRANSFORM_UNITS_CHANGED',
+        `This line runs differently once converted${blockDelete ? ' with block delete on' : ''} (${why}). ${rArc ? 'An R-format arc near a half circle moves its centre when its end is rounded: give the centre with I/J instead. ' : ''}Refusing`,
+      );
+    }
   }
   if (errors.length) return { ok: false, program, diagnostics: errors };
 
@@ -719,6 +742,12 @@ function modeDifference(t: TextState, run: ModalState, line: Line | undefined): 
   if (has('XYZR') && (run.distance === 'absolute') !== t.absolute)
     diffs.push(`in ${run.distance} mode`);
   if (has('F') && run.feedMode !== t.feedMode) diffs.push(`with ${run.feedMode} feed`);
+  // A canned cycle reads the retract mode (it decides what of a G91 cycle carries).
+  const cycle =
+    words.some((w) => w.letter === 'G' && CYCLES.has(num0(w) ?? -1)) ||
+    (t.motion !== null && CYCLES.has(t.motion) && has('XYZ'));
+  if (cycle && (run.retract === 'r-plane') !== t.retractToR)
+    diffs.push(`with ${run.retract === 'r-plane' ? 'G99' : 'G98'} retract`);
   // The words a modal motion would read: those no code on the line takes for itself.
   const ownMotion = words.some((w) => w.letter === 'G' && MOTION.has(num0(w) ?? -1));
   const owned = words
@@ -770,8 +799,8 @@ export function runDifference(a: readonly Step[], b: readonly Step[]): string | 
       if (far(s.centre, t.centre) || Math.abs(s.radius - t.radius) > 0.002)
         return 'its arc centre or radius moves';
     }
-    // Feeds: the same mode, and the same rate within the corpus check's 0.01 mm/min
-    // (or 0.01% of a large one; a feed per revolution to 0.01%).
+    // Feeds: the same mode, and the same rate within 0.01% (relative only: a slow feed
+    // keeps five significant digits, so an absolute allowance would hide +97%).
     const feed = (st: Step) =>
       st.kind === 'arc' || (st.kind === 'linear' && !st.rapid) ? st.feed : null;
     const fs = feed(s);
@@ -787,8 +816,7 @@ export function runDifference(a: readonly Step[], b: readonly Step[]): string | 
               ? f.mmPerRevolution
               : 0; // unspecified: no rate to compare
       const [x, y] = [v(fs), v(ft)];
-      const slack =
-        fs.mode === 'per-minute' ? Math.max(0.01, 1e-4 * Math.abs(x)) : 1e-4 * Math.abs(x);
+      const slack = 1e-4 * Math.abs(x);
       if (Math.abs(x - y) > slack) return `a feed of ${x}, then ${y}`;
     }
     if (s.kind === 'spindle' && t.kind === 'spindle' && (s.state !== t.state || s.rpm !== t.rpm))
