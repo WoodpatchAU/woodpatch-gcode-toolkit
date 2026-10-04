@@ -149,7 +149,10 @@ function scheduleReload(): void {
 
 /** Parses the editor's text in the worker, then updates the view and the panels. */
 async function reload(): Promise<void> {
-  const text = editor.state.doc.toString();
+  // One snapshot: everything shown below describes THIS document. (CodeMirror documents
+  // are immutable, so identity says whether it's still the one in the editor.)
+  const doc = editor.state.doc;
+  const text = doc.toString();
   status.textContent = 'Reading…';
   const t0 = performance.now();
   let program: LoadedProgram;
@@ -162,6 +165,10 @@ async function reload(): Promise<void> {
       err.name === 'TimeoutError' ? 'Took too long; stopped.' : `Failed: ${err.message}`;
     return;
   }
+  // Edited while it was read: a newer read is already on its way (every change schedules
+  // one). Showing this one would mix the live editor with an older parse, e.g. the new
+  // line count beside the old extent, or diagnostics on the wrong lines.
+  if (editor.state.doc !== doc) return;
   const ms = performance.now() - t0;
   const t1 = performance.now();
   viewer.setProgram(program); // builds the 3D geometry on this thread
@@ -171,17 +178,17 @@ async function reload(): Promise<void> {
   const hidden = showDiagnostics(editor, program.diagnostics);
   renderDiagnostics(program.diagnostics);
   renderSummary($('summary'), program.summary, goToLine);
-  renderStats(program, ms, hidden);
+  renderStats(program, doc.lines, ms, hidden);
 }
 
-function renderStats(p: LoadedProgram, ms: number, hidden: number): void {
+function renderStats(p: LoadedProgram, lines: number, ms: number, hidden: number): void {
   const b = p.bounds.all;
   const size = b
     ? `${(b.max.X - b.min.X).toFixed(1)} × ${(b.max.Y - b.min.Y).toFixed(1)} × ${(b.max.Z - b.min.Z).toFixed(1)} mm`
     : 'no motion';
   const count = (sev: string) => p.diagnostics.filter((d) => d.severity === sev).length;
   const parts = [
-    `${editor.state.doc.lines.toLocaleString()} lines`,
+    `${lines.toLocaleString()} lines`,
     `${(p.count - 1).toLocaleString()} segments`,
     `extent ${size}`,
     `${count('error')} errors, ${count('warning')} warnings, ${count('info')} notes`,
