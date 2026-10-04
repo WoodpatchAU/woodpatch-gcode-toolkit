@@ -58,6 +58,14 @@ anywhere in it isn't accounted for by the row's licence or by an explicit electi
 | three.js r69 and r73dev, with examples (controls, loaders, postprocessing, ThreeCSG, tween.js) | r69 / r73dev | `MIT` | `threejs/**` | three.js, ThreeCSG and tween.js LICENSE files are all MIT |
 | yEnc (modified) | 0.9.0 (2013-05-30) | `LicenseRef-yenc-BSD-unspecified` | `yenc.js` | Matches whoughton/yEnc @1ab6046 (modified). That project declared only "license": "BSD" and shipped no text. See LICENSES/LicenseRef-yenc-BSD-unspecified.txt |
 
+## Re-vendoring and the private-refs check
+
+The CI check against references to private work (`.github/ci/private-refs.mjs`) scans only
+the lines a PR adds, so the vendored files above pass as they are. Re-vendoring one adds
+all its lines again. Two lines of `opentype.js` (Adobe Tech Note references, `#` with
+a 5000s number) would then be flagged. Rephrase nothing in a vendored file: note the hit
+on the PR, and have the maintainer approve it.
+
 ## Removed
 
 | Files | Licence | Removed | Reason |
