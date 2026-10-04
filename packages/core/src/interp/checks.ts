@@ -82,11 +82,9 @@ export function programChecks(
         );
       }
     } else if (s.kind === 'tool-change') {
+      // Whether it stopped the spindle is the interpreter's call (a spindle step marked
+      // by: 'tool-change', just before this one): one source of truth with the summary.
       cutArmed = true;
-      if (checks.toolChangeStopsSpindle && on) {
-        on = false;
-        stoppedBy = { line: s.line, file: s.file, by: 'M6' };
-      }
     } else if (s.kind === 'end') {
       end = s;
       break;

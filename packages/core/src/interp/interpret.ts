@@ -771,7 +771,9 @@ class Interpreter {
         );
     }
     if (m.has('6.1')) {
-      // Masso M6.1: unload the tool from the spindle.
+      // Masso M6.1: unload the tool from the spindle. A tool change, so it stops the
+      // spindle where M6 does.
+      this.stopForToolChange(n);
       this.tool = null;
       this.steps.push({ kind: 'tool-change', line: n, tool: null });
     }
@@ -783,24 +785,9 @@ class Interpreter {
           'SEMANTIC_TOOL_CHANGE_NO_TOOL',
           'M6 with no tool selected (no T word yet)',
         );
+      this.stopForToolChange(n);
       this.tool = this.selectedTool;
       this.steps.push({ kind: 'tool-change', line: n, tool: this.tool });
-      // A tool change leaves the spindle stopped (LinuxCNC's M6: "When the tool change
-      // is complete: The spindle will be stopped"; assumed on Masso, the safe way round).
-      // RS274 changes the tool before it starts a spindle on the same line, so `M6 M3`
-      // still ends with the spindle running.
-      const stops = this.behaviour.programChecks?.toolChangeStopsSpindle ?? true;
-      if (stops && this.spindle.state !== 'off') {
-        this.settleLine = null;
-        this.spindle = { ...this.spindle, state: 'off' };
-        this.steps.push({
-          kind: 'spindle',
-          line: n,
-          state: 'off',
-          rpm: this.spindle.rpm,
-          by: 'tool-change',
-        });
-      }
     }
     for (const [code, state] of SPINDLE_CODES) {
       if (m.has(code)) {
@@ -2211,6 +2198,28 @@ class Interpreter {
   }
 
   /** A feed move right after an unsettled spindle-speed change: suggest a dwell. */
+  /**
+   * A tool change stops the spindle where the dialect says so (`toolChangeStopsSpindle`).
+   * LinuxCNC's convert_tool_change stops it BEFORE changing the tool, so the stop comes
+   * first; and RS274 changes the tool before it starts a spindle on the same line, so
+   * `M6 M3` still ends with the spindle running. The interpreter is the one source of
+   * truth: the summary and the whole-job checks read this step.
+   */
+  private stopForToolChange(n: number): void {
+    const stops = this.behaviour.programChecks?.toolChangeStopsSpindle ?? true;
+    if (!stops || this.spindle.state === 'off') return;
+    // Stopped, the next start waits for spin-up itself: no speed change is pending.
+    this.settleLine = null;
+    this.spindle = { ...this.spindle, state: 'off' };
+    this.steps.push({
+      kind: 'spindle',
+      line: n,
+      state: 'off',
+      rpm: this.spindle.rpm,
+      by: 'tool-change',
+    });
+  }
+
   private adviseSettle(n: number): void {
     const at = this.settleLine as number;
     this.settleLine = null;
