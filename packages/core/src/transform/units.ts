@@ -210,14 +210,26 @@ export function convertUnits(
       if (!ws.some((w) => w.letter === 'M' && num0(w) === 66)) return;
       const sWord = ws.find((w) => w.letter === 'S');
       let left = sWord ? Math.round(num0(sWord) ?? 0) : 0;
-      if (left > 0) skipRanges++;
+      let moves = false;
       for (let j = i + 1; j < program.lines.length && left > 0; j++) {
         const l = program.lines[j] as Line;
         skipFrom.set(l.lineNo, line.lineNo);
+        if (l.tokens.some((t) => t.kind === 'word' && 'XYZR'.includes(t.letter))) moves = true;
         // A line of code counts; one holding only an N number doesn't (generous).
         if (l.tokens.some((t) => t.kind === 'word' && t.letter !== 'N')) left--;
       }
+      // Only a range that moves can disturb a carry (a dwell alone can't).
+      if (moves) skipRanges++;
     });
+  // G91 canned cycles anywhere: then a motion word inside a skip range can merge two
+  // cycle series on the met path, and a G91 R is measured from where its series began.
+  const g91Cycles =
+    program.lines.some((l) =>
+      l.tokens.some((t) => t.kind === 'word' && t.letter === 'G' && num0(t) === 91),
+    ) &&
+    program.lines.some((l) =>
+      l.tokens.some((t) => t.kind === 'word' && t.letter === 'G' && CYCLES.has(num0(t) ?? -1)),
+    );
 
   let absolute = true;
   let feedMode: FeedMode = 'per-minute';
@@ -346,6 +358,15 @@ export function convertUnits(
         n,
         'TRANSFORM_CONTROL_FLOW',
         `M66 at line ${skippedBy} skips this line when its input condition is met, and this line changes a mode: the result would depend on the input. Refusing`,
+      );
+    // A motion word (G80, G0–G3, G38.x, a cycle) inside a range ends a G91 cycle series
+    // only when the range runs: skipped, two series merge, and the carried R is no longer
+    // a net move (review of #37).
+    else if (skippedBy !== undefined && g91Cycles && [...gs].some((g) => MOTION.has(g)))
+      error(
+        n,
+        'TRANSFORM_CONTROL_FLOW',
+        `M66 at line ${skippedBy} skips this line when its input condition is met, and this motion code would then not end a G91 cycle series: the result would depend on the input. Refusing`,
       );
     const carry = carries[skippable ? 1 : 0];
     const repeats =
@@ -527,7 +548,13 @@ export function convertUnits(
   const refused = new Set<number>();
   const MAX_MODE_ERRORS = 20;
   // Only worth running when nothing else refused: a refused loop may never end.
-  for (const blockDelete of errors.length ? [] : [false, true]) {
+  // The block-delete-ON pass only differs when there's a "/" to skip, on a dialect where
+  // it's a switch (Masso runs "/" lines): otherwise the two are the same run.
+  const deletable =
+    dialect.interpreter.blockDelete === 'switch' &&
+    program.lines.some((l) => l.tokens.some((t) => t.kind === 'block-delete'));
+  const passes = deletable ? [false, true] : [false];
+  for (const blockDelete of errors.length ? [] : passes) {
     const run = interpret(program, {
       dialect,
       units: assume,
@@ -552,7 +579,9 @@ export function convertUnits(
         );
       },
     });
-    if (blockDelete) assumed = run.diagnostics.some((d) => d.code === 'SEMANTIC_UNITS_ASSUMED');
+    // The warning follows the default switch (on), or the one run there is.
+    if (blockDelete || !deletable)
+      assumed = run.diagnostics.some((d) => d.code === 'SEMANTIC_UNITS_ASSUMED');
     originalRuns[blockDelete ? 1 : 0] = run; // reused by the final check
     // A run that stopped never checked the lines after the stop (review of #37).
     if (!run.completed) {
@@ -628,7 +657,7 @@ export function convertUnits(
   };
   // With block delete off AND on: a mode or carry that differs only when "/" lines are
   // skipped shows only there (review of #37).
-  for (const blockDelete of [false, true]) {
+  for (const blockDelete of passes) {
     const was = steps(
       originalRuns[blockDelete ? 1 : 0]?.steps ??
         interpret(program, { dialect, units: assume, blockDelete }).steps,

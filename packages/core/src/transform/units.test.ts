@@ -755,3 +755,25 @@ describe('units: the ninth review of #37', () => {
     expect(u(src, 'inch').ok).toBe(true);
   });
 });
+
+describe('units: the tenth review of #37', () => {
+  it('a motion code inside an M66 range, with G91 cycles, is refused (series would merge)', () => {
+    let src = 'G20 G90 G17 G94\nG0 X0 Y0 Z1.5\nG1 F4\nG91 G98\n';
+    for (let i = 0; i < 20; i++)
+      src +=
+        'G81 X0 Z-0.0400 R0.0003\nM66 P1 L3 Q5000 S1\nG80\nG81 X0 Z-0.0400 R0.0100\nG80\nG1 Z-0.0103\n';
+    const r = u(src + 'M30', 'mm', 'mm', MASSO_G3);
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics[0]?.message).toContain('would then not end a G91 cycle series');
+    // Without G91 cycles in the file, a motion code in a range is just a move.
+    expect(u('G21 G90\nM66 P1 L3 Q5000 S1\nG80\nG1 X1 F100\nM30', 'inch', 'mm', MASSO_G3).ok).toBe(
+      true,
+    );
+  });
+
+  it('only a range that moves counts toward "several ranges"', () => {
+    const src =
+      'G21 G90\nG0 X0 Y0\nG91 G1 F100\nM66 P1 L3 Q5000 S1\nG1 X0.0007\nM66 P1 L3 Q5000 S1\nG4 P0.5\nM30';
+    expect(u(src, 'inch', 'mm', MASSO_G3).ok).toBe(true);
+  });
+});

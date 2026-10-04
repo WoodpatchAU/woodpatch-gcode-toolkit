@@ -1846,6 +1846,25 @@ RUNS, and compares only what it models. So:
   absolute allowance.
 - An M66 range counts lines of code, not a line holding only an N number (generous).
 
+**Corrected in the tenth review.**
+
+- **A motion code (G80, G0–G3, G38.x, a cycle) inside an M66 skip range is refused when
+  the file has G91 canned cycles.** A G91 cycle's R is measured from where its series
+  began, and the motion code ends a series only on the path that runs it. Skipped, two
+  series merge, and the carried R is no longer a net move.
+- **Only a skip range that moves counts toward "several ranges"**, since a dwell alone
+  can't disturb a carry.
+- **The block-delete-on passes run only when there's a `/` to skip,** on a dialect where
+  it's a switch.
+- **Not changed, and noted:**
+  - A restated R within one G91 cycle series is carried as if it began the series.
+    Where that matters, the final check refuses it, or the result stays within
+    tolerance. Modelling the series start properly is a possible follow-up.
+  - The 2 µm contract is on end points, arc midpoints and centres. Sampling the full
+    path of a P2 helix reaches 2.5 µm between those points.
+  - A feed keeps five significant digits with no lower limit on decimals. What Masso
+    reads below that is unconfirmed (machine tests).
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long
