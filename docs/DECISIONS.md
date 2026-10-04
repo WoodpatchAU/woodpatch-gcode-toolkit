@@ -1953,6 +1953,53 @@ with the spindle stopped, and gave a false end warning. Fixed:
   `PROGRAM_SPINDLE_NO_SPEED`, and the message says that's expected there. A custom
   controller (roadmap) can turn the check off.
 
+## ADR-0036: Feed and spindle overrides
+
+**Status:** Accepted, 2026-09-28. Parcel 4c.
+
+**Decision.** Two ops in the transform recipe write an override into the program, as a
+controller's override knob would at run time:
+
+- `{ op: 'feed', percent, only?: 'cut' | 'plunge', lines?: { from, to } }` scales F.
+- `{ op: 'spindle', percent, lines? }` scales S. Masso's M66, where S is a line-skip
+  count, is left alone.
+
+Rapids have no F, so they're out of reach. Inverse-time and per-revolution feeds scale
+too; the factor means the same thing.
+
+- **Move types.** A line is a _plunge_ when all its feed moves are vertical (Z only,
+  either way: a boring cycle feeds back out), and a _cut_ otherwise, ramps included.
+  Canned-cycle feeds are plunges. The types come from the interpreter's steps.
+- **F is modal.** A program often sets one F for plunges and cuts alike, so overriding
+  only one kind (or only a range of lines) means giving those lines their own F, and
+  restoring the original on the next line of the other kind. The walker tracks the F the
+  controller actually has after the edits, and writes or inserts an F only where it
+  would otherwise be wrong. An F on a line with no feed move keeps the original value,
+  and the next feed move gets what it needs. Every other line stays byte-for-byte.
+- **Precision:** F to at least 1 decimal (mm) or 2 (inch); S to whole revolutions,
+  unless the source had decimals.
+- **Refused:** an expression in F or S. Also, for an override limited to a move type or
+  a line range, any control flow: which lines run as what can't be known then. A plain
+  override of every feed is fine with control flow, since every F scales the same
+  wherever it runs.
+- **Warned:** moves before any F (the machine's rate), which an override in the program
+  can't reach.
+- **Refused, too:** a selective override on a controller where `/` is a switch
+  (LinuxCNC, generic), when a block-deletable line feeds, sets F or changes the feed
+  mode. Whether that line runs is the operator's choice, and the F in force after it
+  depends on it (the class the second review of the units conversion found). Masso runs
+  `/` lines, so it's unaffected.
+
+**Evidence.** A corpus property over every fixture, for all, plunges only, and cuts
+only. The geometry is identical, and every move's actual feed (as the interpreter reads
+the result) is exactly the original times the override where it applies, and exactly the
+original where it doesn't. A mutation that skips the restore after an overridden plunge
+fails both it and a unit test.
+
+**Out-of-range results** (after the fix to the other transforms, ADR-0033): an override
+whose scaled F or S would be beyond ±1,000,000 is refused (`TRANSFORM_OUT_OF_RANGE`)
+before anything is written.
+
 ## ADR-0038: The playground's transform panel
 
 **Status:** Accepted, 2026-09-28. Parcel 4e-1.
