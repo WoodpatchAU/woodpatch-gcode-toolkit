@@ -6,6 +6,8 @@ import {
   EMPTY_PARAMETERS,
   LINUXCNC_RULES,
   evaluate,
+  interpret,
+  parse,
   parseExpression,
   type ExpressionRules,
   type ParameterReader,
@@ -217,6 +219,57 @@ describe('robustness (fixes R1)', () => {
         if (parsed.expr) evaluate(parsed.expr, EMPTY_PARAMETERS, LINUXCNC_RULES, 1);
       }),
       { numRuns: 3000 },
+    );
+  });
+});
+
+describe('the interpreter on hostile expressions never throws (core: never throws)', () => {
+  const run = (src: string) => interpret(parse(src));
+
+  it('bounds "#" indirection like any nesting, with a diagnostic', () => {
+    const r = run('X' + '#'.repeat(10_000) + '1');
+    expect(r.diagnostics.map((d) => d.code)).toContain('EXPR_TOO_DEEP');
+    expect(() => run('#'.repeat(10_001) + '1=2')).not.toThrow();
+    // Ordinary indirection still works: #2 = 1, ##2 = #1 = 7.
+    const ok = run('G21 G90\n#1=7\n#2=1\nG1 X##2 F100');
+    expect(ok.steps.find((s) => s.kind === 'linear')).toMatchObject({ to: { X: 7 } });
+  });
+
+  it('evaluates a flat chain of any length, left to right', () => {
+    const plus = run(`G21 G90\nG1 X[${'1+'.repeat(20_000)}1] F100`);
+    expect(plus.steps.find((s) => s.kind === 'linear')).toMatchObject({ to: { X: 20_001 } });
+    // Left-associative: 10-10-…-1 (20,000 terms) = 10 - 10×19,999 - 1.
+    const minus = run(`G21 G90\nG1 X[${'10-'.repeat(20_000)}1] F100`);
+    expect(minus.steps.find((s) => s.kind === 'linear')).toMatchObject({ to: { X: -199_981 } });
+  });
+
+  it('property: no expression shape makes it throw', () => {
+    const piece = fc.constantFrom(
+      '#',
+      '[',
+      ']',
+      '1',
+      '+',
+      '-',
+      '*',
+      '/',
+      '**',
+      'SIN',
+      ' MOD ',
+      ' GT ',
+      '<a>',
+      '.',
+    );
+    fc.assert(
+      fc.property(
+        fc.array(piece, { maxLength: 300 }),
+        fc.integer({ min: 0, max: 3000 }),
+        (parts, n) => {
+          const expr = parts.join('') + '1+'.repeat(n) + '1';
+          expect(() => run(`G21 G90\nG1 X[${expr}] F100\n#1=${expr}`)).not.toThrow();
+        },
+      ),
+      { numRuns: 300 },
     );
   });
 });
