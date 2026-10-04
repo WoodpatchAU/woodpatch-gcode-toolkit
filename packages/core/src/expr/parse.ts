@@ -201,6 +201,16 @@ class ExprParser {
   }
 
   private parameter(depth: number): Expr | null {
+    // ##…# is indirection, one level per "#": bounded like any nesting (a run of ten
+    // thousand overflowed the stack, and the core never throws).
+    if (depth > this.rules.maxDepth) {
+      this.error('EXPR_TOO_DEEP', `Expression nested more than ${this.rules.maxDepth} deep`, {
+        start: this.pos,
+        end: this.end,
+      });
+      this.pos = this.end;
+      return null;
+    }
     const start = this.pos;
     this.pos++; // #
     this.skipWs();

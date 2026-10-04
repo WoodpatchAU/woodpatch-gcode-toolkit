@@ -121,3 +121,22 @@ describe('the tokenizer on hostile lines', () => {
     );
   }, 60_000);
 });
+
+describe('the tokenizer keeps its diagnostics bounded', () => {
+  it('merges a run of the same unexpected character, caps distinct ones, reports each once', () => {
+    const run = tokenizeLine('G1 X1 $$$ Y2 @', 1).diagnostics;
+    expect(run.map((d) => `${d.span?.start}-${d.span?.end}`)).toEqual(['6-9', '13-14']);
+    expect(run[0]?.message).toContain('3 of them');
+    expect(tokenizeLine('!'.repeat(2_000_000), 1).diagnostics).toHaveLength(1);
+    let mixed = '';
+    for (let i = 0; i < 1000; i++) mixed += '!@$%'[i % 4];
+    const capped = tokenizeLine(mixed, 1).diagnostics;
+    expect(capped).toHaveLength(101);
+    expect(capped.at(-1)?.message).toContain('not listed');
+    // X-## once read "##" twice (after the failed sign chain): one report now.
+    const twice = tokenizeLine('X-##', 1).diagnostics.filter(
+      (d) => d.code === 'SYNTAX_MISSING_VALUE' && d.span?.start !== 0,
+    );
+    expect(twice).toHaveLength(1);
+  });
+});

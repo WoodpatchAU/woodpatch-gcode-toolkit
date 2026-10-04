@@ -85,6 +85,10 @@ const isLetter = (c: number) => (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0
 class LineScanner {
   private readonly tokens: Token[] = [];
   private readonly diagnostics: Diagnostic[] = [];
+  /** code@span of each finding reported, so one is reported once (a Set: no rescans). */
+  private readonly reported = new Set<string>();
+  /** Distinct unexpected-character findings on this line (capped at 100). */
+  private unexpected = 0;
   private i = 0;
   private afterOWord = false;
   /** How many tokens message() has checked, and whether all were a block delete or N. */
@@ -129,12 +133,33 @@ class LineScanner {
         // diagnostic, not two lone surrogate halves.
         const cp = text.codePointAt(start) ?? c;
         const width = cp > 0xffff ? 2 : 1;
-        this.report(
-          'error',
-          'SYNTAX_UNEXPECTED_CHARACTER',
-          `Unexpected character "${String.fromCodePoint(cp)}"`,
-          { start, end: start + width },
-        );
+        // A run of the same character is one diagnostic, and a line reports at most 100
+        // distinct ones: a 2M-character line of junk cost a second and hundreds of MB of
+        // diagnostics (one each).
+        const ch = String.fromCodePoint(cp);
+        const prev = this.diagnostics.at(-1);
+        if (
+          prev?.code === 'SYNTAX_UNEXPECTED_CHARACTER' &&
+          prev.span?.end === start &&
+          text.slice(prev.span.start, prev.span.start + width) === ch
+        ) {
+          this.diagnostics[this.diagnostics.length - 1] = {
+            ...prev,
+            span: { start: prev.span.start, end: start + width },
+            message: `Unexpected characters "${ch}" (${(start + width - prev.span.start) / width} of them)`,
+          };
+        } else if (++this.unexpected <= 100)
+          this.report('error', 'SYNTAX_UNEXPECTED_CHARACTER', `Unexpected character "${ch}"`, {
+            start,
+            end: start + width,
+          });
+        else if (this.unexpected === 101)
+          this.report(
+            'error',
+            'SYNTAX_UNEXPECTED_CHARACTER',
+            'More unexpected characters on this line are not listed',
+            { start, end: text.length },
+          );
         this.i += width;
       }
     }
@@ -581,6 +606,11 @@ class LineScanner {
   }
 
   private report(severity: Severity, code: string, message: string, span: Span): void {
+    // The same finding at the same place once (a value re-read after a failed sign chain,
+    // as in `X-##`, would report its "#" twice).
+    const key = `${code}@${span.start}-${span.end}`;
+    if (this.reported.has(key)) return;
+    this.reported.add(key);
     this.diagnostics.push({ severity, code, message, line: this.lineNo, span });
   }
 }
