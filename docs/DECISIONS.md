@@ -1857,9 +1857,12 @@ RUNS, and compares only what it models. So:
 - **The block-delete-on passes run only when there's a `/` to skip,** on a dialect where
   it's a switch.
 - **Not changed, and noted:**
-  - A restated R within one G91 cycle series is carried as if it began the series.
-    Where that matters, the final check refuses it, or the result stays within
-    tolerance. Modelling the series start properly is a possible follow-up.
+  - A restated R within one G91 cycle series is carried as if it began the series. On
+    the checked path, the final check refuses where that matters, or the result stays
+    within tolerance. That check never runs the met path of an M66 range, so (eleventh
+    review) an R inside a range is refused whenever the file has G91 cycles, like a
+    motion code. Modelling the series start properly would remove the remaining false
+    refusals outside ranges; it's a possible follow-up.
   - The 2 µm contract is on end points, arc midpoints and centres. Sampling the full
     path of a P2 helix reaches 2.5 µm between those points.
   - A feed keeps five significant digits with no lower limit on decimals. What Masso

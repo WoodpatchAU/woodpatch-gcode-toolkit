@@ -359,14 +359,18 @@ export function convertUnits(
         'TRANSFORM_CONTROL_FLOW',
         `M66 at line ${skippedBy} skips this line when its input condition is met, and this line changes a mode: the result would depend on the input. Refusing`,
       );
-    // A motion word (G80, G0–G3, G38.x, a cycle) inside a range ends a G91 cycle series
-    // only when the range runs: skipped, two series merge, and the carried R is no longer
-    // a net move (review of #37).
-    else if (skippedBy !== undefined && g91Cycles && [...gs].some((g) => MOTION.has(g)))
+    // A motion word (G80, G0–G3, G38.x, a cycle) inside a range ends a G91 cycle series,
+    // and an R restates its level, only when the range runs: skipped, two series merge or
+    // the level stays, and the carried R is no longer a net move (review of #37).
+    else if (
+      skippedBy !== undefined &&
+      g91Cycles &&
+      ([...gs].some((g) => MOTION.has(g)) || words.some((w) => w.letter === 'R'))
+    )
       error(
         n,
         'TRANSFORM_CONTROL_FLOW',
-        `M66 at line ${skippedBy} skips this line when its input condition is met, and this motion code would then not end a G91 cycle series: the result would depend on the input. Refusing`,
+        `M66 at line ${skippedBy} skips this line when its input condition is met, and this ${[...gs].some((g) => MOTION.has(g)) ? 'motion code would then not end' : 'R would then not restate the level of'} a G91 cycle series: the result would depend on the input. Refusing`,
       );
     const carry = carries[skippable ? 1 : 0];
     const repeats =

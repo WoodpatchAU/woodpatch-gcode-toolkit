@@ -777,3 +777,14 @@ describe('units: the tenth review of #37', () => {
     expect(u(src, 'inch', 'mm', MASSO_G3).ok).toBe(true);
   });
 });
+
+describe('units: the eleventh review of #37', () => {
+  it('a restated G91 cycle R inside an M66 range is refused (wrong on met paths)', () => {
+    let src = 'G21 G90 G17 G94\nG0 X0 Y0 Z40\nG1 F100\nG91 G99\n';
+    for (let i = 0; i < 60; i++)
+      src += `G81 X0 Z-1.016 R${i % 2 ? '0.087' : '0.040'}\nM66 P1 L3 Q5000 S1\nX0 R0.254\nX0\nG80\nG1 Z${i % 2 ? '-0.341' : '-0.294'}\n`;
+    const r = u(src + 'M30', 'inch', 'mm', MASSO_G3);
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics[0]?.message).toContain('R would then not restate the level');
+  });
+});
