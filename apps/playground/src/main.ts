@@ -161,6 +161,9 @@ async function reload(): Promise<void> {
   } catch (e) {
     const err = e as Error;
     if (err.name === 'AbortError') return; // superseded by a newer edit
+    // A failure for a document that has since changed is stale too: a newer read is on
+    // its way, and will say how it went.
+    if (editor.state.doc !== doc) return;
     status.textContent =
       err.name === 'TimeoutError' ? 'Took too long; stopped.' : `Failed: ${err.message}`;
     return;
