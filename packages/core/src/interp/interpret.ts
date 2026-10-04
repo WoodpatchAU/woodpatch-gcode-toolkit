@@ -2197,7 +2197,6 @@ class Interpreter {
     }
   }
 
-  /** A feed move right after an unsettled spindle-speed change: suggest a dwell. */
   /**
    * A tool change stops the spindle where the dialect says so (`toolChangeStopsSpindle`).
    * LinuxCNC's convert_tool_change stops it BEFORE changing the tool, so the stop comes
@@ -2220,6 +2219,7 @@ class Interpreter {
     });
   }
 
+  /** A feed move right after an unsettled spindle-speed change: suggest a dwell. */
   private adviseSettle(n: number): void {
     const at = this.settleLine as number;
     this.settleLine = null;
