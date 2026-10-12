@@ -67,6 +67,9 @@ export const MASSO_G3: Dialect = Object.freeze({
     // Docs: G73 backs off 1 mm. G83's clearance is undocumented: LinuxCNC's value.
     g73Retract: 1.0,
     g83Clearance: 0.254,
+    // M6 with no T: unconfirmed (machine test). Modelled as a change to no tool, with a
+    // warning, until a test shows Masso refuses it as LinuxCNC does.
+    toolChangeWithoutTool: 'warning',
     // Docs: M98 P<n> runs the file n.nc, up to 5 levels; no O-words.
     subprograms: Object.freeze({ oWord: false, m98: 'file', maxCallDepth: 5 }),
     // The operator, on the machine: a Masso job only finishes on M30, and expects the

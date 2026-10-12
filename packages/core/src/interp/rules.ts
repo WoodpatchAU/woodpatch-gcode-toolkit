@@ -137,6 +137,15 @@ export interface InterpreterRules {
   /** Masso's tool-change warnings: T must come before M06, and M05 before M06 (docs). */
   readonly toolChangeChecks: boolean;
   /**
+   * M6 with no tool selected (no T word yet).
+   * - `error`: the change is refused and nothing changes: the spindle keeps running and
+   *   the tool stays loaded. LinuxCNC's `convert_tool_change` errors with "Need tool
+   *   prepared -Txx- for toolchange", which stops the program.
+   * - `warning`: the change goes ahead with no tool. Masso's behaviour is unconfirmed (on
+   *   the machine-test list), so it keeps this until a test shows otherwise.
+   */
+  readonly toolChangeWithoutTool: 'error' | 'warning';
+  /**
    * A speed change while the spindle runs isn't waited for (operator, 2026-09-26): the
    * controller carries on while the VFD ramps. If a feed move follows before any
    * dwell, suggest one (info).
@@ -189,6 +198,7 @@ export const LINUXCNC_INTERPRETER_RULES: InterpreterRules = Object.freeze({
   homing: 'linuxcnc',
   m66: 'io',
   toolChangeChecks: false,
+  toolChangeWithoutTool: 'error',
   spindleSettleAdvice: false,
   programChecks: Object.freeze({
     end: 'M2-or-M30',

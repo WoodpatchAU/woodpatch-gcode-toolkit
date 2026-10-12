@@ -917,14 +917,15 @@ a stated gap rather than a guess.
 **Decision.** Five more `InterpreterRules`, each set for Masso from its docs (v5.13),
 and one tolerance option.
 
-| Rule                  | LinuxCNC 2.9                                | Masso G3 v5.13                                                                                       |
-| --------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `g10`                 | L2 sets; L20 = current position reads value | L2 sets; **L2.1 = active offset + value**; **L20/L20.1 = the same for G54.1 P1–P100**                |
-| `homing`              | G28/G30 to #5161/#5181, all axes together   | **G28 to machine home, G30 to the parking position; Z first, then the rest**                         |
-| `m66`                 | machine I/O, ignored                        | **a `wait` step**: P input, Q timeout (ms), S = lines skipped if met                                 |
-| `toolChangeChecks`    | off                                         | **warn** if T follows M06 on the line, or the spindle is running at M06                              |
-| `spindleSettleAdvice` | off                                         | **info**: a speed change while running, then a feed move with no dwell between                       |
-| `arcTolerance.beyond` | `error`                                     | **`warn`**: from the tested 0.5 mm up to 100× it (50 mm), drawn with a warning; beyond that, refused |
+| Rule                    | LinuxCNC 2.9                                        | Masso G3 v5.13                                                                                       |
+| ----------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `g10`                   | L2 sets; L20 = current position reads value         | L2 sets; **L2.1 = active offset + value**; **L20/L20.1 = the same for G54.1 P1–P100**                |
+| `homing`                | G28/G30 to #5161/#5181, all axes together           | **G28 to machine home, G30 to the parking position; Z first, then the rest**                         |
+| `m66`                   | machine I/O, ignored                                | **a `wait` step**: P input, Q timeout (ms), S = lines skipped if met                                 |
+| `toolChangeChecks`      | off                                                 | **warn** if T follows M06 on the line, or the spindle is running at M06                              |
+| `toolChangeWithoutTool` | **error**: M6 with no T is refused, nothing changes | **warn**, and the change to no tool is modelled (unconfirmed: machine test)                          |
+| `spindleSettleAdvice`   | off                                                 | **info**: a speed change while running, then a feed move with no dwell between                       |
+| `arcTolerance.beyond`   | `error`                                             | **`warn`**: from the tested 0.5 mm up to 100× it (50 mm), drawn with a warning; beyond that, refused |
 
 **G54.1 P1–P100** (Masso's extended offsets, modal group 12) are coordinate systems
 101–200, stored with the others. `ModalState.coordinateSystem` reports them that way.
