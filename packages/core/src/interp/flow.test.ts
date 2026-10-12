@@ -640,6 +640,19 @@ G0 X#<_value> Y#<_value_returned>`;
         '12 further diagnostic(s) not kept (limit 50), 2 of them error(s)',
       ),
     });
+    // A subprogram that ends without M99, past the cap: its dropped warning mustn't tag
+    // the last KEPT diagnostic (the rescued main-file error) as the subprogram's.
+    const sub = run(`${loop}G1 X2\nM98 P12\nM30`, {
+      interpreterRules: {
+        ...LINUXCNC_INTERPRETER_RULES,
+        subprograms: { oWord: true, m98: 'file', maxCallDepth: 5 },
+      },
+      limits: { maxDiagnostics: 50 },
+      resolveProgram: files({ '12': 'G0 X1' }),
+    });
+    const rescued = sub.diagnostics.find((d) => d.code === 'SEMANTIC_NO_FEED_RATE');
+    expect(rescued).toMatchObject({ line: 6 });
+    expect(rescued?.file).toBeUndefined();
     // Warnings alone past the cap: a warning note, no error made up.
     const warned = run(loop, { limits: { maxDiagnostics: 50 } });
     expect(warned.diagnostics.at(-1)).toMatchObject({ severity: 'warning' });

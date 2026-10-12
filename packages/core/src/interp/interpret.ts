@@ -361,6 +361,9 @@ class Interpreter {
         // Ran off the end of the frame's file.
         if (this.frames.length === 1) return;
         const last = lines[lines.length - 1];
+        // Only what this report adds is the subprogram's: past the diagnostic cap it may
+        // add nothing, and the last KEPT diagnostic is someone else's (review of #57).
+        const d0 = this.diagnostics.length;
         this.report(
           last?.lineNo ?? 0,
           'warning',
@@ -369,7 +372,7 @@ class Interpreter {
             ? 'Subprogram file ends without M99; returning'
             : `Subroutine o${f.label} ends without endsub; returning`,
         );
-        if (file !== null) this.attribute(this.steps.length, this.diagnostics.length - 1, file);
+        if (file !== null) this.attribute(this.steps.length, d0, file);
         this.leave();
       }
     }
