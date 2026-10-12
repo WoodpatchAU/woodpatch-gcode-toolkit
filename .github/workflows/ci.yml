@@ -138,10 +138,13 @@ jobs:
           # Dependabot commit is verified, for the narrow exemption (ADR-0039).
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash .github/ci/check-dco.test.sh
-          # The checker from the BASE branch, so a PR can't widen its own exemption (the
-          # PR that adds it has no base copy yet, and bootstraps with its own). Decided on
-          # the base tree, as for private-refs below.
+          # The tests are the PR's own code: they run without the token.
+          env -u GH_TOKEN bash .github/ci/check-dco.test.sh
+          # The checker from the BASE branch, so a PR's edit to it can't judge that PR.
+          # (The fallback only matters for a base without the script, which main no longer
+          # is.) Decided on the base tree, as for private-refs below. A PR that edits
+          # ci.yml itself could run its own script anyway: that is what CODEOWNERS on
+          # .github/ and the required code-owner review are for (ADR-0039).
           dco="$RUNNER_TEMP/check-dco.sh"
           if [ -n "$(git ls-tree --name-only "$BASE_SHA" -- .github/ci/check-dco.sh)" ]; then
             git show "$BASE_SHA:.github/ci/check-dco.sh" >"$dco"

@@ -14,9 +14,15 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir "$tmp/bin"
+# The fake answers with FAKE_BODY if set (to test odd bodies), else a commit whose
+# verification and committer come from FAKE_VERIFIED, FAKE_REASON and FAKE_COMMITTER.
+# FAKE_EXIT makes it fail as curl -f does on an HTTP error.
 cat >"$tmp/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
-printf '{"commit":{"verification":{"verified":%s}}}' "${FAKE_VERIFIED:-false}"
+if [[ -n "${FAKE_EXIT:-}" ]]; then exit "$FAKE_EXIT"; fi
+if [[ -n "${FAKE_BODY+set}" ]]; then printf '%s' "$FAKE_BODY"; exit 0; fi
+printf '{"committer":{"login":"%s"},"commit":{"verification":{"verified":%s,"reason":"%s"}}}' \
+  "${FAKE_COMMITTER:-web-flow}" "${FAKE_VERIFIED:-false}" "${FAKE_REASON:-valid}"
 FAKE
 chmod +x "$tmp/bin/curl"
 
@@ -85,6 +91,27 @@ event dependabot[bot]
 commit "$BOT_NAME" "$BOT_MAIL"
 commit Ann ann@invalid
 FAKE_VERIFIED=true expect fail "a human's unsigned fix-up after Dependabot's commit"
+
+# Signed and verified, but not by GitHub: someone with write access signing a commit
+# whose author field says Dependabot (review of #55).
+event dependabot[bot]
+commit "$BOT_NAME" "$BOT_MAIL"
+FAKE_VERIFIED=true FAKE_COMMITTER=someone expect fail "verified, but committed by someone else, not GitHub's web-flow"
+
+event dependabot[bot]
+commit "$BOT_NAME" "$BOT_MAIL"
+FAKE_VERIFIED=true FAKE_REASON=unknown_key expect fail 'verified, but the reason is not "valid"'
+
+# Fails closed on whatever the lookup returns that isn't a clear yes.
+for body in '' 'not json' '{}' '{"commit":{}}' '{"message":"API rate limit exceeded"}' \
+  '{"committer":{"login":"web-flow"},"commit":{"verification":{"verified":"true","reason":"valid"}}}'; do
+  event dependabot[bot]
+  commit "$BOT_NAME" "$BOT_MAIL"
+  FAKE_BODY="$body" expect fail "fails closed on the body: ${body:-<empty>}"
+done
+event dependabot[bot]
+commit "$BOT_NAME" "$BOT_MAIL"
+FAKE_EXIT=22 FAKE_VERIFIED=true expect fail 'fails closed when the request fails (curl -f)'
 
 if [[ "$failures" -gt 0 ]]; then
   echo "::error::check-dco.sh: $failures test(s) failed"

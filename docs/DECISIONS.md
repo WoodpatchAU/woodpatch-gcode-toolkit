@@ -1758,10 +1758,18 @@ Operator decisions on an external review's findings.
 - **The DCO certifies human contributions; for a bot's dependency bump, the approving
   reviewer is the gate** (operator ruling, 2026-10-05). `check-dco.sh` exempts a commit
   only if all of these hold: the PR was opened by `dependabot[bot]` (from the event
-  payload, read as data); the commit's author is Dependabot's noreply address; and
-  GitHub reports the commit as verified (the API, read-only token). Any other commit on
-  such a PR still needs a sign-off. CI runs the script from the **base** branch, so a PR
-  can't widen its own exemption, and `check-dco.test.sh` shows each condition is needed.
+  payload, read as data); the commit's author is Dependabot's noreply address; and the
+  commit was **signed by GitHub on Dependabot's behalf**: its signature is verified with
+  reason `valid`, and its committer is GitHub's `web-flow` (the API, read-only token).
+  "Verified" alone isn't enough: GitHub checks a signature against the committer, and
+  the author field is free text. Any other commit on such a PR still needs a sign-off.
+  The check fails closed: a failed lookup or an odd answer is "no".
+  `check-dco.test.sh` shows each condition is needed.
+- **CI runs `check-dco.sh` from the base branch**, so an edit to it can't judge its own
+  PR. But on `pull_request` the workflow itself comes from the PR's merge commit, so a
+  PR that edits `ci.yml` could still run its own script. The real protection is
+  **CODEOWNERS on `.github/` plus required code-owner review and last-push approval** on
+  `main`, both on since 2026-10-12. Don't relax them without replacing that.
   (GitHub's "sign off web-based commits" setting doesn't help: Dependabot's sign-off
   line doesn't match its author address.)
 
