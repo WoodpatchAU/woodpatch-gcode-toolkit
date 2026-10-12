@@ -360,16 +360,13 @@ class Interpreter {
       while (f.pc < lines.length) {
         const line = lines[f.pc] as Line;
         f.pc++;
-        // A limit stop is on this line, in this frame's file: tagged like the line's own
-        // diagnostics, or a stop in a subprogram points at the main file's line of that
-        // number (review of #57).
-        const limitStop = (code: string, why: string) => {
-          const d0 = this.diagnostics.length;
-          this.stop(line.lineNo, code, why);
-          if (file !== null) this.attribute(this.steps.length, d0, file);
-        };
         if (++this.blocks > maxBlocks) {
-          limitStop('SEMANTIC_LIMIT_BLOCKS', `more than ${maxBlocks} blocks run`);
+          this.limitStop(
+            line.lineNo,
+            file,
+            'SEMANTIC_LIMIT_BLOCKS',
+            `more than ${maxBlocks} blocks run`,
+          );
           return;
         }
         if (file === null) this.line(line, f.pc - 1);
@@ -380,7 +377,12 @@ class Interpreter {
           this.attribute(s0, d0, file);
         }
         if (this.steps.length > this.limits.maxSteps) {
-          limitStop('SEMANTIC_LIMIT_STEPS', `more than ${this.limits.maxSteps} steps`);
+          this.limitStop(
+            line.lineNo,
+            file,
+            'SEMANTIC_LIMIT_STEPS',
+            `more than ${this.limits.maxSteps} steps`,
+          );
           return;
         }
         if (this.ended || this.stopped) return;
@@ -1534,6 +1536,16 @@ class Interpreter {
   }
 
   /** Stops the whole run: continuing would draw a path the machine would not take. */
+  /**
+   * A limit stop on line `n` of `file`: tagged like that line's own diagnostics, or a stop
+   * in a subprogram points at the main file's line of that number (review of #57).
+   */
+  private limitStop(n: number, file: string | null, code: string, why: string): void {
+    const d0 = this.diagnostics.length;
+    this.stop(n, code, why);
+    if (file !== null) this.attribute(this.steps.length, d0, file);
+  }
+
   private stop(n: number, code: string, why: string): void {
     this.report(n, 'error', code, `Stopped: ${why}`);
     this.stopped = true;

@@ -640,7 +640,11 @@ G0 X#<_value> Y#<_value_returned>`;
       file: '12',
     });
     const steps = run('G0 X0\nM98 P12\nM30', { ...opts, limits: { maxSteps: 1 } });
-    expect(steps.diagnostics.at(-1)).toMatchObject({ code: 'SEMANTIC_LIMIT_STEPS', file: '12' });
+    expect(steps.diagnostics.at(-1)).toMatchObject({
+      code: 'SEMANTIC_LIMIT_STEPS',
+      line: 1,
+      file: '12',
+    });
     // In the main file, still no file.
     const main = run('G0 X0\nG0 X1\nG0 X2', { limits: { maxBlocks: 2 } });
     expect(main.diagnostics.at(-1)?.file).toBeUndefined();
