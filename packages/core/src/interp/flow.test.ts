@@ -626,6 +626,26 @@ G0 X#<_value> Y#<_value_returned>`;
     expect(noisy.diagnostics.at(-1)).toMatchObject({ code: 'SEMANTIC_DIAGNOSTICS_TRUNCATED' });
   });
 
+  it('never hides an error behind the diagnostic cap', () => {
+    // 60 warnings, then errors: past the cap of 50 the first error is still kept, and
+    // the note takes the worst severity it stands for (review of #51: "0 errors").
+    const loop = '#1=0\no1 while [#1 LT 60]\nG0 X1 Q1\n#1=[#1+1]\no1 endwhile\n';
+    const r = run(`${loop}G1 X2\nG1 X3\nG1 X4`, { limits: { maxDiagnostics: 50 } });
+    expect(r.diagnostics).toHaveLength(52);
+    expect(r.diagnostics.at(-2)).toMatchObject({ code: 'SEMANTIC_NO_FEED_RATE', line: 6 });
+    expect(r.diagnostics.at(-1)).toMatchObject({
+      severity: 'error',
+      code: 'SEMANTIC_DIAGNOSTICS_TRUNCATED',
+      message: expect.stringContaining(
+        '12 further diagnostic(s) not kept (limit 50), 2 of them error(s)',
+      ),
+    });
+    // Warnings alone past the cap: a warning note, no error made up.
+    const warned = run(loop, { limits: { maxDiagnostics: 50 } });
+    expect(warned.diagnostics.at(-1)).toMatchObject({ severity: 'warning' });
+    expect(warned.diagnostics.some((d) => d.severity === 'error')).toBe(false);
+  });
+
   it('refuses a G83/G73 with too many pecks at once, instead of looping (was endless)', () => {
     const t = performance.now();
     expect(errors('G0 Z5\nG83 X0 Z-1 R1000000 Q0.00000000001 F100')).toEqual([
