@@ -3,7 +3,8 @@
 ---
 
 The tokenizer lists at most 100 findings per line of every kind, not just unexpected
-characters, and one note stands for the rest with the worst severity among them. A line
+characters, and one note (`SYNTAX_TOO_MANY_FINDINGS`) stands for the rest with the worst
+severity among them. A line
 of bare letters no longer makes one finding per letter.
 
 Also of note from the change that bounded expressions: `#` indirection now stops at 65

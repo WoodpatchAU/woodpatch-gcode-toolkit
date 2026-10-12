@@ -144,7 +144,10 @@ class LineScanner {
         // hundreds of MB of diagnostics (one each).
         const ch = String.fromCodePoint(cp);
         const prev = this.diagnostics.at(-1);
-        if (
+        // Past the cap, only the note's severity can still change: build nothing (review
+        // of #52: each junk character still built a message, span and key to throw away).
+        if (this.overflowAt >= 0) this.raiseOverflow('error');
+        else if (
           prev?.code === 'SYNTAX_UNEXPECTED_CHARACTER' &&
           prev.span?.end === start &&
           text.slice(prev.span.start, prev.span.start + width) === ch
@@ -604,6 +607,13 @@ class LineScanner {
     return this.i;
   }
 
+  /** Raises the "not listed" note to `severity`, if that's worse than its own. */
+  private raiseOverflow(severity: Severity): void {
+    const note = this.diagnostics[this.overflowAt];
+    if (note && RANK[severity] > RANK[note.severity])
+      this.diagnostics[this.overflowAt] = { ...note, severity };
+  }
+
   private report(severity: Severity, code: string, message: string, span: Span): void {
     // The same finding at the same place once (a value re-read after a failed sign chain,
     // as in `X-##`, would report its "#" twice).
@@ -611,10 +621,8 @@ class LineScanner {
     // Past the cap, one note stands for the rest, with the worst severity among them: a
     // line of 2M bare letters made one finding (and one Set key) per letter (review of
     // #51). Nothing more is remembered once the note exists.
-    const note = this.diagnostics[this.overflowAt];
-    if (note) {
-      if (RANK[severity] > RANK[note.severity])
-        this.diagnostics[this.overflowAt] = { ...note, severity };
+    if (this.overflowAt >= 0) {
+      this.raiseOverflow(severity);
       return;
     }
     if (this.reported.has(key)) return;
@@ -622,7 +630,7 @@ class LineScanner {
       this.overflowAt = this.diagnostics.length;
       this.diagnostics.push({
         severity,
-        code,
+        code: 'SYNTAX_TOO_MANY_FINDINGS',
         message: 'More problems on this line are not listed',
         line: this.lineNo,
         span: { start: span.start, end: this.text.length },
