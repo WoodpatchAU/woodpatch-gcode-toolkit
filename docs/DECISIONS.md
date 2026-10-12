@@ -1904,14 +1904,24 @@ RUNS, and compares only what it models. So:
 - **An M66 whose S isn't a single whole number is refused.** S1.5 skips one line or
   two, depending on whether Masso rounds or truncates, and "S2 S1" depends on which S
   it reads. S1.0 is still S1.
-- **The reliance scan is linear.** It starts at the nearest physical end of the
-  motion word's ranges, and the scan is shared by every motion word with the same
-  ranges. A 40,000-line range had taken 89 s; it now takes under a second.
+- **The reliance scan no longer goes quadratic on one big range.** It starts at the
+  nearest physical end of the motion word's ranges, and the scan is shared by every
+  motion word with the same ranges. A 40,000-line range had taken 89 s; it now takes
+  under a second. It is NOT linear in general: some adversarial shapes are still
+  quadratic. One example is many short ranges, one before every line; another is a long
+  range with comments interleaved. Fixing those is tracked separately, and must happen
+  before any server exposes this transform (ADR-0040's limits).
 - **Not changed, and noted:**
   - The physical-line rule assumes the parser's lines are Masso's lines. A lone CR
     counts as a line break here; whether Masso agrees is unconfirmed.
   - It still over-refuses when a motion word always runs before the follower
     whenever the follower runs. That's conservative.
+  - It compares the motion before EVERY range that may hold the motion word. Comparing
+    only the latest-starting range would be enough, and would refuse less. Any met range
+    that skips this motion word must start after the last motion word that ran. So
+    this is a known over-refusal, kept for simplicity (reviewer's oracle: 250k programs,
+    0 leaks either way). Example, refused here though it can't leak: `G0 X0 Z5`,
+    `M66 … S4`, `G1 X2 F100`, `M66 … S1`, `G1 X3`, `X4`.
 
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
