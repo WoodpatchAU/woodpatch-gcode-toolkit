@@ -379,7 +379,7 @@ class LineScanner {
     this.i++;
     const value = this.value();
     if (!value) {
-      this.report('error', 'SYNTAX_MISSING_VALUE', `"${letter}" has no value`, {
+      this.report('error', 'SYNTAX_MISSING_VALUE', () => `"${letter}" has no value`, {
         start,
         end: start + 1,
       });
@@ -614,10 +614,16 @@ class LineScanner {
       this.diagnostics[this.overflowAt] = { ...note, severity };
   }
 
-  private report(severity: Severity, code: string, message: string, span: Span): void {
-    // The same finding at the same place once (a value re-read after a failed sign chain,
-    // as in `X-##`, would report its "#" twice).
-    const key = `${code}@${span.start}-${span.end}`;
+  /**
+   * Records a finding. `message` may be a function, called only if the finding is kept:
+   * past the cap, a per-character finding then builds nothing (review of #56).
+   */
+  private report(
+    severity: Severity,
+    code: string,
+    message: string | (() => string),
+    span: Span,
+  ): void {
     // Past the cap, one note stands for the rest, with the worst severity among them: a
     // line of 2M bare letters made one finding (and one Set key) per letter (review of
     // #51). Nothing more is remembered once the note exists.
@@ -625,6 +631,9 @@ class LineScanner {
       this.raiseOverflow(severity);
       return;
     }
+    // The same finding at the same place once (a value re-read after a failed sign chain,
+    // as in `X-##`, would report its "#" twice).
+    const key = `${code}@${span.start}-${span.end}`;
     if (this.reported.has(key)) return;
     if (++this.findings > MAX_LINE_FINDINGS) {
       this.overflowAt = this.diagnostics.length;
@@ -639,6 +648,7 @@ class LineScanner {
       return;
     }
     this.reported.add(key);
-    this.diagnostics.push({ severity, code, message, line: this.lineNo, span });
+    const text = typeof message === 'string' ? message : message();
+    this.diagnostics.push({ severity, code, message: text, line: this.lineNo, span });
   }
 }
