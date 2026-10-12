@@ -142,6 +142,11 @@ describe('the tokenizer keeps its diagnostics bounded', () => {
     // still an error.
     const quiet = tokenizeLine(`${'X1 2 '.repeat(101)}@`, 1).diagnostics;
     expect(quiet.slice(0, 100).every((d) => d.severity === 'info')).toBe(true);
+    expect(quiet.at(-1)?.code).toBe('SYNTAX_TOO_MANY_FINDINGS');
+    // The error as the 101st finding: the note is made an error, not left an info.
+    const first = tokenizeLine(`${'X1 2 '.repeat(100)}@`, 1).diagnostics;
+    expect(first).toHaveLength(101);
+    expect(first.at(-1)).toMatchObject({ severity: 'error', code: 'SYNTAX_TOO_MANY_FINDINGS' });
     expect(quiet.at(-1)).toMatchObject({
       severity: 'error',
       message: expect.stringContaining('not listed'),
