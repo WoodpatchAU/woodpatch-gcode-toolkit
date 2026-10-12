@@ -21,6 +21,7 @@ import {
   type LoadedProgram,
   type ViewName,
 } from '@woodpatch/gcode-viewer';
+import { loadIfCurrent } from './fresh.js';
 import { installStats } from './stats.js';
 import { renderSummary } from './summary.js';
 import { installTransformPanel } from './transforms.js';
@@ -155,23 +156,19 @@ async function reload(): Promise<void> {
   const text = doc.toString();
   status.textContent = 'Reading…';
   const t0 = performance.now();
-  let program: LoadedProgram;
-  try {
-    program = await loader.load(text, { dialect: dialectSel.value });
-  } catch (e) {
-    const err = e as Error;
-    if (err.name === 'AbortError') return; // superseded by a newer edit
-    // A failure for a document that has since changed is stale too: a newer read is on
-    // its way, and will say how it went.
-    if (editor.state.doc !== doc) return;
+  const outcome = await loadIfCurrent(
+    doc,
+    () => editor.state.doc,
+    () => loader.load(text, { dialect: dialectSel.value }),
+  );
+  if (outcome.kind === 'stale') return; // a newer read is on its way, and will report
+  if (outcome.kind === 'failed') {
+    const err = outcome.error;
     status.textContent =
       err.name === 'TimeoutError' ? 'Took too long; stopped.' : `Failed: ${err.message}`;
     return;
   }
-  // Edited while it was read: a newer read is already on its way (every change schedules
-  // one). Showing this one would mix the live editor with an older parse, e.g. the new
-  // line count beside the old extent, or diagnostics on the wrong lines.
-  if (editor.state.doc !== doc) return;
+  const program = outcome.value;
   const ms = performance.now() - t0;
   const t1 = performance.now();
   viewer.setProgram(program); // builds the 3D geometry on this thread
