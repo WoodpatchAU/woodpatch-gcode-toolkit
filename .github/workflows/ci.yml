@@ -96,11 +96,15 @@ jobs:
           git fetch -q --depth=1 origin "${GITHUB_SHA}"
           git checkout -q --detach "${GITHUB_SHA}"
       - name: reuse lint
-        # Every package pinned by hash (.github/ci/reuse-requirements.txt): pip refuses
-        # any file whose hash isn't listed, and any dependency that isn't pinned there.
+        # Every package pinned by hash, the build too. reuse is built from its sdist here
+        # (its one wheel is tagged for a newer glibc), and --require-hashes doesn't cover
+        # build dependencies, so its build backend is installed first, pinned, and the
+        # build runs without isolation: pip fetches nothing that isn't listed (ADR-0039).
         run: |
           python3 -m venv "$RUNNER_TEMP/reuse"
-          "$RUNNER_TEMP/reuse/bin/pip" install -q --require-hashes -r .github/ci/reuse-requirements.txt
+          pip="$RUNNER_TEMP/reuse/bin/pip"
+          "$pip" install -q --require-hashes --only-binary :all: -r .github/ci/reuse-build-requirements.txt
+          "$pip" install -q --require-hashes --no-build-isolation --only-binary :all: --no-binary reuse -r .github/ci/reuse-requirements.txt
           "$RUNNER_TEMP/reuse/bin/reuse" lint
 
   # ── The fork's inheritance is intact, and PR commits carry a DCO sign-off ──
@@ -129,7 +133,22 @@ jobs:
         run: echo "d7fd338e223d0d59f2656c5009c7a1a006d8269ab61da6c29258e28cff940645  LICENSE.txt" | sha256sum -c -
       - name: DCO sign-off on every PR commit
         if: github.event_name == 'pull_request'
-        run: .github/ci/check-dco.sh "$BASE_SHA" "$HEAD_SHA"
+        env:
+          # Read-only (permissions: contents: read): only to ask GitHub whether a
+          # Dependabot commit is verified, for the narrow exemption (ADR-0039).
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash .github/ci/check-dco.test.sh
+          # The checker from the BASE branch, so a PR can't widen its own exemption (the
+          # PR that adds it has no base copy yet, and bootstraps with its own). Decided on
+          # the base tree, as for private-refs below.
+          dco="$RUNNER_TEMP/check-dco.sh"
+          if [ -n "$(git ls-tree --name-only "$BASE_SHA" -- .github/ci/check-dco.sh)" ]; then
+            git show "$BASE_SHA:.github/ci/check-dco.sh" >"$dco"
+          else
+            cp .github/ci/check-dco.sh "$dco"
+          fi
+          bash "$dco" "$BASE_SHA" "$HEAD_SHA"
       - name: No references to private work in the PR
         # Added lines, commit messages (merges too), and the PR's title and body (from
         # the event payload, read as data by the script, never interpolated here). Not

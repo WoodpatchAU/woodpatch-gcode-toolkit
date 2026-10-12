@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
 # SPDX-License-Identifier: MIT
 #
-# The reuse tool and everything it imports, pinned by hash (pip --require-hashes): CI
-# installs nothing that isn't listed here, at these exact bytes. Each hash is from PyPI's
-# JSON API for that release, every file of it, so any wheel pip picks is covered.
+# The reuse tool and everything it imports, pinned by hash (pip --require-hashes). With
+# reuse-build-requirements.txt (what it takes to build reuse from its sdist), CI installs
+# nothing that isn't listed in these two files, at these exact bytes. Each hash is from
+# PyPI's JSON API for that release, every file of it, so any file pip picks is covered.
 # Bumping reuse means regenerating the whole list, with its new dependencies.
 
 attrs==26.1.0 \

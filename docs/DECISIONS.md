@@ -148,8 +148,8 @@ owner's own repositories, pinned to full commit SHAs, so `actions/checkout` and
   version means bumping its hash in the same commit.
 - `permissions: contents: read`. Event values reach shell through `env`, never
   through `${{ }}` interpolation into script text.
-- `reuse` and its dependencies are pinned by hash in `.github/ci/reuse-requirements.txt`
-  and installed with `pip --require-hashes`. _Until 2026-10-04 it ran as
+- `reuse` and its dependencies, and what it takes to build it, are pinned by hash in
+  `.github/ci/reuse-requirements.txt` and `reuse-build-requirements.txt`. _Until 2026-10-04 it ran as
   `pipx run 'reuse==6.2.0'`, version-pinned only; an external review asked for the
   hash pin (ADR-0039)._
 - The jobs (`checks`, `reuse`, `provenance`) are the required status checks on `main`.
@@ -1737,21 +1737,38 @@ and arc-to-line controls follow when their core parcels merge (4e-2).
 
 ## ADR-0039: Security policy, Dependabot, and reuse pinned by hash
 
-**Status:** Accepted, 2026-10-04. Operator decisions on an external review's findings.
+**Status:** Accepted, 2026-10-04; amended 2026-10-05 (the DCO exemption) after review.
+Operator decisions on an external review's findings.
 
 **Decision.**
 
 - **Vulnerabilities are reported through GitHub's private vulnerability reporting**
-  (`SECURITY.md`), so no address has to be published. The setting is turned on in
-  the repository's settings.
-- **Dependabot watches the pnpm workspace only**, weekly, with a **7-day cooldown** to
-  match `minimumReleaseAge`. Minor and patch bumps are grouped into one PR. There are
-  no GitHub Actions to watch (ADR-0006). Node, pnpm and reuse stay pinned by hash in
-  `.github/ci` and are bumped by hand.
-- **`reuse` is pinned by hash** (see ADR-0006).
+  (`SECURITY.md`), so no address has to be published.
+- **Dependabot watches the pnpm workspace**, weekly, with a **7-day cooldown** to match
+  `minimumReleaseAge`. Minor and patch bumps are grouped into one PR. It also watches
+  the reuse pins in `.github/ci` (pip, same cooldown). There are no GitHub Actions to
+  watch (ADR-0006). Node and pnpm, pinned by hash in `setup-toolchain.sh`, are bumped
+  by hand: Dependabot can't read that file.
+- **`reuse` is pinned by hash, its build included.** Its one wheel is tagged for a newer
+  glibc than the CI runner's, so pip builds it from the sdist, and `--require-hashes`
+  doesn't cover build dependencies (pip fetches the newest build backend, unpinned).
+  So the build backend (poetry-core) is pinned in `reuse-build-requirements.txt` and
+  installed first, and reuse is built with `--no-build-isolation`, everything else
+  binary-only. pip fetches nothing that isn't in those two files.
+- **The DCO certifies human contributions; for a bot's dependency bump, the approving
+  reviewer is the gate** (operator ruling, 2026-10-05). `check-dco.sh` exempts a commit
+  only if all of these hold: the PR was opened by `dependabot[bot]` (from the event
+  payload, read as data); the commit's author is Dependabot's noreply address; and
+  GitHub reports the commit as verified (the API, read-only token). Any other commit on
+  such a PR still needs a sign-off. CI runs the script from the **base** branch, so a PR
+  can't widen its own exemption, and `check-dco.test.sh` shows each condition is needed.
+  (GitHub's "sign off web-based commits" setting doesn't help: Dependabot's sign-off
+  line doesn't match its author address.)
 
-**Consequences.** Dependabot's commits carry no DCO sign-off, so the DCO check fails
-its PRs. That's deliberate: the check isn't weakened for a bot. Either the repository
-requires sign-off on web-based commits (Dependabot then signs off), or a maintainer
-re-commits the update with a sign-off. Whether Dependabot reads this pnpm major's
-lockfile is still to be seen. If it can't, its log says so and nothing else breaks.
+**Consequences.**
+
+- pnpm's `minimumReleaseAge` still applies when Dependabot regenerates the lockfile.
+  So a security fix younger than 7 days may fail to resolve. If it does, list the
+  package in `minimumReleaseAgeExclude` for that update, and record why.
+- Unverified until the first run: whether Dependabot runs on this fork and copes with
+  pnpm 12 (lockfile v9 is supported). Check its log after the first scheduled run.
