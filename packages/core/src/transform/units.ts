@@ -208,68 +208,176 @@ export function convertUnits(
   // word among them is refused (its effect would depend on the input), and their G91
   // rounding has its own carry chain (review of #37). Counted generously: up to the n-th
   // line of code after, so blank and comment lines can't shorten the range.
-  const skipFrom = new Map<number, number>(); // a line in a range → its M66 line
-  // Every range a line may be in (counted generously), and every range it is SURELY in:
-  // within the first n physical lines after the M66, however Masso counts (review of
-  // #37: the generous count is right for refusing, wrong for exempting).
-  const mayBeIn = new Map<number, Set<number>>();
-  // The index of the last line each range surely holds (by its M66 line): the range
-  // surely holds every line from its M66 up to there, and no other.
-  const surelyTo = new Map<number, number>();
-  const addTo = (m: Map<number, Set<number>>, n: number, range: number) =>
-    (m.get(n) ?? m.set(n, new Set()).get(n))?.add(range);
+  const lines0 = program.lines;
+  const N = lines0.length;
+  const wordsOf = (l: Line) => l.tokens.filter((t): t is WordToken => t.kind === 'word');
+  const allWords = lines0.map(wordsOf);
+  const motionWord = (ws: WordToken[]) =>
+    ws.some((w) => w.letter === 'G' && MOTION.has(num0(w) ?? -1));
+  // Everything below is near-linear in the program's length, whatever its ranges
+  // (ADR-0040: every pass near-linear; review of #37: two range shapes were quadratic).
+  const skipFrom = new Map<number, number>(); // a line in a range → its latest M66 line
   let skipRanges = 0;
-  if (dialect.interpreter.m66 === 'masso-wait')
-    program.lines.forEach((line, i) => {
-      const ws = line.tokens.filter((t): t is WordToken => t.kind === 'word');
+  // Each range: the lines it may hold (counted generously: up to the S-th line of code
+  // after the M66, so blank and comment lines can't shorten it) and the lines it SURELY
+  // holds (the first S physical lines, however Masso counts; review of #37: the generous
+  // count is right for refusing, wrong for exempting).
+  interface Range {
+    readonly at: number; // the M66's index
+    readonly end: number; // the last index it may hold
+    readonly sure: number; // the last index it surely holds
+  }
+  const ranges: Range[] = [];
+  if (dialect.interpreter.m66 === 'masso-wait') {
+    // Lines of code (any word but N) in order, and how many come before each line.
+    const code: number[] = [];
+    const codeBefore = new Int32Array(N + 1);
+    // How many lines before each one have a word that moves (X, Y, Z, R).
+    const movesBefore = new Int32Array(N + 1);
+    allWords.forEach((ws, i) => {
+      if (ws.some((w) => w.letter !== 'N')) code.push(i);
+      codeBefore[i + 1] = code.length;
+      movesBefore[i + 1] =
+        (movesBefore[i] as number) + (ws.some((w) => 'XYZR'.includes(w.letter)) ? 1 : 0);
+    });
+    lines0.forEach((line, i) => {
+      const ws = allWords[i] as WordToken[];
       if (!ws.some((w) => w.letter === 'M' && num0(w) === 66)) return;
       // S counts lines, so only a single whole number has a meaning anyone can rely on.
-      // S1.5 may skip one line or two (rounded, truncated?), and "S2 S1" either: refused,
-      // rather than guessing (review of #37).
+      // S1.5 may skip one line or two (rounded, truncated?), and "S2 S1" either; read
+      // from the TEXT, since 1.9999999999999999 parses to 2 (review of #37). Refused,
+      // rather than guessing.
       const sWords = ws.filter((w) => w.letter === 'S');
-      const s0 = sWords[0] ? (num0(sWords[0]) ?? 0) : 0;
-      if (sWords.length > 1 || !Number.isInteger(s0)) {
+      const sw = sWords[0];
+      const text = sw?.value ? line.text.slice(sw.value.span.start, sw.value.span.end) : '';
+      // A count below zero isn't one either (S-0 is zero, and fine).
+      const whole = /^\s*[+-]?\d+(\.0*)?\s*$/.test(text);
+      const spaced = !whole && /^\s*[+-]?[\d\s]+(\.[0\s]*)?$/.test(text);
+      if (sWords.length > 1 || (sw && (!whole || (num0(sw) ?? 0) < 0))) {
         error(
           line.lineNo,
           'TRANSFORM_CONTROL_FLOW',
           sWords.length > 1
             ? 'This M66 has more than one S, so how many lines it skips is unclear. Refusing'
-            : `M66 S${s0} isn't a whole number of lines, so how many lines it skips is unclear. Refusing`,
+            : spaced
+              ? `M66 S${text.trim()} is written with a space inside the number, so how many lines it skips is unclear. Refusing`
+              : whole
+                ? `M66 S${text.trim()} is a negative number of lines, so what it skips is unclear. Refusing`
+                : `M66 S${text.trim()} isn't a whole number of lines, so how many lines it skips is unclear. Refusing`,
         );
         return;
       }
-      let left = Math.max(0, s0);
-      let moves = false;
-      surelyTo.set(line.lineNo, Math.min(i + left, program.lines.length - 1));
-      for (let j = i + 1; j < program.lines.length && left > 0; j++) {
-        const l = program.lines[j] as Line;
-        skipFrom.set(l.lineNo, line.lineNo);
-        addTo(mayBeIn, l.lineNo, line.lineNo);
-        if (l.tokens.some((t) => t.kind === 'word' && 'XYZR'.includes(t.letter))) moves = true;
-        // A line of code counts; one holding only an N number doesn't (generous).
-        if (l.tokens.some((t) => t.kind === 'word' && t.letter !== 'N')) left--;
-      }
+      const n = sw ? Math.max(0, Math.trunc(num0(sw) ?? 0)) : 0;
+      if (n === 0 || i + 1 >= N) return; // skips nothing
+      // The n-th line of code after the M66, or the end of the file.
+      const k = (codeBefore[i + 1] as number) + n - 1;
+      const end = k < code.length ? (code[k] as number) : N - 1;
+      ranges.push({ at: i, end, sure: Math.min(i + n, N - 1) });
       // Only a range that moves can disturb a carry (a dwell alone can't).
-      if (moves) skipRanges++;
+      if ((movesBefore[end + 1] as number) - (movesBefore[i + 1] as number) > 0) skipRanges++;
     });
+  }
+
+  // The motion each line's text leaves in force; at a range's M66, that's the motion its
+  // met path keeps once the range's motion words are skipped.
+  const textMotion: (number | null)[] = [];
+  {
+    let m: number | null = null;
+    for (const ws of allWords) {
+      for (const w of ws) if (w.letter === 'G' && MOTION.has(num0(w) ?? -1)) m = num0(w) ?? m;
+      textMotion.push(m);
+    }
+  }
+
+  // One sweep over the lines with the ranges that may hold each one active. For a line
+  // with a motion word in a range, it notes where its followers stop being surely
+  // skipped with it (the nearest sure end of its ranges), and the motion before its
+  // ranges: one value, or MIXED if they differ.
+  const MIXED = Symbol('mixed');
+  const inRange = new Uint8Array(N);
+  const motionLines: { i: number; from: number; before: number | null | typeof MIXED }[] = [];
+  {
+    const startsAt: number[][] = Array.from({ length: N }, () => []);
+    ranges.forEach((r, id) => startsAt[r.at + 1]?.push(id));
+    const endsAfter: number[][] = Array.from({ length: N }, () => []);
+    ranges.forEach((r, id) => endsAfter[r.end]?.push(id));
+    const stack: number[] = []; // active ranges by start; the top is the latest
+    const sureHeap: number[] = []; // ids, a min-heap on .sure (lazily pruned)
+    const ended = new Uint8Array(ranges.length);
+    const motions = new Map<number | null, number>(); // motion before → active count
+    const heapPush = (id: number) => {
+      sureHeap.push(id);
+      for (let c = sureHeap.length - 1; c > 0;) {
+        const p = (c - 1) >> 1;
+        if ((ranges[sureHeap[p] as number] as Range).sure <= (ranges[id] as Range).sure) break;
+        sureHeap[c] = sureHeap[p] as number;
+        sureHeap[p] = id;
+        c = p;
+      }
+    };
+    const heapPop = () => {
+      const last = sureHeap.pop() as number;
+      if (!sureHeap.length) return;
+      sureHeap[0] = last;
+      for (let c = 0; ;) {
+        const l = 2 * c + 1;
+        const r = l + 1;
+        let m = c;
+        const sure = (x: number) => (ranges[sureHeap[x] as number] as Range).sure;
+        if (l < sureHeap.length && sure(l) < sure(m)) m = l;
+        if (r < sureHeap.length && sure(r) < sure(m)) m = r;
+        if (m === c) break;
+        [sureHeap[c], sureHeap[m]] = [sureHeap[m] as number, sureHeap[c] as number];
+        c = m;
+      }
+    };
+    let active = 0;
+    for (let i = 0; i < N; i++) {
+      for (const id of startsAt[i] as number[]) {
+        stack.push(id);
+        heapPush(id);
+        const m = textMotion[(ranges[id] as Range).at] ?? null;
+        motions.set(m, (motions.get(m) ?? 0) + 1);
+        active++;
+      }
+      while (stack.length && ended[stack[stack.length - 1] as number]) stack.pop();
+      while (sureHeap.length && ended[sureHeap[0] as number]) heapPop();
+      if (active > 0) {
+        inRange[i] = 1;
+        const top = ranges[stack[stack.length - 1] as number] as Range;
+        skipFrom.set((lines0[i] as Line).lineNo, (lines0[top.at] as Line).lineNo);
+        if (motionWord(allWords[i] as WordToken[])) {
+          const nearest = (ranges[sureHeap[0] as number] as Range).sure;
+          const before = motions.size === 1 ? ([...motions.keys()][0] ?? null) : MIXED;
+          motionLines.push({ i, from: Math.max(i + 1, nearest + 1), before });
+        }
+      }
+      for (const id of endsAfter[i] as number[]) {
+        ended[id] = 1;
+        const m = textMotion[(ranges[id] as Range).at] ?? null;
+        const left = (motions.get(m) ?? 1) - 1;
+        if (left) motions.set(m, left);
+        else motions.delete(m);
+        active--;
+      }
+    }
+  }
+
   // A motion word inside a range sets the modal motion only when the range runs. If a
   // line after the range relies on that motion (a word the motion reads, before the next
   // motion word that always runs), the met path runs it under the OLD motion, which this
   // conversion never sees (review of #37: a G2 in a range turned a 0.0001 mm sliver of
   // G3 into a full circle, and a cycle's Q stayed in inches). Such a motion word is refused.
   const reliedOn = new Set<number>(); // a line in a range whose motion word is relied on
-  const wordsOf = (l: Line) => l.tokens.filter((t): t is WordToken => t.kind === 'word');
-  const motionWord = (ws: WordToken[]) =>
-    ws.some((w) => w.letter === 'G' && MOTION.has(num0(w) ?? -1));
   // A line that runs on every path: in no range, and not block-deletable where "/" is a
   // switch. M66 ranges are Masso's, where "/" always runs; a custom dialect that had
   // both M66 ranges and a block-delete switch would get no check of the two combined
   // (a "/" line inside a range), beyond this one.
-  const alwaysRuns = (l: Line) =>
-    !skipFrom.has(l.lineNo) &&
+  const alwaysRuns = (i: number) =>
+    !inRange[i] &&
     !(
       dialect.interpreter.blockDelete === 'switch' &&
-      l.tokens.some((t) => t.kind === 'block-delete')
+      (lines0[i] as Line).tokens.some((t) => t.kind === 'block-delete')
     );
   // The words a modal motion would read on a line: those no G code takes for itself, and
   // a Q no M code reads (M66's timeout). Generous: a word is enough, moving or not.
@@ -284,69 +392,55 @@ export function convertUnits(
         'XYZIJKRQ'.includes(w.letter) && !owned.includes(w.letter) && !(w.letter === 'Q' && mReads),
     );
   };
-  // The motion each line's text leaves in force, and the motion before each range (what
-  // its met path keeps, once its motion words are skipped).
-  const textMotion = new Map<number, number | null>();
-  {
-    let m: number | null = null;
-    for (const l of program.lines) {
-      for (const w of wordsOf(l))
-        if (w.letter === 'G' && MOTION.has(num0(w) ?? -1)) m = num0(w) ?? m;
-      textMotion.set(l.lineNo, m);
+  if (motionLines.length) {
+    // From each line on, built backwards: the next motion word that always runs (where
+    // a scan stops), the next line that relies on the motion (and has no motion word of
+    // its own), and the next such line whose text motion differs from that one's.
+    const nextStop = new Int32Array(N + 1).fill(N);
+    const nextRely = new Int32Array(N + 1).fill(N);
+    const nextRelyDiff = new Int32Array(N + 1).fill(N);
+    for (let j = N - 1; j >= 0; j--) {
+      const ws = allWords[j] as WordToken[];
+      const motion = motionWord(ws);
+      nextStop[j] = motion && alwaysRuns(j) ? j : (nextStop[j + 1] as number);
+      const rely = !motion && reliesOnMotion(ws);
+      const after = nextRely[j + 1] as number;
+      nextRely[j] = rely ? j : after;
+      nextRelyDiff[j] = !rely
+        ? (nextRelyDiff[j + 1] as number)
+        : after < N && textMotion[after] !== textMotion[j]
+          ? after
+          : (nextRelyDiff[j + 1] as number);
+    }
+    for (const { i, from, before } of motionLines) {
+      // Followers before `from` are surely skipped whenever the motion word is, so they
+      // run only when it does. After it, up to the next always-run motion word, a
+      // follower leaks if a met path leaves another motion in force than its text says
+      // (review of #37: CAM restating the modal G1 in a range was refused).
+      const stop = nextStop[from] as number;
+      const first = nextRely[from] as number;
+      if (first >= stop) continue;
+      const leaks =
+        before === MIXED || textMotion[first] !== before || (nextRelyDiff[from] as number) < stop;
+      if (leaks) reliedOn.add((lines0[i] as Line).lineNo);
     }
   }
-  // The scan from a line on, for a given set of ranges: whether a follower relies on a
-  // motion the met path may change. Memoised: every motion line of one range scans the
-  // same followers (review of #37: a 40k-line range was quadratic, 89 s).
-  const scans = new Map<string, boolean>();
-  const leaksFrom = (from: number, ranges: readonly number[]): boolean => {
-    const key = `${from}:${ranges.join(',')}`;
-    const known = scans.get(key);
-    if (known !== undefined) return known;
-    let leaks = false;
-    for (let j = from; j < program.lines.length; j++) {
-      const l = program.lines[j] as Line;
-      const ws = wordsOf(l);
-      if (motionWord(ws)) {
-        if (alwaysRuns(l)) break;
-        continue;
-      }
-      if (!reliesOnMotion(ws)) continue;
-      // It leaks only if a met path leaves another motion in force than the text says
-      // here (review of #37: CAM restating the modal G1 in a range was refused). A
-      // later follower can differ even if this one doesn't (another range's motion word
-      // may change the text's), so the scan goes on to the next always-run one.
-      const here = textMotion.get(l.lineNo);
-      if (ranges.some((r) => textMotion.get(r) !== here)) {
-        leaks = true;
-        break;
-      }
-    }
-    scans.set(key, leaks);
-    return leaks;
-  };
-  program.lines.forEach((line, i) => {
-    const may = mayBeIn.get(line.lineNo);
-    if (may === undefined || !motionWord(wordsOf(line))) return;
-    const ranges = [...may].sort((a, b) => a - b);
-    // The followers up to the nearest end of these ranges are surely skipped whenever
-    // the motion word is (each range holds them), so they run only when it does. The
-    // scan starts after that.
-    const from = Math.max(i + 1, Math.min(...ranges.map((r) => (surelyTo.get(r) ?? i) + 1)));
-    if (leaksFrom(from, ranges)) reliedOn.add(line.lineNo);
-  });
   // A program end (M2, M30, %) in a range: met, the program runs on past it, but every
   // check runs the path that stops there (review of #37: "M66 / M30" then a G3 sliver
   // cut a full circle). Refused when code follows it.
   const endsInRange = new Set<number>();
-  program.lines.forEach((line, i) => {
-    if (!skipFrom.has(line.lineNo)) return;
-    const ends =
-      line.tokens.some((t) => t.kind === 'percent') ||
-      wordsOf(line).some((w) => w.letter === 'M' && (num0(w) === 2 || num0(w) === 30));
-    if (ends && program.lines.slice(i + 1).some((l) => wordsOf(l).length > 0))
-      endsInRange.add(line.lineNo);
-  });
+  {
+    let codeAfter = false;
+    for (let i = N - 1; i >= 0; i--) {
+      const line = lines0[i] as Line;
+      const ws = allWords[i] as WordToken[];
+      const ends =
+        line.tokens.some((t) => t.kind === 'percent') ||
+        ws.some((w) => w.letter === 'M' && (num0(w) === 2 || num0(w) === 30));
+      if (inRange[i] && ends && codeAfter) endsInRange.add(line.lineNo);
+      if (ws.length > 0) codeAfter = true;
+    }
+  }
   // G91 canned cycles anywhere: then a motion word inside a skip range can merge two
   // cycle series on the met path, and a G91 R is measured from where its series began.
   const g91Cycles =
