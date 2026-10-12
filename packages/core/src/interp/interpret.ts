@@ -360,8 +360,16 @@ class Interpreter {
       while (f.pc < lines.length) {
         const line = lines[f.pc] as Line;
         f.pc++;
+        // A limit stop is on this line, in this frame's file: tagged like the line's own
+        // diagnostics, or a stop in a subprogram points at the main file's line of that
+        // number (review of #57).
+        const limitStop = (code: string, why: string) => {
+          const d0 = this.diagnostics.length;
+          this.stop(line.lineNo, code, why);
+          if (file !== null) this.attribute(this.steps.length, d0, file);
+        };
         if (++this.blocks > maxBlocks) {
-          this.stop(line.lineNo, 'SEMANTIC_LIMIT_BLOCKS', `more than ${maxBlocks} blocks run`);
+          limitStop('SEMANTIC_LIMIT_BLOCKS', `more than ${maxBlocks} blocks run`);
           return;
         }
         if (file === null) this.line(line, f.pc - 1);
@@ -372,7 +380,7 @@ class Interpreter {
           this.attribute(s0, d0, file);
         }
         if (this.steps.length > this.limits.maxSteps) {
-          this.stop(line.lineNo, 'SEMANTIC_LIMIT_STEPS', `more than ${this.limits.maxSteps} steps`);
+          limitStop('SEMANTIC_LIMIT_STEPS', `more than ${this.limits.maxSteps} steps`);
           return;
         }
         if (this.ended || this.stopped) return;

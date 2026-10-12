@@ -626,6 +626,26 @@ G0 X#<_value> Y#<_value_returned>`;
     expect(noisy.diagnostics.at(-1)).toMatchObject({ code: 'SEMANTIC_DIAGNOSTICS_TRUNCATED' });
   });
 
+  it('a limit stop inside a subprogram file names that file', () => {
+    // M98 P12 runs file 12; the block limit (3) is hit on its second line, which must not
+    // read as the main file's line 2, the M98 (review of #57).
+    const opts = {
+      interpreterRules: MASSO_LIKE,
+      resolveProgram: files({ '12': 'G0 X1\nG0 X2\nM99' }),
+    };
+    const blocks = run('G0 X0\nM98 P12\nM30', { ...opts, limits: { maxBlocks: 3 } });
+    expect(blocks.diagnostics.at(-1)).toMatchObject({
+      code: 'SEMANTIC_LIMIT_BLOCKS',
+      line: 2,
+      file: '12',
+    });
+    const steps = run('G0 X0\nM98 P12\nM30', { ...opts, limits: { maxSteps: 1 } });
+    expect(steps.diagnostics.at(-1)).toMatchObject({ code: 'SEMANTIC_LIMIT_STEPS', file: '12' });
+    // In the main file, still no file.
+    const main = run('G0 X0\nG0 X1\nG0 X2', { limits: { maxBlocks: 2 } });
+    expect(main.diagnostics.at(-1)?.file).toBeUndefined();
+  });
+
   it('never hides an error behind the diagnostic cap', () => {
     // 60 warnings, then errors: past the cap of 50 the first error is still kept, and
     // the note takes the worst severity it stands for (review of #51: "0 errors").
