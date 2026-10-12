@@ -1907,10 +1907,13 @@ RUNS, and compares only what it models. So:
 - **The reliance scan no longer goes quadratic on one big range.** It starts at the
   nearest physical end of the motion word's ranges, and the scan is shared by every
   motion word with the same ranges. A 40,000-line range had taken 89 s; it now takes
-  under a second. It is NOT linear in general: some adversarial shapes are still
-  quadratic. One example is many short ranges, one before every line; another is a long
-  range with comments interleaved. Fixing those is tracked separately, and must happen
-  before any server exposes this transform (ADR-0040's limits).
+  under a second. It was not linear in general, though: a long range with comments
+  interleaved, a short range before every line, and a range to the end of the file
+  before every line stayed quadratic or worse (5,000 lines: up to 26 s).
+  _Since fixed:_ the range checks are one sweep over the lines plus indexes built
+  backwards, so they are near-linear on every shape (20,000 lines: about a second), with
+  a timing test for each. The S value is also read from its text, since
+  S1.9999999999999999 parses as 2, and a bare S is refused.
 - **Not changed, and noted:**
   - The physical-line rule assumes the parser's lines are Masso's lines. A lone CR
     counts as a line break here; whether Masso agrees is unconfirmed.
