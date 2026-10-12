@@ -250,13 +250,20 @@ export function convertUnits(
       const sWords = ws.filter((w) => w.letter === 'S');
       const sw = sWords[0];
       const text = sw?.value ? line.text.slice(sw.value.span.start, sw.value.span.end) : '';
-      if (sWords.length > 1 || (sw && !/^\s*[+-]?\s*\d+(\.0*)?\s*$/.test(text))) {
+      // A count below zero isn't one either (S-0 is zero, and fine).
+      const whole = /^\s*[+-]?\d+(\.0*)?\s*$/.test(text);
+      const spaced = !whole && /^\s*[+-]?[\d\s]+(\.[0\s]*)?$/.test(text);
+      if (sWords.length > 1 || (sw && (!whole || (num0(sw) ?? 0) < 0))) {
         error(
           line.lineNo,
           'TRANSFORM_CONTROL_FLOW',
           sWords.length > 1
             ? 'This M66 has more than one S, so how many lines it skips is unclear. Refusing'
-            : `M66 S${text.trim()} isn't a whole number of lines, so how many lines it skips is unclear. Refusing`,
+            : spaced
+              ? `M66 S${text.trim()} is written with a space inside the number, so how many lines it skips is unclear. Refusing`
+              : whole
+                ? `M66 S${text.trim()} is a negative number of lines, so what it skips is unclear. Refusing`
+                : `M66 S${text.trim()} isn't a whole number of lines, so how many lines it skips is unclear. Refusing`,
         );
         return;
       }

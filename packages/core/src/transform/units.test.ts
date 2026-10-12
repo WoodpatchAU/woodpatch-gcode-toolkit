@@ -951,17 +951,24 @@ describe('units: the fourteenth review of #37', () => {
       for (let i = 0; i < n; i++) src += i % 2 ? 'G1 X1\n' : 'G0 X0\n';
       return `${src}M30`;
     };
+    // The best of three runs per size: a load spike on one run can't fail it (review of
+    // #62: one run went 73 ms -> 3,514 ms under load).
     const time = (n: number) => {
-      const t0 = performance.now();
-      u(program(n), 'inch', 'mm', MASSO_G3);
-      return performance.now() - t0;
+      const src = program(n);
+      let best = Infinity;
+      for (let k = 0; k < 3; k++) {
+        const t0 = performance.now();
+        u(src, 'inch', 'mm', MASSO_G3);
+        best = Math.min(best, performance.now() - t0);
+      }
+      return best;
     };
     time(2000); // warm up
-    const small = time(5000);
+    const small = time(2500);
     const large = time(40_000);
-    // Eight times the lines: ~8x if linear, ~64x if quadratic. 32x leaves room for a busy
-    // machine; the floor ignores tiny runs.
-    expect(large, `${small} ms → ${large} ms`).toBeLessThan(Math.max(32 * small, 400));
+    // Sixteen times the lines: ~16x if linear, ~256x if quadratic. 64x leaves room for a
+    // busy machine; the floor ignores tiny runs.
+    expect(large, `${small} ms → ${large} ms`).toBeLessThan(Math.max(64 * small, 400));
   }, 60_000);
 });
 
@@ -992,18 +999,23 @@ describe('units: M66 ranges, near-linear on any shape', () => {
   };
   for (const [name, shape] of Object.entries(shapes))
     it(`${name}`, () => {
+      // The best of three runs per size: a load spike on one run can't fail it.
       const time = (n: number) => {
         const src = shape(n);
-        const t0 = performance.now();
-        u(src, 'inch', 'mm', MASSO_G3);
-        return performance.now() - t0;
+        let best = Infinity;
+        for (let k = 0; k < 3; k++) {
+          const t0 = performance.now();
+          u(src, 'inch', 'mm', MASSO_G3);
+          best = Math.min(best, performance.now() - t0);
+        }
+        return best;
       };
       time(1000); // warm up
-      const small = time(1500);
-      const large = time(12_000);
-      // Eight times the lines: ~8x if linear, 64x if quadratic. 32x leaves room for a
-      // busy machine; the floor ignores tiny runs.
-      expect(large, `${small} ms → ${large} ms`).toBeLessThan(Math.max(32 * small, 400));
+      const small = time(1000);
+      const large = time(16_000);
+      // Sixteen times the lines: ~16x if linear, 256x if quadratic. 64x leaves room for
+      // a busy machine; the floor ignores tiny runs.
+      expect(large, `${small} ms → ${large} ms`).toBeLessThan(Math.max(64 * small, 400));
     }, 60_000);
 
   it("reads S from the text: a number that only parses as whole isn't one", () => {
@@ -1012,6 +1024,14 @@ describe('units: M66 ranges, near-linear on any shape', () => {
       expect(u(src(s), 'inch', 'mm', MASSO_G3).diagnostics[0]?.message, s).toContain(
         "isn't a whole number",
       );
+    // Reads as 10 to the tokenizer, but how a controller counts it is anyone's guess.
+    expect(u(src('S1 0'), 'inch', 'mm', MASSO_G3).diagnostics[0]?.message).toContain(
+      'space inside the number',
+    );
+    // A negative count isn't a count (review of #62).
+    expect(u(src('S-2'), 'inch', 'mm', MASSO_G3).diagnostics[0]?.message).toContain(
+      'negative number of lines',
+    );
     for (const s of ['S1', 'S1.0', 'S1.', 'S+1', 'S01', 'S-0', 'S0'])
       expect(u(src(s), 'inch', 'mm', MASSO_G3).ok, s).toBe(true);
   });
