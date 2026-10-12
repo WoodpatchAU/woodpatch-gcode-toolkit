@@ -1808,21 +1808,35 @@ a great deal of work.
   - its own unprivileged user (`DynamicUser=yes` or a dedicated no-login user);
   - `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`;
   - `InaccessiblePaths=` covering the calling application's code, config and data;
-  - `PrivateNetwork=yes`: no network at all (the Unix socket is a file, so it still
-    works);
-  - `SystemCallFilter=@system-service`;
-  - `MemoryMax=`, `CPUQuota=` and `TasksMax=`.
-    `MemoryDenyWriteExecute` is deliberately off: V8's JIT needs writable executable
-    memory. A container or VM is needed only if the server ever needs a network listener
-    or native addons.
+  - `PrivateNetwork=yes` and `RestrictAddressFamilies=AF_UNIX`: no network at all (the
+    Unix socket is a file, so it still works);
+  - `SystemCallFilter=@system-service` and `SystemCallArchitectures=native`;
+  - an empty `CapabilityBoundingSet=`, `PrivateDevices=yes`, `ProtectKernelTunables=yes`,
+    `ProtectKernelModules=yes`, `ProtectKernelLogs=yes`, `ProtectControlGroups=yes`,
+    `RestrictNamespaces=yes`, `LockPersonality=yes`, `RestrictSUIDSGID=yes`,
+    `ProtectProc=invisible` and `UMask=0077`;
+  - `MemoryMax=`, `CPUQuota=` and `TasksMax=`;
+  - the socket created by **socket activation**: a `.socket` unit sets `SocketUser`,
+    `SocketGroup` and `SocketMode=0660`. With `DynamicUser` and `ProtectSystem=strict`
+    the service can't create it itself, and the sandbox must not be loosened to let it;
+  - NOT `MemoryDenyWriteExecute`, deliberately: V8's JIT needs writable executable
+    memory.
+- **No container or VM, unless needed.** One becomes necessary only if the server ever
+  needs a network listener or native addons.
 - **Synchronous, inside nested time limits.** The server answers one request at a time
   per worker, within its own wall-clock budget. Large files are the caller's concern: it
   calls from a queued job. The budgets nest so the innermost layer always gives up first,
-  and nothing is killed mid-write by an outer one:
-  server budget < the caller's HTTP timeout < the job's timeout < the worker's timeout <
-  the queue's retry-after.
-  A timeout or "busy" answer fails the job with a clear status on the quote. Retries
-  are none, or bounded with backoff: never a retry storm.
+  and nothing is killed mid-write by an outer one: server budget < the caller's HTTP
+  timeout < the job's timeout < the worker's timeout < the queue's retry-after. A
+  timeout or "busy" answer fails the job with a clear status on the quote. Retries are
+  none, or bounded with backoff: never a retry storm.
+- **Every pass is near-linear.** The tokenizer, the interpreter, the transforms and the
+  checks must each run in time near-linear in the input. A transform that scans the text
+  statically emits no interpreter steps, so a step cap never sees it: a few hundred KB
+  that is quadratic there would hold a worker for its whole budget. Each known
+  superlinear shape becomes a named hostile case in the Phase 5 suite, and is fixed
+  before the server exposes that pass. The wall-clock budget is the backstop, not the
+  control.
 - **Limits count expanded work, not input size.** Each request is limited on:
   - **bytes:** the body is read with a hard byte limit at the socket, and a declared
     length over 20 MB is refused before any parsing;
@@ -1832,43 +1846,48 @@ a great deal of work.
     depth alone allows a wide fan-out;
   - **loops:** iterations are capped across the whole program, not per loop;
   - **expansions:** steps are counted after expansion, so every canned-cycle peck and
-    repeat, and every arc segment, counts; arcs also have a per-arc and a total
-    segment cap;
+    repeat, and every arc segment, counts; arcs also have a per-arc and a total segment
+    cap;
   - **expressions:** nesting is capped (already `EXPR_TOO_DEEP`), the worker has a
     stack-size limit, and non-finite values are diagnostics, never crashes;
-  - **output:** the toolpath and the diagnostics in a response are capped (the
-    per-line and per-run caps are the pattern), so a huge but legal program can't
-    produce a huge response;
-  - **time and memory:** each job runs in a `worker_thread` with `resourceLimits`
-    (heap and stack), and is terminated at its wall-clock budget.
-    A fixed pool of workers serves a bounded queue; past it the server answers "busy"
-    (429/503) instead of queueing without limit.
+  - **output:** the toolpath and the diagnostics in a response are capped (the per-line
+    and per-run caps are the pattern), so a huge but legal program can't produce a huge
+    response;
+  - **time and memory:** each job runs in a `worker_thread` with `resourceLimits` (heap
+    and stack), and is terminated at its wall-clock budget.
+- **A bounded, fair pool.** A fixed pool of workers serves a bounded queue; past it the
+  server answers "busy" (429/503) instead of queueing without limit. Each customer or
+  account gets a fair share (a per-scope concurrency limit), so one can't take the pool.
 - **No inputs that reach elsewhere.** Requests carry G-code text and IDs only: no file
   paths, and no URLs for the server to fetch. Machine, tool and material are IDs checked
   against known ones. Machine profiles are loaded at startup from versioned data, never
   from a request.
-- **Customer geometry stays private.** G-code is never logged or echoed: logs hold its
-  SHA-256, size and timings. Errors are a code and a message, never a stack trace or the
-  input.
+- **Customer geometry stays private.** G-code is never logged or echoed. Logs hold its
+  size, timings and an HMAC of it keyed per scope (a plain hash would let anyone who can
+  read the logs confirm a guessed file). Errors are a code and a message, never a stack
+  trace. Diagnostics can quote the input (a message comment, an unexpected character, a
+  word's value), so they go back to the caller only, and are never logged.
 - **A cache that answers no one else's question.** Results are deterministic, so they
   can be cached, but a cache keyed on the file's hash alone would tell anyone who can
   time a response whether that exact file was submitted before. So the key includes the
-  caller and the customer or account scope:
-  `sha256(gcode) + caller + scope + machineId + profileVersion`. It's bounded (LRU), and
-  the profile version changes on EVERY profile edit, not only on deploys, so a
-  recalibrated machine never gets an old answer.
+  caller and the customer or account scope, and covers EVERY input that can change the
+  result, and the code that computes it: the file's hash, the machine, tool and
+  material, the dialect and options, the profile version, and the server and core build
+  version (a deployed estimator fix must not keep serving old answers). It's bounded
+  (LRU), and the profile version changes on EVERY profile edit, not only on deploys, so
+  a recalibrated machine never gets an old answer.
 - **An uncalibrated estimate says so, and that binds.** Every result carries
   `calibrated: true | false`. A quote must never be priced automatically from an
   uncalibrated estimate: it needs manual review, or a flag the customer and staff can
   see. That rule is the calling application's to enforce, and its contract with this
   server states it.
-- **Supply chain.** Node is pinned to an LTS. The server has as few runtime dependencies
-  as possible, each pinned with an integrity hash, under the same Dependabot cooldown
-  and DCO rules as the rest of this repository (ADR-0039).
+- **Supply chain.** Node is pinned to an exact LTS version, verified by hash. The server
+  has as few runtime dependencies as possible, each pinned with an integrity hash, under
+  the same Dependabot cooldown and DCO rules as the rest of this repository (ADR-0039).
 
 **Consequences.** The server can't be reached by anything but its caller on the same
 host, and even a full compromise of its parser gets no network, no secrets and no
 application files. Moving it to another host reopens the transport and identity choices
 above. The limits are a test target in their own right: Phase 5 adds a hostile-input
-suite (expansion bombs, huge lines, deep nesting, oversized output) that must stay
-within the budgets.
+suite (expansion bombs, huge lines, deep nesting, superlinear shapes in every pass,
+oversized output) that must stay within the budgets.
