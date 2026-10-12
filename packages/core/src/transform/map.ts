@@ -49,10 +49,33 @@ export type TransformOp =
        * preference (operator decision, 2026-09-28). Default mm.
        */
       readonly assume?: 'mm' | 'inch';
+    }
+  | {
+      /**
+       * Feed override (parcel 4c, ADR-0036): scales feed rates by `percent` (90 = 90%).
+       * `only` limits it to cutting moves or to plunges (vertical feed moves: canned-
+       * cycle feeds count as plunges); `lines` to a range of source lines. Rapids have no F.
+       */
+      readonly op: 'feed';
+      readonly percent: number;
+      readonly only?: 'cut' | 'plunge';
+      readonly lines?: LineRange;
+    }
+  | {
+      /** Spindle override (parcel 4c): scales spindle speeds (S) by `percent`. */
+      readonly op: 'spindle';
+      readonly percent: number;
+      readonly lines?: LineRange;
     };
 
-/** The ops that are geometric maps (everything but a units conversion). */
-export type GeometricOp = Exclude<TransformOp, { op: 'units' }>;
+/** Source lines `from`..`to`, inclusive, 1-based. */
+export interface LineRange {
+  readonly from: number;
+  readonly to: number;
+}
+
+/** The ops that are geometric maps. */
+export type GeometricOp = Exclude<TransformOp, { op: 'units' | 'feed' | 'spindle' }>;
 
 export interface AffineMap {
   readonly a: number;
@@ -135,6 +158,28 @@ export function invalidOp(op: TransformOp): string | null {
       const u = (v: unknown) => v === 'mm' || v === 'inch';
       if (!u(o['to'])) return "a units conversion needs to: 'mm' or 'inch'";
       if (o['assume'] !== undefined && !u(o['assume'])) return "assume is 'mm' or 'inch'";
+      return null;
+    }
+    case 'feed':
+    case 'spindle': {
+      const bad = o['op'] === 'feed' ? only('percent', 'only', 'lines') : only('percent', 'lines');
+      if (bad) return bad;
+      if (!num(o['percent']) || (o['percent'] as number) <= 0)
+        return 'an override needs a positive percent';
+      if (o['only'] !== undefined && o['only'] !== 'cut' && o['only'] !== 'plunge')
+        return "only is 'cut' or 'plunge'";
+      const r = o['lines'] as Record<string, unknown> | undefined;
+      if (
+        r !== undefined &&
+        (typeof r !== 'object' ||
+          r === null ||
+          Object.keys(r).some((k) => k !== 'from' && k !== 'to') ||
+          !Number.isInteger(r['from']) ||
+          !Number.isInteger(r['to']) ||
+          (r['from'] as number) < 1 ||
+          (r['to'] as number) < (r['from'] as number))
+      )
+        return 'lines is {from, to}: whole line numbers, from 1, from <= to';
       return null;
     }
     default:
