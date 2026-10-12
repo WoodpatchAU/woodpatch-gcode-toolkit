@@ -21,6 +21,7 @@ import {
   type LoadedProgram,
   type ViewName,
 } from '@woodpatch/gcode-viewer';
+import { loadIfCurrent } from './fresh.js';
 import { installStats } from './stats.js';
 import { renderSummary } from './summary.js';
 import { installTransformPanel } from './transforms.js';
@@ -149,19 +150,25 @@ function scheduleReload(): void {
 
 /** Parses the editor's text in the worker, then updates the view and the panels. */
 async function reload(): Promise<void> {
-  const text = editor.state.doc.toString();
+  // One snapshot: everything shown below describes THIS document. (CodeMirror documents
+  // are immutable, so identity says whether it's still the one in the editor.)
+  const doc = editor.state.doc;
+  const text = doc.toString();
   status.textContent = 'Reading…';
   const t0 = performance.now();
-  let program: LoadedProgram;
-  try {
-    program = await loader.load(text, { dialect: dialectSel.value });
-  } catch (e) {
-    const err = e as Error;
-    if (err.name === 'AbortError') return; // superseded by a newer edit
+  const outcome = await loadIfCurrent(
+    doc,
+    () => editor.state.doc,
+    () => loader.load(text, { dialect: dialectSel.value }),
+  );
+  if (outcome.kind === 'stale') return; // a newer read is on its way, and will report
+  if (outcome.kind === 'failed') {
+    const err = outcome.error;
     status.textContent =
       err.name === 'TimeoutError' ? 'Took too long; stopped.' : `Failed: ${err.message}`;
     return;
   }
+  const program = outcome.value;
   const ms = performance.now() - t0;
   const t1 = performance.now();
   viewer.setProgram(program); // builds the 3D geometry on this thread
@@ -171,17 +178,17 @@ async function reload(): Promise<void> {
   const hidden = showDiagnostics(editor, program.diagnostics);
   renderDiagnostics(program.diagnostics);
   renderSummary($('summary'), program.summary, goToLine);
-  renderStats(program, ms, hidden);
+  renderStats(program, doc.lines, ms, hidden);
 }
 
-function renderStats(p: LoadedProgram, ms: number, hidden: number): void {
+function renderStats(p: LoadedProgram, lines: number, ms: number, hidden: number): void {
   const b = p.bounds.all;
   const size = b
     ? `${(b.max.X - b.min.X).toFixed(1)} × ${(b.max.Y - b.min.Y).toFixed(1)} × ${(b.max.Z - b.min.Z).toFixed(1)} mm`
     : 'no motion';
   const count = (sev: string) => p.diagnostics.filter((d) => d.severity === sev).length;
   const parts = [
-    `${editor.state.doc.lines.toLocaleString()} lines`,
+    `${lines.toLocaleString()} lines`,
     `${(p.count - 1).toLocaleString()} segments`,
     `extent ${size}`,
     `${count('error')} errors, ${count('warning')} warnings, ${count('info')} notes`,

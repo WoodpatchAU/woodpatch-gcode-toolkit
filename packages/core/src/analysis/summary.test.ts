@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { interpret, MASSO_G3, parse, pathBounds, summarise } from '../index.js';
+import { interpret, MASSO_G3, parse, pathBounds, programChecks, summarise } from '../index.js';
 
 // The program summary: each figure checked against a program worked by hand,
 // then invariants over the whole corpus.
@@ -189,5 +189,19 @@ describe('summarise on the corpus', () => {
     // No rapid in these programs goes below its clearance height (review of #32: with
     // start points counted, Aztec's rapids appeared to reach -12.885).
     if (f === 'aztec_calendar') expect(s.extent.rapid?.min.Z).toBeCloseTo(5.08, 9);
+  });
+
+  it('counts a cut after a tool change with no new M3 as cutting with the spindle off', () => {
+    const t = sum('G21 G90\nT1 M6\nM3 S18000\nG1 X10 F300\nT2 M6\nG1 X20\nM5\nM30');
+    expect(t.spindle.cutWhileOff).toMatchObject({ moves: 1, firstLine: 6 });
+    // The tool change's stop isn't counted as a spindle command.
+    expect(t.spindle.changes).toBe(2);
+  });
+
+  it('agrees with the checks on Masso M6.1: a cut after it is with the spindle off', () => {
+    const p = parse('G21 G90\nM3 S1000\nM6.1\nG1 X10 F100\nM30');
+    const r = interpret(p, { dialect: MASSO_G3 });
+    expect(summarise(r.steps).spindle.cutWhileOff).toMatchObject({ moves: 1, firstLine: 4 });
+    expect(programChecks(p, r, MASSO_G3).map((d) => d.code)).toContain('PROGRAM_CUT_SPINDLE_OFF');
   });
 });

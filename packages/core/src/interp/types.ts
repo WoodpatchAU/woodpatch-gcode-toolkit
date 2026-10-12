@@ -93,6 +93,8 @@ type StepKind =
       readonly line: number;
       readonly state: 'cw' | 'ccw' | 'off';
       readonly rpm: number | null;
+      /** Set when the spindle stopped because of a tool change, not an M5. */
+      readonly by?: 'tool-change';
     }
   | {
       readonly kind: 'coolant';

@@ -136,6 +136,14 @@ anywhere in it isn't accounted for by the row's licence or by an explicit electi
 | ------- | ------- | ---- | ----- | -------- |
 ${rows.join('\n')}
 
+## Re-vendoring and the private-refs check
+
+The CI check against references to private work (\`.github/ci/private-refs.mjs\`) scans only
+the lines a PR adds, so the vendored files above pass as they are. Re-vendoring one adds
+all its lines again. Two lines of \`opentype.js\` (Adobe Tech Note references, \`#\` with
+a 5000s number) would then be flagged. Rephrase nothing in a vendored file: note the hit
+on the PR, and have the maintainer approve it.
+
 ## Removed
 
 | Files | Licence | Removed | Reason |

@@ -53,6 +53,9 @@ const FUNCTIONS = [
   'TAN',
 ];
 
+/** The longest function name: a run of letters longer than this can't be one. */
+const LONGEST_FUNCTION = Math.max(...FUNCTIONS.map((f) => f.length));
+
 /** LinuxCNC O-word control keywords. Anything else after an O label is not a keyword. */
 const OWORD_KEYWORDS = new Set([
   'sub',
@@ -79,11 +82,24 @@ const isWs = (c: number) => c === SPACE || c === TAB;
 const isDigit = (c: number) => c >= 0x30 && c <= 0x39;
 const isLetter = (c: number) => (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
 
+/** The most findings one line lists; one more note stands for the rest. */
+const MAX_LINE_FINDINGS = 100;
+const RANK: Record<Severity, number> = { info: 0, warning: 1, error: 2 };
+
 class LineScanner {
   private readonly tokens: Token[] = [];
   private readonly diagnostics: Diagnostic[] = [];
+  /** code@span of each finding reported, so one is reported once (a Set: no rescans). */
+  private readonly reported = new Set<string>();
+  /** Findings reported on this line: at most MAX_LINE_FINDINGS are listed. */
+  private findings = 0;
+  /** Where the note that stands for the findings not listed is, once there is one. */
+  private overflowAt = -1;
   private i = 0;
   private afterOWord = false;
+  /** How many tokens message() has checked, and whether all were a block delete or N. */
+  private prefixScanned = 0;
+  private prefixOnlyN = true;
 
   constructor(
     private readonly text: string,
@@ -123,12 +139,29 @@ class LineScanner {
         // diagnostic, not two lone surrogate halves.
         const cp = text.codePointAt(start) ?? c;
         const width = cp > 0xffff ? 2 : 1;
-        this.report(
-          'error',
-          'SYNTAX_UNEXPECTED_CHARACTER',
-          `Unexpected character "${String.fromCodePoint(cp)}"`,
-          { start, end: start + width },
-        );
+        // A run of the same character is one diagnostic (and report() lists at most
+        // MAX_LINE_FINDINGS a line): a 2M-character line of junk cost a second and
+        // hundreds of MB of diagnostics (one each).
+        const ch = String.fromCodePoint(cp);
+        const prev = this.diagnostics.at(-1);
+        // Past the cap, only the note's severity can still change: build nothing (review
+        // of #52: each junk character still built a message, span and key to throw away).
+        if (this.overflowAt >= 0) this.raiseOverflow('error');
+        else if (
+          prev?.code === 'SYNTAX_UNEXPECTED_CHARACTER' &&
+          prev.span?.end === start &&
+          text.slice(prev.span.start, prev.span.start + width) === ch
+        ) {
+          this.diagnostics[this.diagnostics.length - 1] = {
+            ...prev,
+            span: { start: prev.span.start, end: start + width },
+            message: `Unexpected characters "${ch}" (${(start + width - prev.span.start) / width} of them)`,
+          };
+        } else
+          this.report('error', 'SYNTAX_UNEXPECTED_CHARACTER', `Unexpected character "${ch}"`, {
+            start,
+            end: start + width,
+          });
         this.i += width;
       }
     }
@@ -143,9 +176,14 @@ class LineScanner {
    * The rest of the line is the message. Returns false, consuming nothing, otherwise.
    */
   private message(): boolean {
-    for (const t of this.tokens) {
-      if (t.kind !== 'block-delete' && !(t.kind === 'word' && t.letter === 'N')) return false;
+    // Only new tokens are checked: re-walking them all on every M word made a line of
+    // many M words quadratic (a 40k-letter line took seconds).
+    for (; this.prefixOnlyN && this.prefixScanned < this.tokens.length; this.prefixScanned++) {
+      const t = this.tokens[this.prefixScanned] as Token;
+      if (t.kind !== 'block-delete' && !(t.kind === 'word' && t.letter === 'N'))
+        this.prefixOnlyN = false;
     }
+    if (!this.prefixOnlyN) return false;
     const m = /^msg(_sw|_s|_w)?(?=[ \t]|$)/i.exec(this.text.slice(this.i, this.i + 7));
     if (!m) return false;
     const start = this.i;
@@ -360,6 +398,36 @@ class LineScanner {
   private value(): Value | null {
     this.skipWs();
     const start = this.i;
+    // Signs before a parameter, bracket or function (X-#1, X-[#2*2], X+SIN[30], X--#1):
+    // LinuxCNC's read_real_value negates the value that follows. A sign before digits
+    // is a number's own. Read as a loop, not recursion, so a line of ten thousand signs
+    // can't overflow the stack (the tokenizer never throws).
+    let j = start;
+    for (;;) {
+      const c = this.text.charCodeAt(j);
+      if (c !== 0x2b /* + */ && c !== 0x2d /* - */) break;
+      let k = j + 1;
+      while (k < this.text.length && isWs(this.text.charCodeAt(k))) k++;
+      const next = this.text.charCodeAt(k);
+      if (next === 0x5b || next === 0x23 || isLetter(next) || next === 0x2b || next === 0x2d) {
+        j = k;
+        continue;
+      }
+      break;
+    }
+    if (j > start) {
+      this.i = j;
+      const inner = this.unsignedValue();
+      if (inner) return { kind: 'expression', span: { start, end: inner.span.end } };
+      this.i = start;
+      return null;
+    }
+    return this.unsignedValue();
+  }
+
+  /** value() after any leading signs: a number (with its own sign), bracket, ref or function. */
+  private unsignedValue(): Value | null {
+    const start = this.i;
     const c = this.text.charCodeAt(start);
     if (c === 0x5b /* [ */) {
       const end = this.balancedBracket(start);
@@ -371,21 +439,6 @@ class LineScanner {
       return span ? { kind: 'expression', span } : null;
     }
     if (isLetter(c)) return this.functionCall();
-    if (c === 0x2b /* + */ || c === 0x2d /* - */) {
-      // A sign before a parameter, bracket or function: X-#1, X-[#2*2], X+SIN[30].
-      // LinuxCNC's read_real_value negates the value that follows (parcel 2c-3 found
-      // this gap; subroutine code uses it constantly). A sign before digits is a number.
-      let k = start + 1;
-      while (k < this.text.length && isWs(this.text.charCodeAt(k))) k++;
-      const next = this.text.charCodeAt(k);
-      if (next === 0x5b || next === 0x23 || isLetter(next) || next === 0x2b || next === 0x2d) {
-        this.i = start + 1;
-        const inner = this.value();
-        if (inner) return { kind: 'expression', span: { start, end: inner.span.end } };
-        this.i = start;
-        return null;
-      }
-    }
     return this.number();
   }
 
@@ -393,7 +446,14 @@ class LineScanner {
   private functionCall(): ExpressionValue | null {
     const start = this.i;
     let j = start;
-    while (j < this.text.length && isLetter(this.text.charCodeAt(j))) j++;
+    // At most one letter more than the longest name: scanning every following letter
+    // for each word made a line of letters quadratic.
+    while (
+      j < this.text.length &&
+      j - start <= LONGEST_FUNCTION &&
+      isLetter(this.text.charCodeAt(j))
+    )
+      j++;
     const name = this.text.slice(start, j).toUpperCase();
     if (!FUNCTIONS.includes(name)) return null;
     let k = j;
@@ -480,18 +540,22 @@ class LineScanner {
   private parameterRef(): Span | null {
     const { text } = this;
     const start = this.i;
-    this.i++; // #
-    this.skipWs();
-    const c = text.charCodeAt(this.i);
-    if (c === 0x23 /* # */) {
-      const inner = this.parameterRef();
-      return inner ? { start, end: inner.end } : null;
-    }
+    // `##2` (and deeper): a run of "#", read as a loop, not recursion, so a long run
+    // can't overflow the stack.
+    let c: number;
+    // The innermost "#": errors are reported from it, as when this recursed.
+    let last: number;
+    do {
+      last = this.i;
+      this.i++; // #
+      this.skipWs();
+      c = text.charCodeAt(this.i);
+    } while (c === 0x23 /* # */);
     if (c === 0x3c /* < */) {
       const close = text.indexOf('>', this.i + 1);
       if (close === -1) {
         this.report('error', 'SYNTAX_UNTERMINATED_NAME', 'Parameter name "<" is never closed', {
-          start,
+          start: last,
           end: text.length,
         });
         this.i = text.length;
@@ -513,7 +577,7 @@ class LineScanner {
       'SYNTAX_MISSING_VALUE',
       '"#" is not followed by a parameter number or name',
       {
-        start,
+        start: last,
         end: this.i,
       },
     );
@@ -543,7 +607,38 @@ class LineScanner {
     return this.i;
   }
 
+  /** Raises the "not listed" note to `severity`, if that's worse than its own. */
+  private raiseOverflow(severity: Severity): void {
+    const note = this.diagnostics[this.overflowAt];
+    if (note && RANK[severity] > RANK[note.severity])
+      this.diagnostics[this.overflowAt] = { ...note, severity };
+  }
+
   private report(severity: Severity, code: string, message: string, span: Span): void {
+    // The same finding at the same place once (a value re-read after a failed sign chain,
+    // as in `X-##`, would report its "#" twice).
+    const key = `${code}@${span.start}-${span.end}`;
+    // Past the cap, one note stands for the rest, with the worst severity among them: a
+    // line of 2M bare letters made one finding (and one Set key) per letter (review of
+    // #51). Nothing more is remembered once the note exists.
+    if (this.overflowAt >= 0) {
+      this.raiseOverflow(severity);
+      return;
+    }
+    if (this.reported.has(key)) return;
+    if (++this.findings > MAX_LINE_FINDINGS) {
+      this.overflowAt = this.diagnostics.length;
+      this.diagnostics.push({
+        severity,
+        code: 'SYNTAX_TOO_MANY_FINDINGS',
+        message: 'More problems on this line are not listed',
+        line: this.lineNo,
+        span: { start: span.start, end: this.text.length },
+      });
+      this.reported.clear();
+      return;
+    }
+    this.reported.add(key);
     this.diagnostics.push({ severity, code, message, line: this.lineNo, span });
   }
 }

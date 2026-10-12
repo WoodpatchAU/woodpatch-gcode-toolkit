@@ -22,7 +22,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a PR supersedes the older run. Not on main: two merges in a row
+  # would cancel the first one's checks, the private-refs alarm among them.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Values from the event, passed through env rather than interpolated into
@@ -94,8 +96,16 @@ jobs:
           git fetch -q --depth=1 origin "${GITHUB_SHA}"
           git checkout -q --detach "${GITHUB_SHA}"
       - name: reuse lint
-        # Pinned version; pipx runs it in a throwaway venv.
-        run: pipx run 'reuse==6.2.0' lint
+        # Every package pinned by hash, the build too. reuse is built from its sdist here
+        # (its one wheel is tagged for a newer glibc), and --require-hashes doesn't cover
+        # build dependencies, so its build backend is installed first, pinned, and the
+        # build runs without isolation: pip fetches nothing that isn't listed (ADR-0039).
+        run: |
+          python3 -m venv "$RUNNER_TEMP/reuse"
+          pip="$RUNNER_TEMP/reuse/bin/pip"
+          "$pip" install -q --require-hashes --only-binary :all: -r .github/ci/reuse-build-requirements.txt
+          "$pip" install -q --require-hashes --no-build-isolation --only-binary :all: --no-binary reuse -r .github/ci/reuse-requirements.txt
+          "$RUNNER_TEMP/reuse/bin/reuse" lint
 
   # ── The fork's inheritance is intact, and PR commits carry a DCO sign-off ──
   provenance:
@@ -123,7 +133,66 @@ jobs:
         run: echo "d7fd338e223d0d59f2656c5009c7a1a006d8269ab61da6c29258e28cff940645  LICENSE.txt" | sha256sum -c -
       - name: DCO sign-off on every PR commit
         if: github.event_name == 'pull_request'
-        run: .github/ci/check-dco.sh "$BASE_SHA" "$HEAD_SHA"
+        env:
+          # Read-only (permissions: contents: read): only to ask GitHub whether a
+          # Dependabot commit is verified, for the narrow exemption (ADR-0039).
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The tests are the PR's own code: they run without the token.
+          env -u GH_TOKEN bash .github/ci/check-dco.test.sh
+          # The checker from the BASE branch, so a PR's edit to it can't judge that PR.
+          # (The fallback only matters for a base without the script, which main no longer
+          # is.) Decided on the base tree, as for private-refs below. A PR that edits
+          # ci.yml itself could run its own script anyway: that is what CODEOWNERS on
+          # .github/ and the required code-owner review are for (ADR-0039).
+          dco="$RUNNER_TEMP/check-dco.sh"
+          if [ -n "$(git ls-tree --name-only "$BASE_SHA" -- .github/ci/check-dco.sh)" ]; then
+            git show "$BASE_SHA:.github/ci/check-dco.sh" >"$dco"
+          else
+            cp .github/ci/check-dco.sh "$dco"
+          fi
+          bash "$dco" "$BASE_SHA" "$HEAD_SHA"
+      - name: No references to private work in the PR
+        # Added lines, commit messages (merges too), and the PR's title and body (from
+        # the event payload, read as data by the script, never interpolated here). Not
+        # re-run when only the title or body is edited (operator decision, 2026-09-28):
+        # review covers those edits. Runs even if the DCO step failed.
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          node --test .github/ci/private-refs.test.mjs
+          # The checker from the BASE branch, so a PR can't loosen what judges it. The PR
+          # that adds the check has no base copy yet, and bootstraps with its own.
+          refs="$RUNNER_TEMP/private-refs"
+          mkdir -p "$refs"
+          for f in check-private-refs.sh private-refs.mjs; do
+            # Decided on the base TREE, which is always local (this clone is blobless):
+            # a blob that fails to fetch must fail the step, not fall back to the PR's copy.
+            inbase=$(git ls-tree --name-only "$BASE_SHA" -- ".github/ci/$f")
+            if [ -n "$inbase" ]; then
+              git show "$BASE_SHA:.github/ci/$f" >"$refs/$f"
+            else
+              cp ".github/ci/$f" "$refs/$f"
+            fi
+          done
+          # Canaries: the checker must catch a leak it's handed, on both paths, or it is
+          # failing open. The commit one is an added line starting "++ ", which a diff
+          # parser can mistake for a header.
+          printf '{"pull_request":{"title":"canary","body":"see %s99901"}}' '#' >"$refs/canary.json"
+          if GITHUB_EVENT_PATH="$refs/canary.json" bash "$refs/check-private-refs.sh" >/dev/null; then
+            echo "::error::the private-refs check missed its title/body canary: it is failing open"
+            exit 1
+          fi
+          c="$refs/canary-repo"
+          git init -q "$c"
+          git -C "$c" -c user.name=canary -c user.email=canary@invalid commit -q --allow-empty -m base
+          printf '++ see %s99901\n' '#' >"$c/canary.txt"
+          git -C "$c" add canary.txt
+          git -C "$c" -c user.name=canary -c user.email=canary@invalid commit -q -m canary
+          if (cd "$c" && env -u GITHUB_EVENT_PATH bash "$refs/check-private-refs.sh" HEAD~1 HEAD >/dev/null); then
+            echo "::error::the private-refs check missed its commit canary: it is failing open"
+            exit 1
+          fi
+          bash "$refs/check-private-refs.sh" "$BASE_SHA" "$HEAD_SHA"
 
   # ── Publish the playground (pushes to main only, after every check passes) ──
   deploy-playground:

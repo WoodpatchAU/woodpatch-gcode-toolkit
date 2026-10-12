@@ -81,11 +81,23 @@ export function evaluate(
         return v === null ? null : e.op === '-' ? -v : v;
       }
       case 'binary': {
-        const l = ev(e.left);
-        if (l === null) return null;
-        const r = ev(e.right);
-        if (r === null) return null;
-        return binary(e.op, l, r, e.span);
+        // A flat chain (1+1+1+…, any length) is a left-leaning tree as deep as it is
+        // long: walk its left spine in a loop, so it can't overflow the stack. A right
+        // operand is a higher-precedence term, bounded by the levels and by maxDepth.
+        const spine: Extract<Expr, { kind: 'binary' }>[] = [];
+        let left: Expr = e;
+        while (left.kind === 'binary') {
+          spine.push(left);
+          left = left.left;
+        }
+        let acc = ev(left);
+        for (let i = spine.length - 1; i >= 0 && acc !== null; i--) {
+          const node = spine[i] as Extract<Expr, { kind: 'binary' }>;
+          const r = ev(node.right);
+          if (r === null) return null;
+          acc = binary(node.op, acc, r, node.span);
+        }
+        return acc;
       }
       case 'call':
         return call(e);

@@ -66,7 +66,16 @@ test('editing the code re-reads it', async ({ page }) => {
   await expect(status(page)).toContainText('Read in', { timeout: 30_000 });
   await page.locator('.cm-content').click();
   await page.keyboard.press('ControlOrMeta+a');
-  await page.keyboard.type('G21 G90\nG0 X10 Y10\nG1 Z-1 F100\nG2 X20 Y10 R5');
+  // Inserted in one go: typing key by key once doubled a keystroke on a busy runner
+  // (R55 for R5), and the extent check then failed for a reason it couldn't name.
+  await page.keyboard.insertText('G21 G90\nG0 X10 Y10\nG1 Z-1 F100\nG2 X20 Y10 R5');
+  // The text first, so a failure below is about reading it, not about what was typed.
+  await expect(page.locator('.cm-line')).toHaveText([
+    'G21 G90',
+    'G0 X10 Y10',
+    'G1 Z-1 F100',
+    'G2 X20 Y10 R5',
+  ]);
   await expect(page.locator('#stats')).toContainText('4 lines', { timeout: 10_000 });
   await expect(page.locator('#stats')).toContainText('extent 20.0 × 15.0 × 1.0 mm');
   expect(problems).toEqual([]);

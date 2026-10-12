@@ -302,7 +302,8 @@ export function summarise(steps: readonly Step[]): ProgramSummary {
         break;
       }
       case 'spindle':
-        spindleChanges++;
+        // A tool change's stop isn't a command in the program.
+        if (s.by !== 'tool-change') spindleChanges++;
         spindleOn = s.state !== 'off';
         if (s.state !== 'off') directions.add(s.state);
         if (s.rpm !== null) rpm = s.rpm;
