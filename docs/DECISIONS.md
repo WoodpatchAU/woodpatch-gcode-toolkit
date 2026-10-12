@@ -1780,3 +1780,95 @@ Operator decisions on an external review's findings.
   package in `minimumReleaseAgeExclude` for that update, and record why.
 - Unverified until the first run: whether Dependabot runs on this fork and copes with
   pnpm 12 (lockfile v9 is supported). Check its log after the first scheduled run.
+
+## ADR-0040: The estimate server's security boundary
+
+**Status:** Accepted, 2026-10-12. Operator sign-off after review, before any server code
+(an external review asked that this be settled first). Binds `@woodpatch/gcode-server`.
+
+**Context.** The server estimates machining time for G-code that customers upload, and
+the estimate feeds quotes. So its input is untrusted, it runs beside an application
+that holds secrets, and a wrong or stale answer costs money. Small files can expand into
+a great deal of work.
+
+**Decision.**
+
+- **Not on any network.** The server listens only on a Unix socket on the calling
+  application's host, never on TCP (any local process can reach localhost). The socket's
+  permissions (0660, the server's user and the caller's group) limit who can connect.
+  Customers never reach it directly: their requests go through the calling application.
+- **Caller identity from the kernel.** On each connection the server reads the peer's
+  credentials (`SO_PEERCRED`) and refuses any uid but the caller's. A bearer token is
+  optional defence in depth, not the control: on one host, whatever can read the
+  caller's config can read a token. mTLS adds nothing on a local socket. If the server
+  ever moves off the host, this decision is reopened (mTLS, or a token over TLS plus
+  network restriction).
+- **A sandbox that leaves a compromised parser with nothing.** It runs as a systemd
+  service with:
+  - its own unprivileged user (`DynamicUser=yes` or a dedicated no-login user);
+  - `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`;
+  - `InaccessiblePaths=` covering the calling application's code, config and data;
+  - `PrivateNetwork=yes`: no network at all (the Unix socket is a file, so it still
+    works);
+  - `SystemCallFilter=@system-service`;
+  - `MemoryMax=`, `CPUQuota=` and `TasksMax=`.
+    `MemoryDenyWriteExecute` is deliberately off: V8's JIT needs writable executable
+    memory. A container or VM is needed only if the server ever needs a network listener
+    or native addons.
+- **Synchronous, inside nested time limits.** The server answers one request at a time
+  per worker, within its own wall-clock budget. Large files are the caller's concern: it
+  calls from a queued job. The budgets nest so the innermost layer always gives up first,
+  and nothing is killed mid-write by an outer one:
+  server budget < the caller's HTTP timeout < the job's timeout < the worker's timeout <
+  the queue's retry-after.
+  A timeout or "busy" answer fails the job with a clear status on the quote. Retries
+  are none, or bounded with backoff: never a retry storm.
+- **Limits count expanded work, not input size.** Each request is limited on:
+  - **bytes:** the body is read with a hard byte limit at the socket, and a declared
+    length over 20 MB is refused before any parsing;
+  - **lines:** at most 2 million, and a single huge line is bounded by the tokenizer's
+    per-line caps;
+  - **calls:** subroutine and subprogram calls are capped in depth AND in total, since
+    depth alone allows a wide fan-out;
+  - **loops:** iterations are capped across the whole program, not per loop;
+  - **expansions:** steps are counted after expansion, so every canned-cycle peck and
+    repeat, and every arc segment, counts; arcs also have a per-arc and a total
+    segment cap;
+  - **expressions:** nesting is capped (already `EXPR_TOO_DEEP`), the worker has a
+    stack-size limit, and non-finite values are diagnostics, never crashes;
+  - **output:** the toolpath and the diagnostics in a response are capped (the
+    per-line and per-run caps are the pattern), so a huge but legal program can't
+    produce a huge response;
+  - **time and memory:** each job runs in a `worker_thread` with `resourceLimits`
+    (heap and stack), and is terminated at its wall-clock budget.
+    A fixed pool of workers serves a bounded queue; past it the server answers "busy"
+    (429/503) instead of queueing without limit.
+- **No inputs that reach elsewhere.** Requests carry G-code text and IDs only: no file
+  paths, and no URLs for the server to fetch. Machine, tool and material are IDs checked
+  against known ones. Machine profiles are loaded at startup from versioned data, never
+  from a request.
+- **Customer geometry stays private.** G-code is never logged or echoed: logs hold its
+  SHA-256, size and timings. Errors are a code and a message, never a stack trace or the
+  input.
+- **A cache that answers no one else's question.** Results are deterministic, so they
+  can be cached, but a cache keyed on the file's hash alone would tell anyone who can
+  time a response whether that exact file was submitted before. So the key includes the
+  caller and the customer or account scope:
+  `sha256(gcode) + caller + scope + machineId + profileVersion`. It's bounded (LRU), and
+  the profile version changes on EVERY profile edit, not only on deploys, so a
+  recalibrated machine never gets an old answer.
+- **An uncalibrated estimate says so, and that binds.** Every result carries
+  `calibrated: true | false`. A quote must never be priced automatically from an
+  uncalibrated estimate: it needs manual review, or a flag the customer and staff can
+  see. That rule is the calling application's to enforce, and its contract with this
+  server states it.
+- **Supply chain.** Node is pinned to an LTS. The server has as few runtime dependencies
+  as possible, each pinned with an integrity hash, under the same Dependabot cooldown
+  and DCO rules as the rest of this repository (ADR-0039).
+
+**Consequences.** The server can't be reached by anything but its caller on the same
+host, and even a full compromise of its parser gets no network, no secrets and no
+application files. Moving it to another host reopens the transport and identity choices
+above. The limits are a test target in their own right: Phase 5 adds a hostile-input
+suite (expansion bombs, huge lines, deep nesting, oversized output) that must stay
+within the budgets.
