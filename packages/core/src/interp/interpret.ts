@@ -26,6 +26,9 @@ import {
   type Step,
 } from './types.js';
 
+/** Severities, least to worst: the truncation note takes the worst it stands for. */
+const SEVERITY_RANK: Record<Severity, number> = { info: 0, warning: 1, error: 2 };
+
 /**
  * Interprets a parsed program into machine steps (parcel 2c-1, ADR-0019).
  *
@@ -236,6 +239,11 @@ class Interpreter {
   private readonly savedSubs = new Map<Loaded, Set<number>>();
   /** Diagnostics dropped after `limits.maxDiagnostics`. */
   private suppressed = 0;
+  /** Of the suppressed, how many were errors, and the worst severity among them. */
+  private suppressedErrors = 0;
+  private suppressedWorst: Severity = 'info';
+  /** Whether an error was kept past the cap (one is, so an error is never hidden). */
+  private errorPastCap = false;
   /** An M98 or M99 on the current line, run after the rest of it. */
   private pendingCall: { readonly p: Word | undefined; readonly l: Word | undefined } | null = null;
   private pendingReturn = false;
@@ -300,11 +308,14 @@ class Interpreter {
         line: firstSkipped,
       });
     }
+    // The note takes the worst severity it stands for: "0 errors" must never hide one.
     if (this.suppressed > 0)
       this.diagnostics.push({
-        severity: 'info',
+        severity: this.suppressedWorst,
         code: 'SEMANTIC_DIAGNOSTICS_TRUNCATED',
-        message: `${this.suppressed} further diagnostic(s) not kept (limit ${this.limits.maxDiagnostics})`,
+        message: `${this.suppressed} further diagnostic(s) not kept (limit ${this.limits.maxDiagnostics})${
+          this.suppressedErrors ? `, ${this.suppressedErrors} of them error(s)` : ''
+        }`,
         line: 0,
       });
     return {
@@ -350,6 +361,9 @@ class Interpreter {
         // Ran off the end of the frame's file.
         if (this.frames.length === 1) return;
         const last = lines[lines.length - 1];
+        // Only what this report adds is the subprogram's: past the diagnostic cap it may
+        // add nothing, and the last KEPT diagnostic is someone else's (review of #57).
+        const d0 = this.diagnostics.length;
         this.report(
           last?.lineNo ?? 0,
           'warning',
@@ -358,7 +372,7 @@ class Interpreter {
             ? 'Subprogram file ends without M99; returning'
             : `Subroutine o${f.label} ends without endsub; returning`,
         );
-        if (file !== null) this.attribute(this.steps.length, this.diagnostics.length - 1, file);
+        if (file !== null) this.attribute(this.steps.length, d0, file);
         this.leave();
       }
     }
@@ -2293,11 +2307,24 @@ class Interpreter {
 
   /**
    * Every diagnostic goes through here. After `limits.maxDiagnostics` they're counted,
-   * not kept: a warning inside a million-pass loop mustn't exhaust memory.
+   * not kept: a warning inside a million-pass loop mustn't exhaust memory. But the first
+   * error past the cap is still kept, and the truncation note takes the worst severity
+   * it stands for: 10,000 warnings then an error once read as "0 errors" (review of #51).
    */
   private add(d: Diagnostic): void {
-    if (this.diagnostics.length < this.limits.maxDiagnostics) this.diagnostics.push(d);
-    else this.suppressed++;
+    if (this.diagnostics.length < this.limits.maxDiagnostics) {
+      this.diagnostics.push(d);
+      return;
+    }
+    if (d.severity === 'error' && !this.errorPastCap) {
+      this.errorPastCap = true;
+      this.diagnostics.push(d);
+      return;
+    }
+    this.suppressed++;
+    if (d.severity === 'error') this.suppressedErrors++;
+    if (SEVERITY_RANK[d.severity] > SEVERITY_RANK[this.suppressedWorst])
+      this.suppressedWorst = d.severity;
   }
 
   /** LinuxCNC `(MSG, text)` comments: an operator message. */
