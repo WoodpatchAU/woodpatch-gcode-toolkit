@@ -12,10 +12,10 @@ mirror, scale, unit conversion, feed override) while leaving untouched lines
 byte-for-byte identical.
 
 > **Status: early development, not yet released.** The core (parser, interpreter,
-> diagnostics and transforms), the viewer, the editor mode and the Svelte components
-> work, and the playground puts them together. Nothing is published to npm yet, and the
-> APIs may still change. The time estimator, the server and the machine database are
-> still to come.
+> diagnostics, and the translate, rotate, mirror and scale transforms), the viewer, the
+> editor mode and the Svelte components work, and the playground puts them together.
+> Nothing is published to npm yet, and the APIs may still change. Unit conversion, feed
+> override, the time estimator, the server and the machine database are still to come.
 
 ## Acknowledgements
 
