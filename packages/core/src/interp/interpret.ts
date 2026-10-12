@@ -800,7 +800,7 @@ class Interpreter {
           refused ? 'error' : 'warning',
           'SEMANTIC_TOOL_CHANGE_NO_TOOL',
           refused
-            ? 'M6 with no tool selected (no T word yet): this controller refuses the tool change, and stops the program'
+            ? 'M6 with no tool selected (no T word yet): this controller refuses the tool change, an error that stops the program on the machine. The preview carries on without the change'
             : 'M6 with no tool selected (no T word yet)',
         );
       // Refused, nothing changes: no stop, no change, the loaded tool stays.
