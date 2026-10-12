@@ -914,7 +914,7 @@ a stated gap rather than a guess.
 
 **Status:** Accepted, 2026-09-26. Parcel 2e-2 completes the Masso profile (ADR-0023).
 
-**Decision.** Five more `InterpreterRules`, each set for Masso from its docs (v5.13),
+**Decision.** Six more `InterpreterRules`, each set for Masso from its docs (v5.13),
 and one tolerance option.
 
 | Rule                    | LinuxCNC 2.9                                        | Masso G3 v5.13                                                                                       |
@@ -2185,11 +2185,14 @@ a great deal of work.
   - an empty `CapabilityBoundingSet=`, `PrivateDevices=yes`, `ProtectKernelTunables=yes`,
     `ProtectKernelModules=yes`, `ProtectKernelLogs=yes`, `ProtectControlGroups=yes`,
     `RestrictNamespaces=yes`, `LockPersonality=yes`, `RestrictSUIDSGID=yes`,
-    `ProtectProc=invisible` and `UMask=0077`;
+    `ProtectClock=yes`, `ProtectHostname=yes`, `ProtectProc=invisible` and `UMask=0077`;
   - `MemoryMax=`, `CPUQuota=` and `TasksMax=`;
-  - the socket created by **socket activation**: a `.socket` unit sets `SocketUser`,
-    `SocketGroup` and `SocketMode=0660`. With `DynamicUser` and `ProtectSystem=strict`
-    the service can't create it itself, and the sandbox must not be loosened to let it;
+  - the socket created by **socket activation**: a `.socket` unit creates it, with
+    `SocketGroup` set to the CALLER's group and `SocketMode=0660` (the dynamic user
+    doesn't exist yet when the socket is made, so it isn't the owner; the service
+    receives the listening socket from systemd and needs no permission on the file).
+    With `DynamicUser` and `ProtectSystem=strict` the service can't create the socket
+    itself, and the sandbox must not be loosened to let it;
   - NOT `MemoryDenyWriteExecute`, deliberately: V8's JIT needs writable executable
     memory.
 - **No container or VM, unless needed.** One becomes necessary only if the server ever
@@ -2235,7 +2238,12 @@ a great deal of work.
   from a request.
 - **Customer geometry stays private.** G-code is never logged or echoed. Logs hold its
   size, timings and an HMAC of it keyed per scope (a plain hash would let anyone who can
-  read the logs confirm a guessed file). Errors are a code and a message, never a stack
+  read the logs confirm a guessed file). Each scope's key is derived from one secret
+  (HKDF, with the scope as its info), which systemd hands the service as a credential
+  (`LoadCredential=`, from a root-only file outside the sandbox's view). It's rotated by
+  replacing that file, on a schedule and whenever it may have leaked; log lines from
+  before a rotation can then no longer be matched to new ones, which is acceptable for
+  logs. Errors are a code and a message, never a stack
   trace. Diagnostics can quote the input (a message comment, an unexpected character, a
   word's value), so they go back to the caller only, and are never logged.
 - **A cache that answers no one else's question.** Results are deterministic, so they

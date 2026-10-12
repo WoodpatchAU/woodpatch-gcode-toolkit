@@ -317,6 +317,8 @@ class Interpreter {
       });
     }
     // A program that moves before any G20/G21 runs relies on the units preference.
+    // (Before the truncation note below, and through add(): if the cap drops this
+    // warning, the note still counts it.)
     if (this.unitsPreference !== undefined) {
       const first = this.steps.findIndex((s) => s.kind === 'linear' || s.kind === 'arc');
       const move = this.steps[first];
