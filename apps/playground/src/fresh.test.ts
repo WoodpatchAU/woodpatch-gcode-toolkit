@@ -88,4 +88,16 @@ describe('loadIfCurrent with the ProgramLoader', () => {
     workers[1]?.reply({ program: PROGRAM });
     expect(await second).toEqual({ kind: 'show', value: PROGRAM });
   });
+
+  it('treats a load superseded for the SAME document as stale (a dialect change)', async () => {
+    // A dialect change re-reads the unchanged document: the first read is aborted, and
+    // only the AbortError says so. Reported as a failure, the status would flash
+    // "Failed: …" (review of #58).
+    const { workers, read } = setup();
+    const first = read();
+    const second = read();
+    expect(await first).toEqual({ kind: 'stale' });
+    workers[1]?.reply({ program: PROGRAM });
+    expect(await second).toEqual({ kind: 'show', value: PROGRAM });
+  });
 });
