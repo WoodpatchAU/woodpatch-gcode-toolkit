@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   LINUXCNC_INTERPRETER_RULES,
+  GENERIC,
   MASSO_G3,
   interpret,
   parse,
@@ -291,6 +292,29 @@ describe('events and program end', () => {
     expect(r.steps[2]).toMatchObject({ mist: true, flood: true });
     expect(r.steps[3]).toMatchObject({ seconds: 1.5 });
     expect(r.diagnostics).toEqual([]);
+  });
+
+  it('M6 with no tool selected: LinuxCNC refuses the change; Masso (unconfirmed) makes it', () => {
+    // LinuxCNC: "Need tool prepared -Txx- for toolchange", an error, and nothing changes:
+    // the spindle keeps running, no tool-change step. The generic dialect inherits it.
+    for (const options of [{}, { dialect: GENERIC }]) {
+      const r = run('G21\nS12000 M3\nM6\nG1 X1 F100', options);
+      expect(r.diagnostics.map((d) => `${d.severity} ${d.code}`)).toEqual([
+        'error SEMANTIC_TOOL_CHANGE_NO_TOOL',
+      ]);
+      expect(r.steps.some((s) => s.kind === 'tool-change')).toBe(false);
+      expect(r.state.spindle.state).toBe('cw');
+    }
+    // With a T selected, the change happens as before (and stops the spindle).
+    const ok = run('G21\nS12000 M3\nT1\nM6');
+    expect(ok.diagnostics).toEqual([]);
+    expect(ok.state.spindle.state).toBe('off');
+    // Masso: a warning, and the change to no tool is still modelled (machine test due).
+    const masso = run('G21\nM5\nM6\nG1 X1 F100', { dialect: MASSO_G3 });
+    expect(masso.diagnostics.find((d) => d.code === 'SEMANTIC_TOOL_CHANGE_NO_TOOL')).toMatchObject({
+      severity: 'warning',
+    });
+    expect(masso.steps.some((s) => s.kind === 'tool-change')).toBe(true);
   });
 
   it('a tool change stops the spindle; M6 M3 on one line ends with it running', () => {

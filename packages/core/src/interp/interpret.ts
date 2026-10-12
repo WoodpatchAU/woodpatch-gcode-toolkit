@@ -792,16 +792,23 @@ class Interpreter {
       this.steps.push({ kind: 'tool-change', line: n, tool: null });
     }
     if (m.has('6')) {
+      const refused =
+        this.selectedTool === null && this.behaviour.toolChangeWithoutTool === 'error';
       if (this.selectedTool === null)
         this.report(
           n,
-          'warning',
+          refused ? 'error' : 'warning',
           'SEMANTIC_TOOL_CHANGE_NO_TOOL',
-          'M6 with no tool selected (no T word yet)',
+          refused
+            ? 'M6 with no tool selected (no T word yet): this controller refuses the tool change, and stops the program'
+            : 'M6 with no tool selected (no T word yet)',
         );
-      this.stopForToolChange(n);
-      this.tool = this.selectedTool;
-      this.steps.push({ kind: 'tool-change', line: n, tool: this.tool });
+      // Refused, nothing changes: no stop, no change, the loaded tool stays.
+      if (!refused) {
+        this.stopForToolChange(n);
+        this.tool = this.selectedTool;
+        this.steps.push({ kind: 'tool-change', line: n, tool: this.tool });
+      }
     }
     for (const [code, state] of SPINDLE_CODES) {
       if (m.has(code)) {
