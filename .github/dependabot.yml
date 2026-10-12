@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
+# SPDX-License-Identifier: MIT
+#
+# Dependency updates (ADR-0039): the pnpm workspace, and the hash-pinned reuse tool in
+# .github/ci. CI uses no GitHub Actions, so there is no "github-actions" ecosystem to
+# watch. Node and pnpm themselves are pinned by hash in .github/ci/setup-toolchain.sh,
+# which Dependabot can't read: they are bumped by hand.
+#
+# Dependabot's commits carry no DCO sign-off; check-dco.sh exempts them, narrowly.
+version: 2
+updates:
+  - package-ecosystem: npm # covers pnpm workspaces and pnpm-lock.yaml
+    directory: /
+    schedule:
+      interval: weekly
+    # Matches minimumReleaseAge in pnpm-workspace.yaml: no release younger than 7 days
+    # (a compromised publish is usually caught and pulled within days). Security
+    # updates are not delayed by this.
+    cooldown:
+      default-days: 7
+    # One PR for the routine minor and patch bumps; a major gets a PR of its own.
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'build(deps)'
+  - package-ecosystem: pip # reuse-requirements.txt and reuse-build-requirements.txt
+    directory: /.github/ci
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: 'ci(deps)'

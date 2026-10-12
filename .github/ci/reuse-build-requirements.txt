@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
+# SPDX-License-Identifier: MIT
+#
+# What it takes to BUILD reuse, pinned by hash. reuse 6.2.0's only wheel is tagged for
+# Python 3.10 and glibc 2.41, so on CI pip builds it from the sdist, with poetry-core as
+# its build backend. pip's --require-hashes doesn't cover build dependencies, so they're
+# installed first from this file and the build runs without isolation (ci.yml).
+# poetry-core has no dependencies of its own.
+
+poetry-core==2.5.0 \
+    --hash=sha256:81d04c9253b19d0604718268d781867c8f7b2128e5b25bbf1e84141eec6b89c4 \
+    --hash=sha256:98ee465b66f7e14bb9fbe68fb5e00d0cff184f036993ec94610ae4b5612f3add
