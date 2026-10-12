@@ -41,6 +41,8 @@ describe('the tokenizer on hostile lines', () => {
     expect(value('X# #2')).toBe('# #2');
     expect(value('XATAN[1]/[2]')).toBe('ATAN[1]/[2]');
     expect(value('XSQRTY')).toBeNull(); // not a function: X has no value
+    // The message is built only if kept (review of #61), and still says which letter.
+    expect(tokenizeLine('X', 1).diagnostics[0]?.message).toBe('"X" has no value');
   });
 
   it('reports a malformed "##" from its innermost "#", as it did before the loop', () => {
