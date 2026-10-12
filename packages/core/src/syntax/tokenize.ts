@@ -82,13 +82,19 @@ const isWs = (c: number) => c === SPACE || c === TAB;
 const isDigit = (c: number) => c >= 0x30 && c <= 0x39;
 const isLetter = (c: number) => (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
 
+/** The most findings one line lists; one more note stands for the rest. */
+const MAX_LINE_FINDINGS = 100;
+const RANK: Record<Severity, number> = { info: 0, warning: 1, error: 2 };
+
 class LineScanner {
   private readonly tokens: Token[] = [];
   private readonly diagnostics: Diagnostic[] = [];
   /** code@span of each finding reported, so one is reported once (a Set: no rescans). */
   private readonly reported = new Set<string>();
-  /** Distinct unexpected-character findings on this line (capped at 100). */
-  private unexpected = 0;
+  /** Findings reported on this line: at most MAX_LINE_FINDINGS are listed. */
+  private findings = 0;
+  /** Where the note that stands for the findings not listed is, once there is one. */
+  private overflowAt = -1;
   private i = 0;
   private afterOWord = false;
   /** How many tokens message() has checked, and whether all were a block delete or N. */
@@ -133,9 +139,9 @@ class LineScanner {
         // diagnostic, not two lone surrogate halves.
         const cp = text.codePointAt(start) ?? c;
         const width = cp > 0xffff ? 2 : 1;
-        // A run of the same character is one diagnostic, and a line reports at most 100
-        // distinct ones: a 2M-character line of junk cost a second and hundreds of MB of
-        // diagnostics (one each).
+        // A run of the same character is one diagnostic (and report() lists at most
+        // MAX_LINE_FINDINGS a line): a 2M-character line of junk cost a second and
+        // hundreds of MB of diagnostics (one each).
         const ch = String.fromCodePoint(cp);
         const prev = this.diagnostics.at(-1);
         if (
@@ -148,18 +154,11 @@ class LineScanner {
             span: { start: prev.span.start, end: start + width },
             message: `Unexpected characters "${ch}" (${(start + width - prev.span.start) / width} of them)`,
           };
-        } else if (++this.unexpected <= 100)
+        } else
           this.report('error', 'SYNTAX_UNEXPECTED_CHARACTER', `Unexpected character "${ch}"`, {
             start,
             end: start + width,
           });
-        else if (this.unexpected === 101)
-          this.report(
-            'error',
-            'SYNTAX_UNEXPECTED_CHARACTER',
-            'More unexpected characters on this line are not listed',
-            { start, end: text.length },
-          );
         this.i += width;
       }
     }
@@ -609,7 +608,28 @@ class LineScanner {
     // The same finding at the same place once (a value re-read after a failed sign chain,
     // as in `X-##`, would report its "#" twice).
     const key = `${code}@${span.start}-${span.end}`;
+    // Past the cap, one note stands for the rest, with the worst severity among them: a
+    // line of 2M bare letters made one finding (and one Set key) per letter (review of
+    // #51). Nothing more is remembered once the note exists.
+    const note = this.diagnostics[this.overflowAt];
+    if (note) {
+      if (RANK[severity] > RANK[note.severity])
+        this.diagnostics[this.overflowAt] = { ...note, severity };
+      return;
+    }
     if (this.reported.has(key)) return;
+    if (++this.findings > MAX_LINE_FINDINGS) {
+      this.overflowAt = this.diagnostics.length;
+      this.diagnostics.push({
+        severity,
+        code,
+        message: 'More problems on this line are not listed',
+        line: this.lineNo,
+        span: { start: span.start, end: this.text.length },
+      });
+      this.reported.clear();
+      return;
+    }
     this.reported.add(key);
     this.diagnostics.push({ severity, code, message, line: this.lineNo, span });
   }
