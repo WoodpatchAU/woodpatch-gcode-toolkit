@@ -909,3 +909,58 @@ describe('units: the thirteenth review of #37', () => {
     );
   });
 });
+
+describe('units: the fourteenth review of #37', () => {
+  const M66 = 'M66 P1 L3 Q5000';
+  const refused = (src: string, line: number, text: string) => {
+    const r = u(src, 'inch', 'mm', MASSO_G3);
+    expect(r.ok, src).toBe(false);
+    expect(r.diagnostics[0], src).toMatchObject({ code: 'TRANSFORM_CONTROL_FLOW', line });
+    expect(r.diagnostics[0]?.message).toContain(text);
+  };
+
+  it('refuses an M66 whose S is not one whole number', () => {
+    // S1.5: rounded it skips two lines, truncated one, and then line 7 runs under G3.
+    const arc = (s: string) =>
+      `G21 G90 G17 G94\nG0 X0 Y0 Z5\nG1 Z-1 F100\nG3 X0 Y0 I-1 J0\n${M66} ${s}\nG2 X0 Y0 I-1 J0\nX0 Y0.0001 I-1 J0\nG0 Z5\nM30`;
+    refused(arc('S1.5'), 5, "isn't a whole number");
+    refused(arc('S1.4'), 5, "isn't a whole number");
+    // Two S words: which one counts would depend on the order.
+    refused(arc('S2 S1'), 5, 'more than one S');
+    refused(arc('S1 S2'), 5, 'more than one S');
+    // A whole number written with a decimal point is still that number.
+    expect(u(`G21 G90\nG1 X0 F100\n${M66} S1.0\nG1 X5\nX6\nM30`, 'inch', 'mm', MASSO_G3).ok).toBe(
+      true,
+    );
+  });
+
+  it('compares the motion before EVERY range the motion word may be in', () => {
+    // Outer range not met, inner met: G1 X1 is skipped, and X2 runs under G0 (the
+    // outer range's G0 Z5 ran). Comparing only the first range's motion misses it.
+    refused(
+      `G21 G90\nG1 X0 F100\n${M66} S3\nG0 Z5\n${M66} S1\nG1 X1\nX2\nM30`,
+      6,
+      'relies on the motion',
+    );
+  });
+
+  it('scans a long range in linear time', () => {
+    // One range over alternating G0/G1 lines, every one a motion word: was quadratic.
+    const program = (n: number) => {
+      let src = `G21 G90\nG1 X0 F100\n${M66} S999999\n`;
+      for (let i = 0; i < n; i++) src += i % 2 ? 'G1 X1\n' : 'G0 X0\n';
+      return `${src}M30`;
+    };
+    const time = (n: number) => {
+      const t0 = performance.now();
+      u(program(n), 'inch', 'mm', MASSO_G3);
+      return performance.now() - t0;
+    };
+    time(2000); // warm up
+    const small = time(5000);
+    const large = time(40_000);
+    // Eight times the lines: ~8x if linear, ~64x if quadratic. 32x leaves room for a busy
+    // machine; the floor ignores tiny runs.
+    expect(large, `${small} ms → ${large} ms`).toBeLessThan(Math.max(32 * small, 400));
+  }, 60_000);
+});

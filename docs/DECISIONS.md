@@ -1899,6 +1899,20 @@ RUNS, and compares only what it models. So:
   A conditional end ("M66 … S1", then M30) with code after it is refused. An extra
   checked pass would accept it, which is a possible follow-up.
 
+**Corrected in the fourteenth review.**
+
+- **An M66 whose S isn't a single whole number is refused.** S1.5 skips one line or
+  two, depending on whether Masso rounds or truncates, and "S2 S1" depends on which S
+  it reads. S1.0 is still S1.
+- **The reliance scan is linear.** It starts at the nearest physical end of the
+  motion word's ranges, and the scan is shared by every motion word with the same
+  ranges. A 40,000-line range had taken 89 s; it now takes under a second.
+- **Not changed, and noted:**
+  - The physical-line rule assumes the parser's lines are Masso's lines. A lone CR
+    counts as a line break here; whether Masso agrees is unconfirmed.
+  - It still over-refuses when a motion word always runs before the follower
+    whenever the follower runs. That's conservative.
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long

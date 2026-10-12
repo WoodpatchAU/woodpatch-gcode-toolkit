@@ -213,7 +213,9 @@ export function convertUnits(
   // within the first n physical lines after the M66, however Masso counts (review of
   // #37: the generous count is right for refusing, wrong for exempting).
   const mayBeIn = new Map<number, Set<number>>();
-  const surelyIn = new Map<number, Set<number>>();
+  // The index of the last line each range surely holds (by its M66 line): the range
+  // surely holds every line from its M66 up to there, and no other.
+  const surelyTo = new Map<number, number>();
   const addTo = (m: Map<number, Set<number>>, n: number, range: number) =>
     (m.get(n) ?? m.set(n, new Set()).get(n))?.add(range);
   let skipRanges = 0;
@@ -221,11 +223,24 @@ export function convertUnits(
     program.lines.forEach((line, i) => {
       const ws = line.tokens.filter((t): t is WordToken => t.kind === 'word');
       if (!ws.some((w) => w.letter === 'M' && num0(w) === 66)) return;
-      const sWord = ws.find((w) => w.letter === 'S');
-      let left = sWord ? Math.round(num0(sWord) ?? 0) : 0;
+      // S counts lines, so only a single whole number has a meaning anyone can rely on.
+      // S1.5 may skip one line or two (rounded, truncated?), and "S2 S1" either: refused,
+      // rather than guessing (review of #37).
+      const sWords = ws.filter((w) => w.letter === 'S');
+      const s0 = sWords[0] ? (num0(sWords[0]) ?? 0) : 0;
+      if (sWords.length > 1 || !Number.isInteger(s0)) {
+        error(
+          line.lineNo,
+          'TRANSFORM_CONTROL_FLOW',
+          sWords.length > 1
+            ? 'This M66 has more than one S, so how many lines it skips is unclear. Refusing'
+            : `M66 S${s0} isn't a whole number of lines, so how many lines it skips is unclear. Refusing`,
+        );
+        return;
+      }
+      let left = Math.max(0, s0);
       let moves = false;
-      for (let j = i + 1; j < program.lines.length && j <= i + left; j++)
-        addTo(surelyIn, (program.lines[j] as Line).lineNo, line.lineNo);
+      surelyTo.set(line.lineNo, Math.min(i + left, program.lines.length - 1));
       for (let j = i + 1; j < program.lines.length && left > 0; j++) {
         const l = program.lines[j] as Line;
         skipFrom.set(l.lineNo, line.lineNo);
@@ -246,6 +261,10 @@ export function convertUnits(
   const wordsOf = (l: Line) => l.tokens.filter((t): t is WordToken => t.kind === 'word');
   const motionWord = (ws: WordToken[]) =>
     ws.some((w) => w.letter === 'G' && MOTION.has(num0(w) ?? -1));
+  // A line that runs on every path: in no range, and not block-deletable where "/" is a
+  // switch. M66 ranges are Masso's, where "/" always runs; a custom dialect that had
+  // both M66 ranges and a block-delete switch would get no check of the two combined
+  // (a "/" line inside a range), beyond this one.
   const alwaysRuns = (l: Line) =>
     !skipFrom.has(l.lineNo) &&
     !(
@@ -276,30 +295,45 @@ export function convertUnits(
       textMotion.set(l.lineNo, m);
     }
   }
-  program.lines.forEach((line, i) => {
-    const ranges = mayBeIn.get(line.lineNo);
-    if (ranges === undefined || !motionWord(wordsOf(line))) return;
-    for (let j = i + 1; j < program.lines.length; j++) {
+  // The scan from a line on, for a given set of ranges: whether a follower relies on a
+  // motion the met path may change. Memoised: every motion line of one range scans the
+  // same followers (review of #37: a 40k-line range was quadratic, 89 s).
+  const scans = new Map<string, boolean>();
+  const leaksFrom = (from: number, ranges: readonly number[]): boolean => {
+    const key = `${from}:${ranges.join(',')}`;
+    const known = scans.get(key);
+    if (known !== undefined) return known;
+    let leaks = false;
+    for (let j = from; j < program.lines.length; j++) {
       const l = program.lines[j] as Line;
-      // Surely skipped whenever the motion word is: it runs only when that does.
-      const sure = surelyIn.get(l.lineNo);
-      if (sure && [...ranges].every((r) => sure.has(r))) continue;
       const ws = wordsOf(l);
       if (motionWord(ws)) {
-        if (alwaysRuns(l)) return;
+        if (alwaysRuns(l)) break;
         continue;
       }
       if (!reliesOnMotion(ws)) continue;
       // It leaks only if a met path leaves another motion in force than the text says
-      // here (review of #37: CAM restating the modal G1 in a range was refused).
-      // A later follower can differ even if this one doesn't (another range's motion
-      // word may change the text's), so the scan goes on to the next always-run one.
+      // here (review of #37: CAM restating the modal G1 in a range was refused). A
+      // later follower can differ even if this one doesn't (another range's motion word
+      // may change the text's), so the scan goes on to the next always-run one.
       const here = textMotion.get(l.lineNo);
-      if ([...ranges].some((r) => textMotion.get(r) !== here)) {
-        reliedOn.add(line.lineNo);
-        return;
+      if (ranges.some((r) => textMotion.get(r) !== here)) {
+        leaks = true;
+        break;
       }
     }
+    scans.set(key, leaks);
+    return leaks;
+  };
+  program.lines.forEach((line, i) => {
+    const may = mayBeIn.get(line.lineNo);
+    if (may === undefined || !motionWord(wordsOf(line))) return;
+    const ranges = [...may].sort((a, b) => a - b);
+    // The followers up to the nearest end of these ranges are surely skipped whenever
+    // the motion word is (each range holds them), so they run only when it does. The
+    // scan starts after that.
+    const from = Math.max(i + 1, Math.min(...ranges.map((r) => (surelyTo.get(r) ?? i) + 1)));
+    if (leaksFrom(from, ranges)) reliedOn.add(line.lineNo);
   });
   // A program end (M2, M30, %) in a range: met, the program runs on past it, but every
   // check runs the path that stops there (review of #37: "M66 / M30" then a G3 sliver
