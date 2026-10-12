@@ -36,7 +36,23 @@ export type TransformOp =
       readonly z?: number;
       /** The point scaled about (mm). Default: the origin. */
       readonly about?: { readonly x?: number; readonly y?: number; readonly z?: number };
+    }
+  | {
+      /**
+       * Converts the program's units (parcel 4b, ADR-0034): every length and feed, and
+       * the G20/G21 words. Not a geometric map: nothing moves.
+       */
+      readonly op: 'units';
+      readonly to: 'mm' | 'inch';
+      /**
+       * The units of a program that states none before it moves: the user's units
+       * preference (operator decision, 2026-09-28). Default mm.
+       */
+      readonly assume?: 'mm' | 'inch';
     };
+
+/** The ops that are geometric maps (everything but a units conversion). */
+export type GeometricOp = Exclude<TransformOp, { op: 'units' }>;
 
 export interface AffineMap {
   readonly a: number;
@@ -113,13 +129,21 @@ export function invalidOp(op: TransformOp): string | null {
         return 'scale factors must be positive (a negative factor is a mirror: use mirror)';
       return null;
     }
+    case 'units': {
+      const bad = only('to', 'assume');
+      if (bad) return bad;
+      const u = (v: unknown) => v === 'mm' || v === 'inch';
+      if (!u(o['to'])) return "a units conversion needs to: 'mm' or 'inch'";
+      if (o['assume'] !== undefined && !u(o['assume'])) return "assume is 'mm' or 'inch'";
+      return null;
+    }
     default:
       return 'unknown operation';
   }
 }
 
 /** The op's affine map. Rotations by multiples of 90° use exact 0/±1 entries. */
-export function mapOf(op: TransformOp): AffineMap {
+export function mapOf(op: GeometricOp): AffineMap {
   switch (op.op) {
     case 'translate':
       return {

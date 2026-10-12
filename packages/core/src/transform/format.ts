@@ -48,3 +48,22 @@ function roundTo(v: number, places: number): number {
   const f = 10 ** places;
   return Math.round(v * f) / f;
 }
+
+/**
+ * How a converted number is written (units conversion, ADR-0034). The source's decimal
+ * places mean nothing across units (0.48602 in is 12.3449… mm), so the value is rounded
+ * to `places` (5 for inches, 3 for millimetres) and trailing zeros dropped: 25.4 mm is
+ * written 1.0 in, 10 mm 0.3937 in, 254 mm/min 10 in/min. A source with a decimal point
+ * keeps at least one decimal; one without none, when the result is whole. Leading-zero
+ * style (".5") and no negative zero, as {@link formatLike}.
+ */
+export function formatConverted(value: number, source: string, places: number): string {
+  assertWritable(value);
+  const f = 10 ** places;
+  let text = (Math.round(value * f) / f).toFixed(places);
+  if (text.includes('.')) text = text.replace(/0+$/, '');
+  if (text.endsWith('.')) text = source.includes('.') ? `${text}0` : text.slice(0, -1);
+  if (/^-0(\.0*)?$/.test(text)) text = text.slice(1);
+  if (/^[+-]?\./.test(source)) text = text.replace(/^(-?)0\./, '$1.');
+  return text;
+}

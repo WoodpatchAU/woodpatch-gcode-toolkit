@@ -5,7 +5,8 @@ import { GENERIC, type Dialect } from '../dialect/profiles.js';
 import { editLine, parse, write, type LineEdit } from '../syntax/program.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
 import { formatLike, MAX_WRITTEN, writable } from './format.js';
-import { invalidOp, mapOf, type TransformOp } from './map.js';
+import { invalidOp, mapOf, type GeometricOp, type TransformOp } from './map.js';
+import { convertUnits } from './units.js';
 
 /**
  * Transforms (parcel 4a, ADR-0033): translate, rotate, mirror and scale a program by
@@ -53,7 +54,10 @@ export function transform(
       });
       return { program, diagnostics, changedLines: 0, ok: false };
     }
-    const r = applyOne(current, op, dialect);
+    const r =
+      op.op === 'units'
+        ? convertUnits(current, op.to, op.assume ?? 'mm', dialect)
+        : applyOne(current, op, dialect);
     diagnostics.push(...r.diagnostics);
     if (!r.ok) return { program, diagnostics, changedLines: 0, ok: false };
     current = r.program;
@@ -104,7 +108,7 @@ interface Findings {
   warnings: Map<string, { line: number; count: number; message: string }>;
 }
 
-function applyOne(program: Program, op: TransformOp, dialect: Dialect) {
+function applyOne(program: Program, op: GeometricOp, dialect: Dialect) {
   const m = mapOf(op);
   const det = m.a * m.d - m.b * m.c;
   const diag = m.b === 0 && m.c === 0; // each axis maps to itself

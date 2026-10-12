@@ -180,6 +180,7 @@ class Interpreter {
   private readonly rules: ExpressionRules;
   private readonly behaviour: InterpreterRules;
   private readonly blockDelete: boolean;
+  private readonly onBlock: InterpretOptions['onBlock'];
   private readonly steps: Step[] = [];
   private readonly diagnostics: Diagnostic[] = [];
   private readonly numbered = new Map<number, number>();
@@ -201,6 +202,10 @@ class Interpreter {
   private motion: ModalState['motion'] = 'G0';
   private plane: Plane = 'XY';
   private units: 'mm' | 'inch' = 'mm';
+  /** The host's units preference, if it gave one (then relying on it is warned about). */
+  private readonly unitsPreference: 'mm' | 'inch' | undefined;
+  /** How many steps existed when a G20/G21 first ran; null until one does. */
+  private unitsStatedAt: number | null = null;
   private distance: 'absolute' | 'incremental' = 'absolute';
   private arcDistance: 'absolute' | 'incremental' = 'incremental';
   private feedMode: ModalState['feedMode'] = 'per-minute';
@@ -258,7 +263,10 @@ class Interpreter {
     this.behaviour =
       options.interpreterRules ?? options.dialect?.interpreter ?? LINUXCNC_INTERPRETER_RULES;
     this.blockDelete = options.blockDelete ?? true;
+    this.onBlock = options.onBlock;
     this.position = { ...ZERO, ...options.start };
+    this.units = options.units ?? 'mm';
+    this.unitsPreference = options.units;
     this.machineHome = options.machine?.home ?? {};
     this.machinePark = options.machine?.park;
     this.resolve = options.resolveProgram;
@@ -307,6 +315,19 @@ class Interpreter {
         message: `${skippedAfterEnd} line(s) after the program end were not run`,
         line: firstSkipped,
       });
+    }
+    // A program that moves before any G20/G21 runs relies on the units preference.
+    if (this.unitsPreference !== undefined) {
+      const first = this.steps.findIndex((s) => s.kind === 'linear' || s.kind === 'arc');
+      const move = this.steps[first];
+      if (move && (this.unitsStatedAt === null || this.unitsStatedAt > first))
+        this.add({
+          severity: 'warning',
+          code: 'SEMANTIC_UNITS_ASSUMED',
+          message: `The program moves before it states its units (G20/G21): read as ${this.unitsPreference === 'inch' ? 'inches' : 'millimetres'}, your units preference. A controller reads it in its own default units, so check that matches`,
+          line: move.line,
+          ...(move.file ? { file: move.file } : {}),
+        });
     }
     // The note takes the worst severity it stands for: "0 errors" must never hide one.
     if (this.suppressed > 0)
@@ -492,6 +513,7 @@ class Interpreter {
     }
     if (!this.checkLine(n, words)) return;
 
+    this.reportBlock(n);
     this.execute(n, words);
     for (const a of assignments) this.assign(line, a.target, a.value);
     // M98/M99 act after the rest of the line (their parameters are already set).
@@ -543,6 +565,8 @@ class Interpreter {
     }
     const motion = g ?? this.motion;
     if (motion !== 'G0' && motion !== 'G1') return false;
+    // The line will run: report it before it changes anything, as the general path does.
+    this.reportBlock(line.lineNo);
     this.motion = motion;
     // An ordinary motion ends a run of canned cycles (as the general path does).
     this.cycleInitial = null;
@@ -559,6 +583,13 @@ class Interpreter {
     if (this.settleLine !== null && motion === 'G1') this.adviseSettle(line.lineNo);
     this.move(line.lineNo, words, false, NO_USED);
     return true;
+  }
+
+  /** Tells the `onBlock` hook, if any, that line `n` is about to run, and in what state. */
+  private reportBlock(n: number): void {
+    if (!this.onBlock) return;
+    const file = this.frame.program.name;
+    this.onBlock({ line: n, ...(file === null ? {} : { file }), state: this.state() });
   }
 
   /** Letters, repeats and modal groups. False means: do not run the line. */
@@ -866,6 +897,10 @@ class Interpreter {
     if (g.has('17')) this.plane = 'XY';
     if (g.has('18')) this.plane = 'ZX';
     if (g.has('19')) this.plane = 'YZ';
+    // The first G20/G21 that actually runs, by step: exact under subroutines, skipped
+    // branches and block delete (SEMANTIC_UNITS_ASSUMED, review of toolkit #37).
+    if ((g.has('20') || g.has('21')) && this.unitsStatedAt === null)
+      this.unitsStatedAt = this.steps.length;
     this.units = unitsAfter;
     if (g.has('40')) this.cutterComp = 'off';
     if (g.has('41') || g.has('42')) {
