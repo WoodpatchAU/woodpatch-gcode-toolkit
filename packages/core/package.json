@@ -1,7 +1,7 @@
 {
   "name": "@woodpatch/gcode-core",
   "version": "0.0.0",
-  "description": "G-code tokenizer, parser, interpreter, transforms and time estimator. Zero runtime dependencies.",
+  "description": "G-code tokenizer, parser, interpreter and transforms. Zero runtime dependencies.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
