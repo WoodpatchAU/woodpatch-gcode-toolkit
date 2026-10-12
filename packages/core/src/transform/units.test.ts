@@ -834,3 +834,78 @@ describe('units: the twelfth review of #37', () => {
     }
   });
 });
+
+describe('units: the thirteenth review of #37', () => {
+  const M66 = (s: number) => `M66 P1 L3 Q5000 S${s}`;
+  const refusedAt = (src: string, to: 'mm' | 'inch', line: number, text: string) => {
+    const r = u(src, to, undefined, MASSO_G3);
+    expect(r.ok, src).toBe(false);
+    expect(r.diagnostics[0], src).toMatchObject({ code: 'TRANSFORM_CONTROL_FLOW', line });
+    expect(r.diagnostics[0]?.message).toContain(text);
+  };
+
+  it("exempts a follower only within the range's physical lines (rawcount)", () => {
+    // Masso's S count is unconfirmed: if it counts every physical line, the follower
+    // after a comment, blank or N-only line is outside the range, under the old motion.
+    const arc = (gap: string, unit: string, y: string, i: string) =>
+      `${unit} G90 G17 G94\nG0 X0 Y0 Z5\nG1 Z-1 F100\nG3 X0 Y0 I${i} J0\n${M66(2)}\nG2 X0 Y0 I${i} J0\n${gap}\nX0 Y${y} I${i} J0\nG0 Z5\nM30`;
+    for (const gap of ['(comment)', '', 'N100'])
+      refusedAt(arc(gap, 'G21', '0.0001', '-1'), 'inch', 6, 'relies on the motion');
+    refusedAt(arc('(comment)', 'G20', '0.00001', '-0.04'), 'mm', 6, 'relies on the motion');
+    // The peck Q variant (rawq).
+    refusedAt(
+      `G21 G90 G17\nG99 G83 X0 Y0 Z-3 R1 Q1 F100\n${M66(2)}\nG0 Z5\n(comment)\nX5 Y5 Q1\nG80\nM30`,
+      'inch',
+      4,
+      'relies on the motion',
+    );
+  });
+
+  it('refuses a program end inside a range when code follows it (m30range)', () => {
+    for (const end of ['M30', 'M2', '%'])
+      refusedAt(
+        `G21 G90 G17\nG0 X0 Y0 Z5\nG1 Z-1 F100\n${M66(1)}\n${end}\nG3 X0 Y0.0001 I-1 J0\nM30`,
+        'inch',
+        5,
+        'ends the program',
+      );
+    // A program end with nothing after it can't run on into anything.
+    expect(u(`G21 G90\nG1 X1 F100\n${M66(1)}\nM30\n`, 'inch', 'mm', MASSO_G3).ok).toBe(true);
+  });
+
+  it('accepts a range that restates the motion already in force', () => {
+    // CAM restates the modal G1: whichever path runs, the follower runs under G1.
+    const src = `G21 G90\nG1 X0 Y0 F100\n${M66(1)}\nG1 X5 Y5\nX6 Y6\nM30`;
+    expect(u(src, 'inch', 'mm', MASSO_G3).ok).toBe(true);
+    // ...but not when another range's motion word changes the text's motion first.
+    refusedAt(
+      `G21 G90\nG1 X0 Y0 F100\n${M66(1)}\nG1 X5 Y5\n${M66(1)}\nG0 Z5\nX6 Y6\nM30`,
+      'inch',
+      4,
+      'relies on the motion',
+    );
+  });
+
+  it("exempts a follower in an inner range nested in the motion word's range", () => {
+    // The outer range (3 physical lines) surely holds the inner one's X1.
+    const src = `G21 G90\nG1 X0 F100\n${M66(3)}\nG0 Z5\n${M66(1)}\nX1\nG1 X2\nM30`;
+    expect(u(src, 'inch', 'mm', MASSO_G3).ok).toBe(true);
+    // The motion word in the inner range, the follower only in the outer one: met
+    // inner alone skips the motion word and runs the follower.
+    refusedAt(
+      `G21 G90\nG1 X0 F100\n${M66(3)}\n${M66(1)}\nG0 Z5\nX1\nG1 X2\nM30`,
+      'inch',
+      5,
+      'relies on the motion',
+    );
+    // The motion word in both ranges, the follower surely in the inner one only: met
+    // outer alone skips the motion word and runs the follower. Every range the motion
+    // word may be in must surely hold the follower.
+    refusedAt(
+      `G21 G90\nG1 X0 F100\n${M66(2)}\n${M66(2)}\nG0 Z5\nX1\nG1 X2\nM30`,
+      'inch',
+      5,
+      'relies on the motion',
+    );
+  });
+});

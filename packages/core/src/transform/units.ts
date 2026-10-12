@@ -209,6 +209,13 @@ export function convertUnits(
   // rounding has its own carry chain (review of #37). Counted generously: up to the n-th
   // line of code after, so blank and comment lines can't shorten the range.
   const skipFrom = new Map<number, number>(); // a line in a range → its M66 line
+  // Every range a line may be in (counted generously), and every range it is SURELY in:
+  // within the first n physical lines after the M66, however Masso counts (review of
+  // #37: the generous count is right for refusing, wrong for exempting).
+  const mayBeIn = new Map<number, Set<number>>();
+  const surelyIn = new Map<number, Set<number>>();
+  const addTo = (m: Map<number, Set<number>>, n: number, range: number) =>
+    (m.get(n) ?? m.set(n, new Set()).get(n))?.add(range);
   let skipRanges = 0;
   if (dialect.interpreter.m66 === 'masso-wait')
     program.lines.forEach((line, i) => {
@@ -217,9 +224,12 @@ export function convertUnits(
       const sWord = ws.find((w) => w.letter === 'S');
       let left = sWord ? Math.round(num0(sWord) ?? 0) : 0;
       let moves = false;
+      for (let j = i + 1; j < program.lines.length && j <= i + left; j++)
+        addTo(surelyIn, (program.lines[j] as Line).lineNo, line.lineNo);
       for (let j = i + 1; j < program.lines.length && left > 0; j++) {
         const l = program.lines[j] as Line;
         skipFrom.set(l.lineNo, line.lineNo);
+        addTo(mayBeIn, l.lineNo, line.lineNo);
         if (l.tokens.some((t) => t.kind === 'word' && 'XYZR'.includes(t.letter))) moves = true;
         // A line of code counts; one holding only an N number doesn't (generous).
         if (l.tokens.some((t) => t.kind === 'word' && t.letter !== 'N')) left--;
@@ -255,23 +265,53 @@ export function convertUnits(
         'XYZIJKRQ'.includes(w.letter) && !owned.includes(w.letter) && !(w.letter === 'Q' && mReads),
     );
   };
+  // The motion each line's text leaves in force, and the motion before each range (what
+  // its met path keeps, once its motion words are skipped).
+  const textMotion = new Map<number, number | null>();
+  {
+    let m: number | null = null;
+    for (const l of program.lines) {
+      for (const w of wordsOf(l))
+        if (w.letter === 'G' && MOTION.has(num0(w) ?? -1)) m = num0(w) ?? m;
+      textMotion.set(l.lineNo, m);
+    }
+  }
   program.lines.forEach((line, i) => {
-    const range = skipFrom.get(line.lineNo);
-    if (range === undefined || !motionWord(wordsOf(line))) return;
+    const ranges = mayBeIn.get(line.lineNo);
+    if (ranges === undefined || !motionWord(wordsOf(line))) return;
     for (let j = i + 1; j < program.lines.length; j++) {
       const l = program.lines[j] as Line;
-      // Skipped together with the motion word: it runs only when the motion word does.
-      if (skipFrom.get(l.lineNo) === range) continue;
+      // Surely skipped whenever the motion word is: it runs only when that does.
+      const sure = surelyIn.get(l.lineNo);
+      if (sure && [...ranges].every((r) => sure.has(r))) continue;
       const ws = wordsOf(l);
       if (motionWord(ws)) {
         if (alwaysRuns(l)) return;
         continue;
       }
-      if (reliesOnMotion(ws)) {
+      if (!reliesOnMotion(ws)) continue;
+      // It leaks only if a met path leaves another motion in force than the text says
+      // here (review of #37: CAM restating the modal G1 in a range was refused).
+      // A later follower can differ even if this one doesn't (another range's motion
+      // word may change the text's), so the scan goes on to the next always-run one.
+      const here = textMotion.get(l.lineNo);
+      if ([...ranges].some((r) => textMotion.get(r) !== here)) {
         reliedOn.add(line.lineNo);
         return;
       }
     }
+  });
+  // A program end (M2, M30, %) in a range: met, the program runs on past it, but every
+  // check runs the path that stops there (review of #37: "M66 / M30" then a G3 sliver
+  // cut a full circle). Refused when code follows it.
+  const endsInRange = new Set<number>();
+  program.lines.forEach((line, i) => {
+    if (!skipFrom.has(line.lineNo)) return;
+    const ends =
+      line.tokens.some((t) => t.kind === 'percent') ||
+      wordsOf(line).some((w) => w.letter === 'M' && (num0(w) === 2 || num0(w) === 30));
+    if (ends && program.lines.slice(i + 1).some((l) => wordsOf(l).length > 0))
+      endsInRange.add(line.lineNo);
   });
   // G91 canned cycles anywhere: then a motion word inside a skip range can merge two
   // cycle series on the met path, and a G91 R is measured from where its series began.
@@ -410,6 +450,12 @@ export function convertUnits(
         n,
         'TRANSFORM_CONTROL_FLOW',
         `M66 at line ${skippedBy} skips this line when its input condition is met, and this line changes a mode: the result would depend on the input. Refusing`,
+      );
+    else if (endsInRange.has(n))
+      error(
+        n,
+        'TRANSFORM_CONTROL_FLOW',
+        `M66 at line ${skippedBy} skips this line when its input condition is met, and this line ends the program: the lines after it then run, and only the run that stops here is checked. Refusing`,
       );
     else if (reliedOn.has(n))
       error(

@@ -1883,6 +1883,22 @@ RUNS, and compares only what it models. So:
   G91 canned cycles, an arc's R and a G90 cycle's R included. That's conservative, and
   the message now says why.
 
+**Corrected in the thirteenth review.**
+
+- **A follower is exempt only if it is SURELY skipped whenever the motion word is.**
+  It must lie within the first n physical lines after the M66 of every range that
+  may hold the motion word. Masso's S count is unconfirmed: if it counts comments,
+  blanks and N-only lines, a follower after one of them is outside the range, under
+  the old motion. The generous count stays for refusing.
+- **A follower leaks only if a met path leaves another motion in force than its text
+  says.** The motion before the range is compared with the text's motion at the
+  follower, and the scan goes on to the next always-run motion word. CAM that
+  restates the modal G1 in a range is no longer refused.
+- **A program end (M2, M30, `%`) inside a range is refused when code follows it.**
+  Met, the program runs on past it, but every check runs the path that stops there.
+  A conditional end ("M66 … S1", then M30) with code after it is refused. An extra
+  checked pass would accept it, which is a possible follow-up.
+
 **Evidence.** On every fixture, converting to inches and to mm, with both unit
 assumptions, moves nothing: every step lands where it did (within 2 µm) at the same feed
 (within 0.01 mm/min), with arc directions unchanged. A fast-check property converts long
