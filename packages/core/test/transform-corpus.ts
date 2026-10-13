@@ -21,6 +21,7 @@ import {
   type Step,
   type GeometricOp,
 } from '../src/index.js';
+import { arcPoint, startAngle } from '../src/path/path.js';
 
 // ── The corpus: every transform is either refused cleanly or geometrically right ──
 
@@ -353,6 +354,37 @@ export function corpusSuite(entries: [string, Dialect][]): void {
       }
     }, 60_000);
 
+    // Arc to line (parcel 4d, ADR-0037): each arc becomes chords within the tolerance
+    // of it, ending exactly where it did, and every other move is untouched. A refusal
+    // leaves the file as it was.
+    it('arcs to lines: every chord within 0.01 mm of its arc, everything else as it was', () => {
+      const tol = 0.01;
+      const r = transform(parse(src), [{ op: 'arcs', tolerance: tol }], { dialect });
+      if (!r.ok) {
+        expect(write(r.program)).toBe(src);
+        return;
+      }
+      const after = motions(write(r.program), dialect);
+      let j = 0;
+      for (const b of before) {
+        if (b.kind !== 'arc') {
+          const a = after[j++] as Motion;
+          expect(a.kind, `line ${b.line}`).toBe(b.kind);
+          for (const k of ['X', 'Y', 'Z'] as const)
+            expect(Math.abs(a.to[k] - b.to[k]), `line ${b.line} ${k}`).toBeLessThan(1e-9);
+          continue;
+        }
+        const chords = chordsOf(b, after, j);
+        expect(chords.length, `line ${b.line}`).toBeGreaterThan(0);
+        expect(arcDeviation(b, chords), `line ${b.line}`).toBeLessThanOrEqual(tol * (1 + 1e-9));
+        const last = chords.at(-1) as Motion;
+        for (const k of ['X', 'Y', 'Z'] as const)
+          expect(Math.abs(last.to[k] - b.to[k]), `line ${b.line} ${k}`).toBeLessThan(1e-6);
+        j += chords.length;
+      }
+      expect(j).toBe(after.length);
+    }, 120_000);
+
     it('rotating a quarter turn four times gives the file back, byte for byte', () => {
       let p = parse(src);
       for (let i = 0; i < 4; i++) {
@@ -382,4 +414,39 @@ export function corpusSuite(entries: [string, Dialect][]): void {
       60_000,
     );
   });
+}
+
+type ArcStep = Extract<Step, { kind: 'arc' }>;
+const PLANE_AB = { XY: ['X', 'Y'], ZX: ['Z', 'X'], YZ: ['Y', 'Z'] } as const;
+
+/**
+ * The chords an arc became, starting at after[j]: the chords are evenly spaced in
+ * angle, so the first one's angle gives their number.
+ */
+function chordsOf(arc: ArcStep, after: readonly Motion[], j: number): Motion[] {
+  const first = after[j];
+  if (!first || first.kind !== 'linear' || first.rapid) return [];
+  const [a, b] = PLANE_AB[arc.plane];
+  const angle = Math.atan2(first.to[b] - arc.centre[b], first.to[a] - arc.centre[a]);
+  const turn = 2 * Math.PI;
+  const step = (((Math.sign(arc.sweep) * (angle - startAngle(arc))) % turn) + turn) % turn;
+  const n = Math.max(1, Math.round(Math.abs(arc.sweep) / (step || turn)));
+  return after.slice(j, j + n) as Motion[];
+}
+
+/** The largest distance from the chords to the arc, at the same fraction of its sweep. */
+function arcDeviation(arc: ArcStep, chords: readonly Motion[]): number {
+  const start = startAngle(arc);
+  const p = new Float64Array(3);
+  let worst = 0;
+  chords.forEach((c, i) => {
+    for (const u of [0, 0.25, 0.5, 0.75, 1]) {
+      arcPoint(arc, start, (i + u) / chords.length, p, 0);
+      const d = (['X', 'Y', 'Z'] as const).map(
+        (k, m) => c.from[k] + (c.to[k] - c.from[k]) * u - (p[m] as number),
+      );
+      worst = Math.max(worst, Math.hypot(...d));
+    }
+  });
+  return worst;
 }
