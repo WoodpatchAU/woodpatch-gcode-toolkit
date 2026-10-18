@@ -2364,3 +2364,100 @@ application files. Moving it to another host reopens the transport and identity 
 above. The limits are a test target in their own right: Phase 5 adds a hostile-input
 suite (expansion bombs, huge lines, deep nesting, superlinear shapes in every pass,
 oversized output) that must stay within the budgets.
+
+## ADR-0041: The machine record, version 1
+
+**Status:** Proposed, 2026-10-18 (parcel 5a). Frozen once the application that stores
+machine records signs off the shape. Binds `@woodpatch/gcode-db` and the estimator.
+
+**Context.** The time estimate feeds quotes, so the machine it's computed for must be
+explicit data, with honest provenance. The toolkit defines the record's format; the
+calling application stores the records and passes one in with each request. The toolkit
+never reads any store itself. The same record drives the travel check (does a program
+stay inside the machine's envelope?) and the estimator (Phase 5b). A user-defined
+controller (custom dialects) comes later, as an additive field.
+
+**Decision.**
+
+- **One JSON document per machine,** in millimetres, seconds and rpm throughout:
+
+  ```json
+  {
+    "format": "woodpatch-gcode-machine",
+    "version": 1,
+    "revision": 1,
+    "id": "caller-defined",
+    "name": "Router 1",
+    "dialect": "masso-g3",
+    "axes": {
+      "X": { "min": P, "max": P, "maxVelocity": P, "acceleration": P },
+      "Y": { "min": P, "max": P, "maxVelocity": P, "acceleration": P },
+      "Z": { "min": P, "max": P, "maxVelocity": P, "acceleration": P }
+    },
+    "rapidRate": P,
+    "planner": { "junctionDeviation": P, "blockRate": P, "lookahead": P },
+    "spindle": { "minRpm": P, "maxRpm": P, "spinUpSeconds": P, "spinDownSeconds": P },
+    "overheads": { "toolChangeSeconds": P, "programStartSeconds": P, "pauseSeconds": P },
+    "calibration": { "status": "uncalibrated" }
+  }
+  ```
+
+  - `dialect` is a built-in dialect id (`masso-g3`, `linuxcnc`, `generic`).
+  - `axes`: X, Y and Z are required. A, B and C are optional, with the same fields;
+    rotary axes in degrees, degrees/min and degrees/s².
+  - `min`/`max` are travel limits in MACHINE coordinates (mm). `maxVelocity` is in
+    mm/min, `acceleration` in mm/s². An optional `jerk` (mm/s³) is reserved for an
+    S-curve planner.
+  - `rapidRate` (mm/min) is optional: without it, rapids run at each axis's
+    `maxVelocity`.
+  - `planner`:
+    - `junctionDeviation` (mm): GRBL's cornering model.
+    - `blockRate` (blocks/s, optional): how many short blocks per second the controller
+      can process; dense tiny segments slow to it.
+    - `lookahead` (blocks, optional).
+  - `overheads` are fixed times added per event: per tool change, once per program, and
+    per M0/M1 pause (an assumed operator response).
+
+- **Every physical value carries its provenance.** `P` is `{ "value": number, "source":
+"seed" | "manual" | "measured" | "fitted" }`:
+  - **seed:** a starting point, nobody has checked it;
+  - **manual:** entered from a datasheet or the controller's settings;
+  - **measured:** timed or measured on the machine;
+  - **fitted:** set by calibration.
+    A reader can always tell which numbers are real.
+- **Calibration is a state, never a default.**
+  - `{ "status": "uncalibrated" }`, or
+  - `{ "status": "calibrated", "fittedOn": "YYYY-MM-DD", "timeFactor": number,
+"accelFactor": number, "residuals": { "jobs": n, "meanAbsPercent": number,
+"maxAbsPercent": number } }`.
+    Every estimate carries `calibrated: true | false` from it, and an uncalibrated
+    estimate is never priced automatically (ADR-0040).
+- **Validation is code in the toolkit, plus a JSON Schema for other languages.**
+  `validateMachine(record)` returns a list of problems, never throws: a missing field, a
+  wrong unit-free number (negative acceleration, `min >= max`, a zero velocity), an
+  unknown dialect, a misspelt field (refused, never read as zero). A JSON Schema file
+  for the same shape lets the storing application validate in its own language. No
+  validation library: core stays dependency-free.
+- **Versioning.** Every record carries `format`, `version` and `revision`.
+  - **revision:** within a version, a revision only ADDS optional fields. A record
+    states the revision it was written for. The toolkit refuses a revision newer than
+    it knows, and refuses unknown fields within a revision it does know, so a misspelt
+    field is caught, not ignored.
+  - **version:** a breaking change is a new version, with a documented migration from
+    the last. An unknown version is refused.
+  - Version 1 starts at revision 1.
+- **The travel check uses what is knowable.** A preview doesn't know the work offsets
+  the operator will set, so:
+  - **certain:** a program whose extent along an axis exceeds that axis's travel can
+    never fit. That's a warning, whatever the offsets;
+  - **certain:** moves in machine coordinates (G53, G28/G30 targets) are checked against
+    the limits directly;
+  - **when the user gives a work origin** (optionally, per job), every move is checked
+    against the limits.
+- **A seed profile ships uncalibrated.** It's the operator's router, from the plan's
+  starting values, every value `source: "seed"` until confirmed, and
+  `calibration.status: "uncalibrated"`. Calibration (5c) replaces it.
+
+**Consequences.** The estimator (5b) reads only this record, and its numbers can always
+be traced to a source. The format is frozen once the storing application signs off;
+anything it needs later arrives as an optional field in version 1, or as version 2.
