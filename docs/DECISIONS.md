@@ -2262,12 +2262,26 @@ a great deal of work.
   application's host, never on TCP (any local process can reach localhost). The socket's
   permissions (0660, the server's user and the caller's group) limit who can connect.
   Customers never reach it directly: their requests go through the calling application.
-- **Caller identity from the kernel.** On each connection the server reads the peer's
-  credentials (`SO_PEERCRED`) and refuses any uid but the caller's. A bearer token is
-  optional defence in depth, not the control: on one host, whatever can read the
-  caller's config can read a token. mTLS adds nothing on a local socket. If the server
-  ever moves off the host, this decision is reopened (mTLS, or a token over TLS plus
-  network restriction).
+- **Caller identity from the socket's permissions, which the kernel enforces.** Only
+  members of the socket's group can `connect()` to it, so the group IS the identity
+  check:
+  - systemd's socket unit creates it (`ListenStream=`) in a root-owned 0750 directory,
+    with `SocketUser=root`, `SocketGroup=` a dedicated group and `SocketMode=0660`, so
+    nothing else can replace it or change its mode;
+  - that group holds ONLY the calling application's user. An `ExecStartPre=` check
+    fails the service if its members are anything else, and changing them is a
+    reviewed change;
+  - the server never creates or changes the socket: it receives it from systemd.
+    A bearer token is optional defence in depth, not the control: on one host, whatever
+    can read the caller's config can read a token. The server logs whether it runs with
+    one. mTLS adds nothing on a local socket. If the server ever moves off the host, this
+    decision is reopened (mTLS, or a token over TLS plus network restriction).
+    _Amended before any server code:_ this first said the server would read the peer's
+    credentials (`SO_PEERCRED`) on each connection. Node doesn't expose them on a Unix
+    socket. Reading them would need a native addon, which this ADR rules out (it would
+    call for a container or VM). systemd's per-connection instances (`Accept=yes`) don't
+    help either: Node still can't read the credentials from the socket it's handed. So
+    the socket's permissions, enforced by the kernel at `connect()`, are the control.
 - **A sandbox that leaves a compromised parser with nothing.** It runs as a systemd
   service with:
   - its own unprivileged user (`DynamicUser=yes` or a dedicated no-login user);
@@ -2281,11 +2295,10 @@ a great deal of work.
     `RestrictNamespaces=yes`, `LockPersonality=yes`, `RestrictSUIDSGID=yes`,
     `ProtectClock=yes`, `ProtectHostname=yes`, `ProtectProc=invisible` and `UMask=0077`;
   - `MemoryMax=`, `CPUQuota=` and `TasksMax=`;
-  - the socket created by **socket activation**: a `.socket` unit creates it, with
-    `SocketGroup` set to the CALLER's group and `SocketMode=0660` (the dynamic user
-    doesn't exist yet when the socket is made, so it isn't the owner; the service
-    receives the listening socket from systemd and needs no permission on the file).
-    With `DynamicUser` and `ProtectSystem=strict` the service can't create the socket
+  - the socket created by **socket activation**, as above (the dynamic user doesn't
+    exist yet when the socket is made, so it isn't the owner; the service receives the
+    listening socket from systemd and needs no permission on the file). With
+    `DynamicUser` and `ProtectSystem=strict` the service can't create the socket
     itself, and the sandbox must not be loosened to let it;
   - NOT `MemoryDenyWriteExecute`, deliberately: V8's JIT needs writable executable
     memory.
