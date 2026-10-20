@@ -1245,7 +1245,7 @@ Each proceeds on its default and is listed in every PR that touches it.
 | Decision                                          | Default until decided                                                         |
 | ------------------------------------------------- | ----------------------------------------------------------------------------- |
 | Stack (ADR-0003)                                  | As ADR-0003                                                                   |
-| Where the estimate service runs                   | A private container beside the consuming backend; never public                |
+| Where the estimate service runs                   | Decided: ADR-0040 (a sandboxed service on a Unix socket, no container)        |
 | Source of truth for machine/tool/material records | Held by the consuming systems; the toolkit depends only on the schema         |
 | Machine parameter values                          | Placeholders flagged `TODO(calibrate)`; uncalibrated is a representable state |
 | Time-estimate accuracy target                     | ±5% after calibration                                                         |
@@ -2260,28 +2260,55 @@ a great deal of work.
 
 - **Not on any network.** The server listens only on a Unix socket on the calling
   application's host, never on TCP (any local process can reach localhost). The socket's
-  permissions (0660, the server's user and the caller's group) limit who can connect.
+  permissions (0660, owned by root and a dedicated group that holds only the caller)
+  limit who can connect, as the next point sets out.
   Customers never reach it directly: their requests go through the calling application.
-- **Caller identity from the socket's permissions, which the kernel enforces.** Only
-  members of the socket's group can `connect()` to it, so the group IS the identity
-  check:
-  - systemd's socket unit creates it (`ListenStream=`) in a root-owned 0750 directory,
-    with `SocketUser=root`, `SocketGroup=` a dedicated group and `SocketMode=0660`, so
-    nothing else can replace it or change its mode;
-  - that group holds ONLY the calling application's user. An `ExecStartPre=` check
-    fails the service if its members are anything else, and changing them is a
-    reviewed change;
-  - the server never creates or changes the socket: it receives it from systemd.
-    A bearer token is optional defence in depth, not the control: on one host, whatever
-    can read the caller's config can read a token. The server logs whether it runs with
-    one. mTLS adds nothing on a local socket. If the server ever moves off the host, this
-    decision is reopened (mTLS, or a token over TLS plus network restriction).
-    _Amended before any server code:_ this first said the server would read the peer's
-    credentials (`SO_PEERCRED`) on each connection. Node doesn't expose them on a Unix
-    socket. Reading them would need a native addon, which this ADR rules out (it would
-    call for a container or VM). systemd's per-connection instances (`Accept=yes`) don't
-    help either: Node still can't read the credentials from the socket it's handed. So
-    the socket's permissions, enforced by the kernel at `connect()`, are the control.
+- **Caller identity from the socket's permissions, which the kernel enforces.** Only a
+  process that can search the socket's directory and write the socket can `connect()`,
+  so the socket's group IS the identity check:
+  - **The directory:** `/run/wp-gcode/`, owned `root:<group>`, mode 0750, made by
+    `tmpfiles.d` (`d /run/wp-gcode 0750 root <group> -`, which also corrects an existing
+    directory). Not `RuntimeDirectory=`: that directory belongs to the service's user,
+    so the server could swap the socket, and it's deleted when the service stops while
+    the socket unit still listens.
+  - **The socket:** `/run/wp-gcode/gcode.sock`, created by systemd's socket unit
+    (`ListenStream=`, `SocketUser=root`, `SocketGroup=<group>`, `SocketMode=0660`,
+    `RemoveOnStop=yes`). Nobody but root can replace it or change its mode.
+  - **The server** never creates or changes the socket: it receives it from systemd.
+  - **The group** is a local system group with a reserved gid outside the directory
+    service's range (the kernel checks the gid NUMBER). It holds ONLY the calling
+    application's user, and changing that is a reviewed change: **the review is the
+    real control**.
+  - **A tripwire at start.** An `ExecStartPre=` check (no `-` prefix, so a failure
+    fails the start), also run by the socket unit, refuses to start when:
+    - the group's members aren't exactly the caller's user;
+    - any user other than the caller's has the gid as its PRIMARY group (`getent
+group` lists only supplementary members, so it reads `/etc/group` and
+      `/etc/passwd` directly);
+    - another group has the same gid, or `getent group <gid>` doesn't resolve to that
+      name;
+    - the directory isn't `root:<group>` 0750, or the socket isn't `root:<group>` 0660.
+      A failing check trips systemd's start limit, so the service stays down: it fails
+      closed.
+  - **The unit files** (socket, service, tmpfiles and the check) ship with the server's
+    PR, and are reviewed against this list.
+  - **A token is optional defence in depth, not the control:** on one host, whatever
+    can read the caller's config can read a token. If used, it reaches the service as a
+    credential (`LoadCredential=`), never through the environment. The server logs
+    whether it runs with one, and never logs the token or a hash of it.
+  - **Off the host, this is reopened.** mTLS adds nothing on a local socket. If the
+    server ever moves off the host, this decision is reopened (mTLS, or a token over TLS
+    plus network restriction).
+  - **Amended before any server code.** This first said the server would read each
+    connection's peer credentials (`SO_PEERCRED`). Node doesn't expose them on a Unix
+    socket, and reading them would need a native addon, which this ADR rules out (it
+    would call for a container or VM). systemd's per-connection instances (`Accept=yes`)
+    WOULD expose the peer (systemd names each instance with the peer's pid and uid).
+    They were rejected for other reasons:
+    - one Node process per connection defeats the bounded pool, the fair share and the
+      cache;
+    - it adds Node's start-up time to every request;
+    - it lets any member of the group spawn processes.
 - **A sandbox that leaves a compromised parser with nothing.** It runs as a systemd
   service with:
   - its own unprivileged user (`DynamicUser=yes` or a dedicated no-login user);
