@@ -2279,17 +2279,43 @@ a great deal of work.
     service's range (the kernel checks the gid NUMBER). It holds ONLY the calling
     application's user, and changing that is a reviewed change: **the review is the
     real control**.
-  - **A tripwire at start.** An `ExecStartPre=` check (no `-` prefix, so a failure
-    fails the start), also run by the socket unit, refuses to start when:
-    - the group's members aren't exactly the caller's user;
-    - any user other than the caller's has the gid as its PRIMARY group (`getent
-group` lists only supplementary members, so it reads `/etc/group` and
-      `/etc/passwd` directly);
+  - **Directory-sourced identities.** Users and groups also come from the directory
+    service (LDAP via sssd), which `/etc/group` and `/etc/passwd` don't show. For those,
+    the control is the reserved gid: it lies outside every ID range the directory
+    service maps, so no directory user or group can carry it. The tripwire checks that
+    the sssd ID-range configuration excludes the gid.
+  - **A tripwire at start.** The check runs with full privileges, outside the sandbox
+    (`ExecStartPre=+…`, with no `-`, so a failure fails the start). It must: the
+    service's own user is a dynamic user outside `<group>`, so it can't enter the
+    directory or read `/etc/gshadow`. Adding that user to the group would break
+    "exactly the caller". The check refuses to start when:
+    - the group's members aren't exactly the caller's user, in `/etc/group` and in
+      `/etc/gshadow` alike;
+    - the group has a password that isn't locked (`!` or `*` in `/etc/gshadow`), or
+      has any group administrators (either would let `newgrp` or `gpasswd` get round
+      the membership rule);
+    - any user other than the caller's has the gid as its PRIMARY group. `getent`
+      lists only supplementary members, so the check reads `/etc/passwd` directly;
     - another group has the same gid, or `getent group <gid>` doesn't resolve to that
       name;
-    - the directory isn't `root:<group>` 0750, or the socket isn't `root:<group>` 0660.
-      A failing check trips systemd's start limit, so the service stays down: it fails
-      closed.
+    - the sssd ID ranges include the gid;
+    - the directory isn't `root:<group>` 0750.
+  - **The socket's own check runs after it is bound.** A socket unit's `ExecStartPre=`
+    runs before the socket exists (and with `RemoveOnStop=yes` it never exists then).
+    So the socket unit runs the group, directory and identity checks above in
+    `ExecStartPre=`, and checks the socket itself (`root:<group>` 0660) in
+    `ExecStartPost=`. A failure there fails the socket unit, which stops listening.
+  - **How it fails closed.** A single failed check doesn't trip anything by itself:
+    the server just doesn't run while the check fails. Repeated socket-triggered
+    starts then hit the service's start limit, and the socket unit fails with
+    `service-start-limit-hit` and stops listening. Nothing then answers on the
+    socket until an operator fixes the cause and restarts the units.
+  - **The directory exists before the socket.** The socket unit sets
+    `DirectoryMode=0750`, so if systemd has to create `/run/wp-gcode/` first it never
+    makes it 0755. tmpfiles then sets the owner (socket units order after
+    `systemd-tmpfiles-setup` by default), and installing runs
+    `systemd-tmpfiles --create` before the first start. Otherwise the tripwire refuses
+    a `root:root` directory, which is safe but confusing.
   - **The unit files** (socket, service, tmpfiles and the check) ship with the server's
     PR, and are reviewed against this list.
   - **A token is optional defence in depth, not the control:** on one host, whatever
