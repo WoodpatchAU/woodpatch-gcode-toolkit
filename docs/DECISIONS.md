@@ -9,8 +9,10 @@ One entry per decision: context, the decision, and its consequences. Entries are
 never deleted. A reversed decision gets a new entry that supersedes the old one, and
 the old one is marked as superseded.
 
-Status values: **Accepted** · **Pending** (proceeding on a stated default, isolated so
-it can be reversed) · **Superseded by ADR-NNNN**.
+Status values: **Proposed** (under review, not yet binding) · **Accepted** ·
+**Pending** (proceeding on a stated default, isolated so it can be reversed) ·
+**Superseded by ADR-NNNN** · **Amended by ADR-NNNN** (still binding, but part of it is
+replaced; the amending ADR says which part).
 
 ---
 
@@ -1245,7 +1247,7 @@ Each proceeds on its default and is listed in every PR that touches it.
 | Decision                                          | Default until decided                                                      |
 | ------------------------------------------------- | -------------------------------------------------------------------------- |
 | Stack (ADR-0003)                                  | As ADR-0003                                                                |
-| Where the estimate service runs                   | A private container beside the consuming backend; never public             |
+| Where the estimate service runs                   | Decided: ADR-0040 (a sandboxed service on a Unix socket, no container)     |
 | Source of truth for machine/tool/material records | Machines decided: ADR-0041 (stored by the caller, passed per request)      |
 | Machine parameter values                          | Decided: ADR-0041 (provenance per value; calibration is an explicit state) |
 | Time-estimate accuracy target                     | ±5% after calibration                                                      |
@@ -2248,8 +2250,9 @@ Operator decisions on an external review's findings.
 
 ## ADR-0040: The estimate server's security boundary
 
-**Status:** Accepted, 2026-10-12. Operator sign-off after review, before any server code
-(an external review asked that this be settled first). Binds `@woodpatch/gcode-server`.
+**Status:** Accepted, 2026-10-12. **Amended by ADR-0041** (machine records come with
+each request, and the cache key holds their content hash). Operator sign-off after
+review, before any server code (an external review asked that this be settled first). Binds `@woodpatch/gcode-server`.
 
 **Context.** The server estimates machining time for G-code that customers upload, and
 the estimate feeds quotes. So its input is untrusted, it runs beside an application
@@ -2328,8 +2331,8 @@ a great deal of work.
   account gets a fair share (a per-scope concurrency limit), so one can't take the pool.
 - **No inputs that reach elsewhere.** Requests carry G-code text and IDs only: no file
   paths, and no URLs for the server to fetch. Machine, tool and material are IDs checked
-  against known ones. Machine profiles are loaded at startup from versioned data, never
-  from a request.
+  against known ones. (Machine records: amended by ADR-0041. The caller passes the
+  record with each request, and it's validated as untrusted input.)
 - **Customer geometry stays private.** G-code is never logged or echoed. Logs hold its
   size, timings and an HMAC of it keyed per scope (a plain hash would let anyone who can
   read the logs confirm a guessed file). Each scope's key is derived from one secret
@@ -2345,10 +2348,11 @@ a great deal of work.
   time a response whether that exact file was submitted before. So the key includes the
   caller and the customer or account scope, and covers EVERY input that can change the
   result, and the code that computes it: the file's hash, the machine, tool and
-  material, the dialect and options, the profile version, and the server and core build
+  material, the dialect and options, the machine record's content hash (ADR-0041; it
+  replaces the "profile version" this first said), and the server and core build
   version (a deployed estimator fix must not keep serving old answers). It's bounded
-  (LRU), and the profile version changes on EVERY profile edit, not only on deploys, so
-  a recalibrated machine never gets an old answer.
+  (LRU), and any edit to a record changes its hash, so a recalibrated machine never
+  gets an old answer.
 - **An uncalibrated estimate says so, and that binds.** Every result carries
   `calibrated: true | false`. A quote must never be priced automatically from an
   uncalibrated estimate: it needs manual review, or a flag the customer and staff can
@@ -2367,7 +2371,7 @@ oversized output) that must stay within the budgets.
 
 ## ADR-0041: The machine record, version 1
 
-**Status:** Proposed, 2026-10-18; re-cut after review, 2026-10-20 (parcel 5a). Frozen
+**Status:** Proposed, 2026-10-18; re-cut after two reviews, 2026-10-20 (parcel 5a). Frozen
 once the application that stores machine records and the reviewer sign off. Binds
 `@woodpatch/gcode-db`, the estimator and the estimate server. **Amends ADR-0040** (see
 "Where the record comes from").
@@ -2385,12 +2389,30 @@ user-defined controller (custom dialects) comes later, as an additive field.
   2026-10-18 that the calling application stores machine records and passes one in with
   each request; the toolkit never reads any store. That bullet of ADR-0040 is replaced
   by this one. What it protected is kept by other means:
-  - **The cache key** holds a canonical content hash of the WHOLE record: SHA-256 of
-    its canonical JSON (keys sorted, no insignificant whitespace, numbers in shortest
-    round-trip form). The record's id and revision aren't enough: a recalibrated machine
-    keeps both, and must not get a stale answer.
+  - **The cache key** holds a content hash of the WHOLE record. The record's id and
+    revision aren't enough: a recalibrated machine keeps both, and must not get a
+    stale answer.
+  - **The hash** is SHA-256 of the record's canonical form, the JSON Canonicalization
+    Scheme (RFC 8785, JCS), computed on the record AS RECEIVED, before any default is
+    applied:
+    - keys sorted by their UTF-16 code units, no insignificant whitespace;
+    - numbers in ECMAScript's shortest round-trip form (`-0` becomes `0`, `2.0`
+      becomes `2`, `1e21` becomes `1e+21`);
+    - strings escaped as JCS says: only `"`, `\` and the controls U+0000 to U+001F,
+      with the short forms where they exist, and everything else as literal UTF-8;
+    - a string holding a lone surrogate is refused, since it has no UTF-8 form.
+  - **Only the toolkit computes the hash.** The storing application keeps the hash
+    the server echoes and never recomputes it: PHP's `json_encode` isn't JCS (it
+    escapes slashes and non-ASCII, and writes `2.0` where JCS writes `2`), so a second
+    implementation would disagree silently.
   - **The record is untrusted input,** like the G-code. It's refused, and so is the
-    whole request, if it's over 16 KB, or if any rule below fails.
+    whole request, if it's over 16,384 bytes (its UTF-8 text as received, checked
+    before parsing), or if any rule below fails.
+  - **Duplicate keys are refused.** `JSON.parse` silently keeps the last of two equal
+    keys, so the storing application and the toolkit could read different records
+    from one text. The server parses the record with a check that refuses any object
+    with a repeated key. And the echoed hash, of the record the toolkit actually
+    used, is the authoritative identity of what was estimated.
 - **One JSON document per machine,** in millimetres, seconds and rpm throughout:
 
   ```json
@@ -2415,23 +2437,25 @@ user-defined controller (custom dialects) comes later, as an additive field.
   ```
 
 - **Fields, required (R) or optional (O):**
-  - `format` R: exactly `"woodpatch-gcode-machine"`. `version` R: an integer. `revision`
-    R: an integer (see "Versioning").
+  - `format` R: exactly `"woodpatch-gcode-machine"`. `version` R and `revision` R:
+    each an integer of at least 1 (`Number.isSafeInteger`; see "Versioning").
   - `id` R: the storing application's id, opaque to the toolkit: a string of 1–64
     characters from `A–Z a–z 0–9 . _ : -` (a JSON number is refused).
-  - `name` R: 1–200 characters, no control characters. Both id and name are echoed
-    and logged.
+  - `name` R: 1–200 Unicode code points, none of them a control or format
+    character: no `\p{Cc}`, `\p{Cf}` (which includes the bidi overrides), `\p{Zl}` or
+    `\p{Zp}`. Both id and name are echoed and logged, so neither may hide or reorder
+    text.
   - `dialect` R: a built-in dialect id (`masso-g3`, `linuxcnc`, `generic`).
   - `axes` R: X, Y and Z R, each with `maxVelocity` R (mm/min), `acceleration` R
     (mm/s²), and `min` R and `max` R (travel, MACHINE coordinates, mm). A, B and C O:
-    rotary, in degrees, degrees/min and degrees/s²; `min`/`max` O on a rotary axis
-    (absent: continuous rotation). `jerk` O (mm/s³) is reserved for an S-curve
+    rotary, in degrees, degrees/min and degrees/s². On a rotary axis `min` and `max`
+    are both present or both absent (absent: continuous rotation). `jerk` O (mm/s³) is reserved for an S-curve
     planner.
   - `rapidRate` O (mm/min): LINEAR axes only. Absent: rapids run at each axis's
     `maxVelocity`.
   - `planner` R: `junctionDeviation` R (mm, GRBL's cornering model); `blockRate` O
     (blocks/s the controller can process; dense tiny segments slow to it); `lookahead`
-    O (blocks).
+    O (blocks, an integer: `Number.isSafeInteger`).
   - `spindle` R: `maxRpm` R, `minRpm` O (default 0), `spinUpSeconds` R,
     `spinDownSeconds` R. These are the controller's own delays: Masso waits that long
     on M3/M4 and on M5.
@@ -2439,8 +2463,9 @@ user-defined controller (custom dialects) comes later, as an additive field.
     `programStartSeconds` (once per program), `pauseSeconds` (per M0/M1: an assumed
     operator response).
   - `calibration` R, below.
-- **Every physical value carries its provenance.** `P` is `{ "value": number, "source":
-"seed" | "manual" | "measured" | "fitted" }`, and nothing else:
+- **Every physical value carries its provenance.** `P` is an object with exactly two
+  fields: `value`, a number, and `source`, one of `"seed"`, `"manual"`, `"measured"`
+  or `"fitted"`:
   - **seed:** a starting point, nobody has checked it;
   - **manual:** entered from a datasheet or the controller's settings;
   - **measured:** timed or measured on the machine;
@@ -2450,8 +2475,9 @@ user-defined controller (custom dialects) comes later, as an additive field.
     greater than 0; `lookahead` is a positive integer;
   - spin times and overheads are >= 0; 0 <= `minRpm` <= `maxRpm`;
   - travel: `min` < `max` (negatives allowed).
-    Plausibility upper bounds catch a slipped decimal point, and a factor that would make
-    a quote near-free:
+
+  Plausibility upper bounds catch a slipped decimal point, and a factor that would make
+  a quote near-free:
 
   | value                             | at most                |
   | --------------------------------- | ---------------------- |
@@ -2471,8 +2497,9 @@ user-defined controller (custom dialects) comes later, as an additive field.
 - **Calibration is a state, never a default.** One of:
   - `{ "status": "uncalibrated" }`;
   - `{ "status": "calibrated", ... }`, with `fittedOn` (a valid ISO date, YYYY-MM-DD),
-    `timeFactor`, `accelFactor`, and `residuals`: `jobs` (an integer of at least 1),
-    `meanAbsPercent` and `maxAbsPercent` (the mean between 0 and the max).
+    `timeFactor`, `accelFactor`, and `residuals`: `jobs` (an integer of at least 1,
+    `Number.isSafeInteger`), `meanAbsPercent` and `maxAbsPercent` (0 <= mean <= max
+    <= 100; an estimate off by more than its own size isn't a calibration).
 
   A calibrated record may hold no `seed` value: calibration means the numbers were
   confirmed. Only the storing application's calibration flow sets the status. It
@@ -2483,11 +2510,14 @@ user-defined controller (custom dialects) comes later, as an additive field.
 - **Validation: the code is authoritative.** `validateMachine(record)` returns a list of
   problems and never throws: a missing or misspelt field (refused, never read as zero),
   a bad type, a rule above. A JSON Schema file describes the same shape for other
-  languages. Every object has `additionalProperties: false`, including `P` and each
-  calibration branch (a `oneOf` on `status`). Each field's description names its unit,
-  so other languages' messages can too. The schema can't express everything (`min <
-max`, the calibrated-has-no-seed rule), so it is a subset of the code, never the
-  other way round. A record with any problem refuses the whole request. No validation
+  languages, written to JSON Schema draft 2020-12. Every object has
+  `additionalProperties: false`, including `P`. `calibration` is a `oneOf` of two
+  CLOSED objects, one per status, each listing all its own fields; no shared parent
+  object carries `additionalProperties: false`, since that would refuse the
+  calibrated branch's fields. Each field's description names its unit, so other
+  languages' messages can too. The schema can't express everything (min below max,
+  the rule that a calibrated record has no seed), so it is a subset of the code, never
+  the other way round. A record with any problem refuses the whole request. No validation
   library: core stays dependency-free.
 - **Versioning.**
   - **revision:** within a version, a revision only ADDS optional fields. A record
@@ -2503,7 +2533,10 @@ max`, the calibrated-has-no-seed rule), so it is a subset of the code, never the
   `calibration.status` and content hash, so a stored quote traces to the exact record
   that produced it. The storing application keeps the hash with each estimate it
   stores. Times in the response are INTEGER milliseconds, never floats: the caller's
-  cost path is float-free.
+  cost path is float-free. The estimator works in floating point and rounds once, at
+  the response: each time is rounded to the nearest millisecond, halves rounding up.
+  A total is rounded from the unrounded sum, so a breakdown's parts may differ from
+  the total by a few milliseconds; the total is the figure to price from.
 - **The travel check uses what is knowable.** A preview doesn't know the work offsets
   the operator will set, so:
   - **certain:** a program whose extent along an axis exceeds that axis's travel can
