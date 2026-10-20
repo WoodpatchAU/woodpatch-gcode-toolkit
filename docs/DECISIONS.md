@@ -1242,13 +1242,13 @@ worker about 71 KB, inside the plan's 600 KB island budget.
 
 Each proceeds on its default and is listed in every PR that touches it.
 
-| Decision                                          | Default until decided                                                         |
-| ------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Stack (ADR-0003)                                  | As ADR-0003                                                                   |
-| Where the estimate service runs                   | A private container beside the consuming backend; never public                |
-| Source of truth for machine/tool/material records | Held by the consuming systems; the toolkit depends only on the schema         |
-| Machine parameter values                          | Placeholders flagged `TODO(calibrate)`; uncalibrated is a representable state |
-| Time-estimate accuracy target                     | ±5% after calibration                                                         |
+| Decision                                          | Default until decided                                                      |
+| ------------------------------------------------- | -------------------------------------------------------------------------- |
+| Stack (ADR-0003)                                  | As ADR-0003                                                                |
+| Where the estimate service runs                   | A private container beside the consuming backend; never public             |
+| Source of truth for machine/tool/material records | Machines decided: ADR-0041 (stored by the caller, passed per request)      |
+| Machine parameter values                          | Decided: ADR-0041 (provenance per value; calibration is an explicit state) |
+| Time-estimate accuracy target                     | ±5% after calibration                                                      |
 
 ## ADR-0029: The 2D plan view: Canvas 2D, in the viewer package
 
@@ -2367,18 +2367,30 @@ oversized output) that must stay within the budgets.
 
 ## ADR-0041: The machine record, version 1
 
-**Status:** Proposed, 2026-10-18 (parcel 5a). Frozen once the application that stores
-machine records signs off the shape. Binds `@woodpatch/gcode-db` and the estimator.
+**Status:** Proposed, 2026-10-18; re-cut after review, 2026-10-20 (parcel 5a). Frozen
+once the application that stores machine records and the reviewer sign off. Binds
+`@woodpatch/gcode-db`, the estimator and the estimate server. **Amends ADR-0040** (see
+"Where the record comes from").
 
 **Context.** The time estimate feeds quotes, so the machine it's computed for must be
-explicit data, with honest provenance. The toolkit defines the record's format; the
-calling application stores the records and passes one in with each request. The toolkit
-never reads any store itself. The same record drives the travel check (does a program
-stay inside the machine's envelope?) and the estimator (Phase 5b). A user-defined
-controller (custom dialects) comes later, as an additive field.
+explicit data with honest provenance. The toolkit defines the record's format; the
+calling application stores the records. The same record drives the travel check (does a
+program stay inside the machine's envelope?) and the estimator (Phase 5b). A
+user-defined controller (custom dialects) comes later, as an additive field.
 
 **Decision.**
 
+- **Where the record comes from (amends ADR-0040).** ADR-0040 said machine profiles are
+  "loaded at startup from versioned data, never from a request". The operator ruled on
+  2026-10-18 that the calling application stores machine records and passes one in with
+  each request; the toolkit never reads any store. That bullet of ADR-0040 is replaced
+  by this one. What it protected is kept by other means:
+  - **The cache key** holds a canonical content hash of the WHOLE record: SHA-256 of
+    its canonical JSON (keys sorted, no insignificant whitespace, numbers in shortest
+    round-trip form). The record's id and revision aren't enough: a recalibrated machine
+    keeps both, and must not get a stale answer.
+  - **The record is untrusted input,** like the G-code. It's refused, and so is the
+    whole request, if it's over 16 KB, or if any rule below fails.
 - **One JSON document per machine,** in millimetres, seconds and rpm throughout:
 
   ```json
@@ -2386,8 +2398,8 @@ controller (custom dialects) comes later, as an additive field.
     "format": "woodpatch-gcode-machine",
     "version": 1,
     "revision": 1,
-    "id": "caller-defined",
-    "name": "Router 1",
+    "id": "17",
+    "name": "Example router",
     "dialect": "masso-g3",
     "axes": {
       "X": { "min": P, "max": P, "maxVelocity": P, "acceleration": P },
@@ -2402,50 +2414,96 @@ controller (custom dialects) comes later, as an additive field.
   }
   ```
 
-  - `dialect` is a built-in dialect id (`masso-g3`, `linuxcnc`, `generic`).
-  - `axes`: X, Y and Z are required. A, B and C are optional, with the same fields;
-    rotary axes in degrees, degrees/min and degrees/s².
-  - `min`/`max` are travel limits in MACHINE coordinates (mm). `maxVelocity` is in
-    mm/min, `acceleration` in mm/s². An optional `jerk` (mm/s³) is reserved for an
-    S-curve planner.
-  - `rapidRate` (mm/min) is optional: without it, rapids run at each axis's
+- **Fields, required (R) or optional (O):**
+  - `format` R: exactly `"woodpatch-gcode-machine"`. `version` R: an integer. `revision`
+    R: an integer (see "Versioning").
+  - `id` R: the storing application's id, opaque to the toolkit: a string of 1–64
+    characters from `A–Z a–z 0–9 . _ : -` (a JSON number is refused).
+  - `name` R: 1–200 characters, no control characters. Both id and name are echoed
+    and logged.
+  - `dialect` R: a built-in dialect id (`masso-g3`, `linuxcnc`, `generic`).
+  - `axes` R: X, Y and Z R, each with `maxVelocity` R (mm/min), `acceleration` R
+    (mm/s²), and `min` R and `max` R (travel, MACHINE coordinates, mm). A, B and C O:
+    rotary, in degrees, degrees/min and degrees/s²; `min`/`max` O on a rotary axis
+    (absent: continuous rotation). `jerk` O (mm/s³) is reserved for an S-curve
+    planner.
+  - `rapidRate` O (mm/min): LINEAR axes only. Absent: rapids run at each axis's
     `maxVelocity`.
-  - `planner`:
-    - `junctionDeviation` (mm): GRBL's cornering model.
-    - `blockRate` (blocks/s, optional): how many short blocks per second the controller
-      can process; dense tiny segments slow to it.
-    - `lookahead` (blocks, optional).
-  - `overheads` are fixed times added per event: per tool change, once per program, and
-    per M0/M1 pause (an assumed operator response).
-
+  - `planner` R: `junctionDeviation` R (mm, GRBL's cornering model); `blockRate` O
+    (blocks/s the controller can process; dense tiny segments slow to it); `lookahead`
+    O (blocks).
+  - `spindle` R: `maxRpm` R, `minRpm` O (default 0), `spinUpSeconds` R,
+    `spinDownSeconds` R. These are the controller's own delays: Masso waits that long
+    on M3/M4 and on M5.
+  - `overheads` O, each field O, default 0: `toolChangeSeconds` (per tool change),
+    `programStartSeconds` (once per program), `pauseSeconds` (per M0/M1: an assumed
+    operator response).
+  - `calibration` R, below.
 - **Every physical value carries its provenance.** `P` is `{ "value": number, "source":
-"seed" | "manual" | "measured" | "fitted" }`:
+"seed" | "manual" | "measured" | "fitted" }`, and nothing else:
   - **seed:** a starting point, nobody has checked it;
   - **manual:** entered from a datasheet or the controller's settings;
   - **measured:** timed or measured on the machine;
   - **fitted:** set by calibration.
-    A reader can always tell which numbers are real.
-- **Calibration is a state, never a default.**
-  - `{ "status": "uncalibrated" }`, or
-  - `{ "status": "calibrated", "fittedOn": "YYYY-MM-DD", "timeFactor": number,
-"accelFactor": number, "residuals": { "jobs": n, "meanAbsPercent": number,
-"maxAbsPercent": number } }`.
-    Every estimate carries `calibrated: true | false` from it, and an uncalibrated
-    estimate is never priced automatically (ADR-0040).
-- **Validation is code in the toolkit, plus a JSON Schema for other languages.**
-  `validateMachine(record)` returns a list of problems, never throws: a missing field, a
-  wrong unit-free number (negative acceleration, `min >= max`, a zero velocity), an
-  unknown dialect, a misspelt field (refused, never read as zero). A JSON Schema file
-  for the same shape lets the storing application validate in its own language. No
-  validation library: core stays dependency-free.
-- **Versioning.** Every record carries `format`, `version` and `revision`.
+- **Numbers.** Every number is finite (`Number.isFinite`). Then:
+  - velocities, accelerations, `junctionDeviation`, `blockRate` and `rapidRate` are
+    greater than 0; `lookahead` is a positive integer;
+  - spin times and overheads are >= 0; 0 <= `minRpm` <= `maxRpm`;
+  - travel: `min` < `max` (negatives allowed).
+    Plausibility upper bounds catch a slipped decimal point, and a factor that would make
+    a quote near-free:
+
+  | value                             | at most                |
+  | --------------------------------- | ---------------------- |
+  | linear `maxVelocity`, `rapidRate` | 200,000 mm/min         |
+  | rotary `maxVelocity`              | 1,000,000 °/min        |
+  | `acceleration`                    | 50,000 mm/s² (or °/s²) |
+  | travel `min`/`max`                | ±100,000 mm (or °)     |
+  | `junctionDeviation`               | 10 mm                  |
+  | `blockRate`                       | 100,000 blocks/s       |
+  | `lookahead`                       | 10,000 blocks          |
+  | `maxRpm`                          | 100,000 rpm            |
+  | spin times                        | 600 s                  |
+  | overheads                         | 86,400 s               |
+  | `timeFactor`                      | 0.5 to 2.0             |
+  | `accelFactor`                     | 0.25 to 4.0            |
+
+- **Calibration is a state, never a default.** One of:
+  - `{ "status": "uncalibrated" }`;
+  - `{ "status": "calibrated", ... }`, with `fittedOn` (a valid ISO date, YYYY-MM-DD),
+    `timeFactor`, `accelFactor`, and `residuals`: `jobs` (an integer of at least 1),
+    `meanAbsPercent` and `maxAbsPercent` (the mean between 0 and the max).
+
+  A calibrated record may hold no `seed` value: calibration means the numbers were
+  confirmed. Only the storing application's calibration flow sets the status. It
+  refuses to price automatically from an uncalibrated estimate, reading the status from
+  its own stored record, not from the server's echo. The toolkit trusts what it's given,
+  and reports it.
+
+- **Validation: the code is authoritative.** `validateMachine(record)` returns a list of
+  problems and never throws: a missing or misspelt field (refused, never read as zero),
+  a bad type, a rule above. A JSON Schema file describes the same shape for other
+  languages. Every object has `additionalProperties: false`, including `P` and each
+  calibration branch (a `oneOf` on `status`). Each field's description names its unit,
+  so other languages' messages can too. The schema can't express everything (`min <
+max`, the calibrated-has-no-seed rule), so it is a subset of the code, never the
+  other way round. A record with any problem refuses the whole request. No validation
+  library: core stays dependency-free.
+- **Versioning.**
   - **revision:** within a version, a revision only ADDS optional fields. A record
-    states the revision it was written for. The toolkit refuses a revision newer than
-    it knows, and refuses unknown fields within a revision it does know, so a misspelt
-    field is caught, not ignored.
+    states the revision it was written for, and is validated STRICTLY against that
+    revision: unknown fields refused, so a misspelling is caught. The toolkit accepts
+    an older revision, never a newer one. So the toolkit is deployed BEFORE the storing
+    application writes a newer revision.
   - **version:** a breaking change is a new version, with a documented migration from
     the last. An unknown version is refused.
   - Version 1 starts at revision 1.
+- **What every estimate echoes, and how it states time.** Every `/estimate` response
+  (Phase 5b/5d) echoes the record's `id`, `version`, `revision`,
+  `calibration.status` and content hash, so a stored quote traces to the exact record
+  that produced it. The storing application keeps the hash with each estimate it
+  stores. Times in the response are INTEGER milliseconds, never floats: the caller's
+  cost path is float-free.
 - **The travel check uses what is knowable.** A preview doesn't know the work offsets
   the operator will set, so:
   - **certain:** a program whose extent along an axis exceeds that axis's travel can
@@ -2454,10 +2512,11 @@ controller (custom dialects) comes later, as an additive field.
     the limits directly;
   - **when the user gives a work origin** (optionally, per job), every move is checked
     against the limits.
-- **A seed profile ships uncalibrated.** It's the operator's router, from the plan's
-  starting values, every value `source: "seed"` until confirmed, and
-  `calibration.status: "uncalibrated"`. Calibration (5c) replaces it.
+- **The real machine's record lives where machine records live,** with the storing
+  application, entered from the controller's settings (`source: "manual"`) and
+  uncalibrated until 5c's fit. This repository is public: it ships only a clearly
+  fictional example record, and test fixtures.
 
-**Consequences.** The estimator (5b) reads only this record, and its numbers can always
-be traced to a source. The format is frozen once the storing application signs off;
-anything it needs later arrives as an optional field in version 1, or as version 2.
+**Consequences.** The estimator reads only this record, and its numbers can always be
+traced to a source. The format is frozen once signed off; anything needed later arrives
+as an optional field in a new revision, or as version 2.
