@@ -2252,6 +2252,10 @@ Operator decisions on an external review's findings.
   PR with the same bump and a regenerated lockfile (`pnpm install`, which applies the
   7-day release-age gate), and closes Dependabot's PR, pointing to it. Version updates
   are handled the same way. Security updates are acted on within days.
+  The first such pair: Dependabot's #67 (vite 8.3.3) is closed in favour of #70.
+- **Transitive security floors** go in `overrides` in `pnpm-workspace.yaml`, each with
+  the advisory it answers, and come out once nothing resolves below them. The first:
+  launch-editor ^2.14.2 (reached through @changesets/cli), alongside the vite update.
 - That first PR also tripped the private-references check: Dependabot's release notes
   link upstream issues as `<a href="https://redirect.github.com/o/r/issues/N">#N</a>`.
   The check now reads the whole URL (any path depth, and the redirect host), and lets

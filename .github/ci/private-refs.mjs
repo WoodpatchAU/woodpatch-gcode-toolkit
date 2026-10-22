@@ -32,16 +32,22 @@ import { fileURLToPath } from 'node:url';
 
 const NUMBER = /(^|[^0-9A-Za-z&])#([0-9]{4,5})(?![0-9A-Za-z])/g;
 const NUMBERED_LINK = /\/(issues|pull)\/[0-9]{4,}/gi;
-// Where a URL starts, reading back from a match: after whitespace, a quote, a bracket
-// or an angle bracket (an href="…", a Markdown (…) or <…>).
-const URL_START = /[^\s"'()<>[\]]*$/;
+// What ends a URL in prose and markup, reading back from a match: whitespace, a quote,
+// a backtick, a bracket or angle bracket (href="…", Markdown (…), <…>), a comma, "=".
+const URL_SEPARATOR = /[\s"'`()<>[\],=]/;
+// Longer than this, a URL isn't read at all (refused): keeps the scan linear.
+const MAX_URL = 2048;
+// A URL that could reach the organisation whatever its owner segment says: a
+// dot-segment, raw or percent-encoded, or the organisation's name anywhere in it (a
+// query or a fragment, say). Such a URL never exempts anything.
+const SUSPECT_URL = /\.\.|%2e|woodpatchau/i;
 // redirect.github.com is the host Dependabot writes its release-note links with.
 const GITHUB_ISSUE = /^(?:https?:\/\/)?(?:www\.|redirect\.)?github\.com\/([a-z0-9-]+)\//i;
 // A number that is the text of a link to that same-numbered issue or PR, as Dependabot's
 // release notes write it: <a href="https://redirect.github.com/o/r/issues/N">#N</a>,
 // or in Markdown, [#N](https://github.com/o/r/pull/N). The link says whose it is.
 const LINKED_NUMBER = [
-  /<a\s+href="([^"]+)"[^>]*>#([0-9]{4,5})<\/a>/gi,
+  /<a\s+href="([^"\s]+)"[^>]*>#([0-9]{4,5})<\/a>/gi,
   /\[#([0-9]{4,5})\]\(([^)\s]+)\)/g,
 ];
 const ORG_LINK = /github\.com[/:]woodpatchau\/([a-z0-9._-]+)/gi;
@@ -61,30 +67,42 @@ const EXPR_NEXT =
   /^\s*([-+*/]|\*\*|(EQ|NE|GT|GE|LT|LE|AND|OR|XOR|MOD)\b)\s*([-+]?[0-9.]|#|\[|[A-Z]+\[)/i;
 const ABOUT_GCODE = /\b[GM][0-9]|param|coordinate|offset|\bhome\b|\baxis\b|position/i;
 
+/** The owner of a GitHub URL if it's another owner's, unambiguously; else undefined. */
+function outsideOwner(url) {
+  if (SUSPECT_URL.test(url)) return undefined;
+  // A scheme part-way in ("see:https://…") starts the URL there.
+  const k = url.search(/https?:\/\//i);
+  const owner = GITHUB_ISSUE.exec(k > 0 ? url.slice(k) : url)?.[1]?.toLowerCase();
+  return owner === 'woodpatchau' ? undefined : owner;
+}
+
 /** Whether one line of text refers to private work. */
 export function leaks(text) {
   for (const m of text.matchAll(ORG_LINK))
     if ((m[1] ?? '').toLowerCase().replace(/\.git$/, '') !== OWN_REPO) return true;
   for (const m of text.matchAll(ORG_RAW)) if ((m[1] ?? '').toLowerCase() !== OWN_REPO) return true;
+  // The whole URL before each match, however deep its path (Dependabot links
+  // github.com/o/r/tree/HEAD/packages/p/issues/N). One pass over the line finds where
+  // each URL starts, so a long line costs linear time.
+  let sep = -1;
+  let scanned = 0;
   for (const m of text.matchAll(NUMBERED_LINK)) {
-    // The whole URL before the match, however deep its path (Dependabot links
-    // github.com/o/r/tree/HEAD/packages/p/issues/N).
-    const url = URL_START.exec(text.slice(0, m.index))?.[0] ?? '';
-    const owner = GITHUB_ISSUE.exec(url)?.[1]?.toLowerCase();
-    if (owner === undefined || owner === 'woodpatchau') return true;
+    for (; scanned < m.index; scanned++) if (URL_SEPARATOR.test(text[scanned])) sep = scanned;
+    if (m.index - (sep + 1) > MAX_URL) return true;
+    if (outsideOwner(text.slice(sep + 1, m.index)) === undefined) return true;
   }
   // Spans of text that are an outside project's own references.
   const outside = [];
   for (const m of text.matchAll(OUTSIDE_REF)) outside.push([m.index, m.index + m[0].length]);
   for (const [i, pattern] of LINKED_NUMBER.entries()) {
     for (const m of text.matchAll(pattern)) {
-      const [url, n] = i === 0 ? [m[1] ?? '', m[2]] : [m[2] ?? '', m[1]];
-      const owner = GITHUB_ISSUE.exec(url)?.[1]?.toLowerCase();
+      const [url, n] = i === 0 ? [m[1] ?? '', m[2] ?? ''] : [m[2] ?? '', m[1] ?? ''];
       // The issue or PR the link points at (a fixed pattern; nothing built at run time).
       const same = /\/(?:issues|pull)\/([0-9]+)(?![0-9])/.exec(url)?.[1] === n;
-      // Only another owner's: a link into the organisation was refused above.
-      if (owner !== undefined && owner !== 'woodpatchau' && same) {
-        outside.push([m.index, m.index + m[0].length]);
+      if (outsideOwner(url) !== undefined && same) {
+        // Only the link's own text, "#N": nothing else inside the match is exempt.
+        const at = m.index + (i === 0 ? m[0].lastIndexOf(`>#${n}<`) + 1 : 1);
+        outside.push([at, at + 1 + n.length]);
       }
     }
   }

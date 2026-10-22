@@ -98,6 +98,11 @@ test("lets through a number that is the text of another owner's link to it", () 
     `fixed upstream in [${H}23653](https://github.com/vitejs/vite${PULL}23653)`,
     `${vite}${ISSUES}23654`,
     `(<a href="https://github.com/vitejs/vite/tree/HEAD/packages/vite${ISSUES}23657">${H}23657</a>)</li>`,
+    // A URL in backticks, or after a comma, "=" or a colon.
+    `see \`https://github.com/vitejs/vite${ISSUES}23654\``,
+    `a,https://github.com/vitejs/vite${ISSUES}23654`,
+    `url=https://github.com/vitejs/vite${PULL}23653`,
+    `see:https://github.com/vitejs/vite${PULL}23653`,
   ])
     assert.equal(leaks(line), false, line);
 });
@@ -115,10 +120,29 @@ test('still refuses a linked number that is ours, or not what the link says', ()
     `<a href="https://github.com/${ORG}/x/tree/HEAD/y/issues/${N}">${H}99901</a>`,
     `(see https://github.com/${ORG.toLowerCase()}/x/tree/main/issues/${N})`,
     `"something/deeper/path/issues/${N}"`,
+    // A dot-segment or the organisation's name hidden in the URL (review of #70).
+    `https://github.com/vitejs/../${ORG}/x${ISSUES}${N}`,
+    `https://github.com/vitejs/%2e%2e/${ORG}/x${ISSUES}${N}`,
+    `https://github.com/vitejs/vite${ISSUES}1234?next=/${ORG}/x${ISSUES}${N}`,
+    // The exemption covers the link's own #N only, never the rest of the tag.
+    `<a href="https://github.com/vitejs/vite${ISSUES}12345" title="${H}99901">${H}12345</a>`,
+    `<a href="https://github.com/vitejs/vite${ISSUES}12345 ${H}99901">${H}12345</a>`,
+    `[${H}12345](https://github.com/vitejs/vite${ISSUES}12345?q=${H}99901)`,
     // Not GitHub at all.
     `<a href="https://example.com/issues/${N}">${H}99901</a>`,
     // A private number beside a genuine Dependabot link.
     `<a href="${vite}">${H}23654</a> and ${H}99902`,
   ])
     assert.equal(leaks(line), true, line);
+});
+
+test('reads a long line in linear time', () => {
+  const link = `<a href="https://redirect.github.com/vitejs/vite${ISSUES}23654">${H}23654</a> `;
+  const line = link.repeat(2000) + 'x'.repeat(100_000);
+  const t0 = performance.now();
+  assert.equal(leaks(line), false);
+  // An unbroken 200k-character token with links in it: refused, quickly.
+  const token = `https://github.com/vitejs/vite${ISSUES}23654`.repeat(5000);
+  assert.equal(leaks(token), true);
+  assert.ok(performance.now() - t0 < 2000, `took ${performance.now() - t0} ms`);
 });

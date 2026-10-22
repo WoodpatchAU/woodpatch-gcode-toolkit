@@ -15,3 +15,9 @@ allowBuilds:
   # binary to save startup time. The binary arrives anyway via the optional
   # @esbuild/<platform> package, and esbuild works without the script.
   esbuild: false
+
+# Security floors for transitive dependencies the direct ones haven't caught up with.
+# Each names the advisory it answers; drop it once nothing resolves below it.
+overrides:
+  # GHSA-r825, GHSA-587h, GHSA-698v (fixed in 2.14.2): reached through @changesets/cli.
+  launch-editor: ^2.14.2
