@@ -2250,9 +2250,12 @@ Operator decisions on an external review's findings.
 
 ## ADR-0040: The estimate server's security boundary
 
-**Status:** Accepted, 2026-10-12. **Amended by ADR-0041** (machine records come with
-each request, and the cache key holds their content hash). Operator sign-off after
-review, before any server code (an external review asked that this be settled first). Binds `@woodpatch/gcode-server`.
+**Status:** Accepted, 2026-10-12. Amended in place 2026-10-22, before any server code:
+the caller check moved from `SO_PEERCRED` to the socket's permissions (see "Amended
+before any server code" below). **Amended by ADR-0041** (machine records come with each
+request, and the cache key holds their content hash). Operator sign-off after review,
+before any server code (an external review asked that this be settled first). Binds
+`@woodpatch/gcode-server`.
 
 **Context.** The server estimates machining time for G-code that customers upload, and
 the estimate feeds quotes. So its input is untrusted, it runs beside an application
@@ -2294,7 +2297,7 @@ a great deal of work.
     "exactly the caller". The check refuses to start when:
     - the group's members aren't exactly the caller's user, in `/etc/group` and in
       `/etc/gshadow` alike;
-    - the group has a password that isn't locked (`!` or `*` in `/etc/gshadow`), or
+    - the group's password field in `/etc/gshadow` doesn't start with `!` or `*`, or
       has any group administrators (either would let `newgrp` or `gpasswd` get round
       the membership rule);
     - any user other than the caller's has the gid as its PRIMARY group. `getent`
@@ -2311,14 +2314,21 @@ a great deal of work.
   - **How it fails closed.** A single failed check doesn't trip anything by itself:
     the server just doesn't run while the check fails. Repeated socket-triggered
     starts then hit the service's start limit, and the socket unit fails with
-    `service-start-limit-hit` and stops listening. Nothing then answers on the
-    socket until an operator fixes the cause and restarts the units.
-  - **The directory exists before the socket.** The socket unit sets
-    `DirectoryMode=0750`, so if systemd has to create `/run/wp-gcode/` first it never
-    makes it 0755. tmpfiles then sets the owner (socket units order after
-    `systemd-tmpfiles-setup` by default), and installing runs
-    `systemd-tmpfiles --create` before the first start. Otherwise the tripwire refuses
-    a `root:root` directory, which is safe but confusing.
+    `service-start-limit-hit` and stops listening. If the service's start limit is
+    ever disabled (`StartLimitIntervalSec=0`), the socket's own trigger limit does the
+    same job, and the socket unit fails with `trigger-limit-hit`. Either way, nothing
+    then answers on the socket until an operator fixes the cause and restarts the
+    units.
+  - **The directory exists before the socket.** tmpfiles makes it (socket units order
+    after `systemd-tmpfiles-setup` by default), and installing runs
+    `systemd-tmpfiles --create` before the first start. If it's missing or wrong, the
+    socket unit's `ExecStartPre=` check refuses before systemd would create it, so no
+    `DirectoryMode=` is needed.
+  - **What's left: the caller can hand its access on.** Any member of the group can
+    pass access to someone else, for instance with a setgid-`<group>` executable, by
+    passing on a connected socket, or by relaying requests. That is the caller acting
+    for them, and no permission check can stop it. The caller is trusted to this extent;
+    the check makes sure it's the ONLY one so trusted.
   - **The unit files** (socket, service, tmpfiles and the check) ship with the server's
     PR, and are reviewed against this list.
   - **A token is optional defence in depth, not the control:** on one host, whatever
