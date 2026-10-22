@@ -5,8 +5,14 @@ SPDX-License-Identifier: MIT
 
 # @woodpatch/gcode-db
 
-TypeScript types, JSON Schema and Zod for machine, tool and material records, shared by consuming applications.
+The machine record's format (`docs/DECISIONS.md`, ADR-0041), shared by the toolkit and
+the applications that store machine records. Zero runtime dependencies.
 
-**Placeholder.** It arrives in Phase 5 (see `docs/PLAN.md`). It stays `"private": true`
-until it has code; at that point it adopts `packages/core`'s build and publishing
-setup, and CI's licence-notice check starts covering it automatically.
+- `parseStrictJson(text)`: a JSON parser for untrusted records. It refuses repeated
+  keys (compared after unescaping), lone surrogates, numbers that overflow and deep
+  nesting, and builds null-prototype objects, so `__proto__` is an ordinary key.
+- `contentHash(value)`: SHA-256 of the record's RFC 8785 (JCS) canonical form. Only the
+  toolkit computes it; a storing application keeps the hash the server echoes.
+
+Still to come in Phase 5a: `validateMachine()`, the JSON Schema and a fictional example
+record. It stays `"private": true` until then.

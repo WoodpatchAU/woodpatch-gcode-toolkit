@@ -2,6 +2,35 @@
   "name": "@woodpatch/gcode-db",
   "version": "0.0.0",
   "private": true,
-  "description": "TypeScript types, JSON Schema and Zod for machine, tool and material records, shared by consuming applications.",
-  "license": "MIT"
+  "description": "The machine record's format: a strict parser, its canonical hash, validation and a JSON Schema. Zero runtime dependencies.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WoodpatchAU/woodpatch-gcode-toolkit.git",
+    "directory": "packages/db-schema"
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-package.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "fast-check": "^4.10.1",
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.1"
+  }
 }
