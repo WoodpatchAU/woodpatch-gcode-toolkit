@@ -2447,8 +2447,8 @@ oversized output) that must stay within the budgets.
 
 ## ADR-0041: The machine record, version 1
 
-**Status:** Proposed, 2026-10-18; re-cut after two reviews, 2026-10-20 (parcel 5a). Frozen
-once the application that stores machine records and the reviewer sign off. Binds
+**Status:** Accepted, 2026-10-22: frozen, with the reviewer's and the storing
+application's sign-off. Proposed 2026-10-18, re-cut after three reviews (parcel 5a). Binds
 `@woodpatch/gcode-db`, the estimator and the estimate server. **Amends ADR-0040** (see
 "Where the record comes from").
 
