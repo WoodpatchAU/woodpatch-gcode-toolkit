@@ -10,10 +10,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./schema/machine-record-v1.schema.json": "./schema/machine-record-v1.schema.json"
   },
   "files": [
     "dist",
+    "schema",
+    "examples",
     "LICENSE",
     "NOTICE"
   ],
@@ -28,6 +31,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@woodpatch/gcode-core": "workspace:*",
     "@types/node": "^22.20.3",
     "fast-check": "^4.10.1",
     "typescript": "~6.0.3",

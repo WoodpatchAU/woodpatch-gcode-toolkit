@@ -263,6 +263,9 @@ importers:
       '@types/node':
         specifier: ^22.20.3
         version: 22.20.3
+      '@woodpatch/gcode-core':
+        specifier: workspace:*
+        version: link:../core
       fast-check:
         specifier: ^4.10.1
         version: 4.10.1
