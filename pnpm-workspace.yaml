@@ -19,5 +19,6 @@ allowBuilds:
 # Security floors for transitive dependencies the direct ones haven't caught up with.
 # Each names the advisory it answers; drop it once nothing resolves below it.
 overrides:
-  # GHSA-r825, GHSA-587h, GHSA-698v (fixed in 2.14.2): reached through @changesets/cli.
+  # GHSA-r825-w8mm-5pxw, GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv (fixed in 2.14.2),
+  # reached through @changesets/cli.
   launch-editor: ^2.14.2

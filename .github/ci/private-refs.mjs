@@ -21,7 +21,10 @@
 // - a system parameter (the 5000s) in backticks or quotes, or on a line about G-code.
 // Known gaps, accepted in review (so they're deliberate): a private number in the 5000s
 // on a line about G-code; glued forms (issue#NNNN, PR#NNNN, a private repo's name glued
-// to #NNNN); a fullwidth or zero-width "#", or &#35;; another owner's x/y#NNNN; and a
+// to #NNNN); a fullwidth or zero-width "#", or &#35; or &#x23;; another owner's x/y#NNNN;
+// a private repository's NAME (no number) behind an unusual host spelling
+// (github.com:443/, github.com./, github.com//, a backslash, %57 or an entity in the
+// owner); and a
 // private number smuggled into an outside list ("LinuxCNC #1528/#NNNN"); and shapes that
 // are valid G-code too: "#NNNN = 3 open items", "#NNNN = [WIP]", "#NNNN = ...",
 // "#NNNN=1 of 3", "[#NNNN and #44]", "[#NNNN - 2 follow-ups]".
@@ -38,17 +41,20 @@ const URL_SEPARATOR = /[\s"'`()<>[\],=]/;
 // Longer than this, a URL isn't read at all (refused): keeps the scan linear.
 const MAX_URL = 2048;
 // A URL that could reach the organisation whatever its owner segment says: a
-// dot-segment, raw or percent-encoded, or the organisation's name anywhere in it (a
-// query or a fragment, say). Such a URL never exempts anything.
-const SUSPECT_URL = /\.\.|%2e|woodpatchau/i;
+// dot-segment, raw or percent-encoded; the organisation's name anywhere in it (a query
+// or a fragment, say); or "&", since HTML and Markdown decode character references
+// (&#46;, &#x2e;, &period;) before a browser resolves the URL, and a Dependabot link
+// never has one. Such a URL never exempts anything.
+const SUSPECT_URL = /\.\.|%2e|woodpatchau|&/i;
 // redirect.github.com is the host Dependabot writes its release-note links with.
 const GITHUB_ISSUE = /^(?:https?:\/\/)?(?:www\.|redirect\.)?github\.com\/([a-z0-9-]+)\//i;
 // A number that is the text of a link to that same-numbered issue or PR, as Dependabot's
 // release notes write it: <a href="https://redirect.github.com/o/r/issues/N">#N</a>,
 // or in Markdown, [#N](https://github.com/o/r/pull/N). The link says whose it is.
+// Bounded (at MAX_URL), so text that keeps almost matching can't make a scan quadratic.
 const LINKED_NUMBER = [
-  /<a\s+href="([^"\s]+)"[^>]*>#([0-9]{4,5})<\/a>/gi,
-  /\[#([0-9]{4,5})\]\(([^)\s]+)\)/g,
+  /<a\s+href="([^"\s]{1,2048})"[^>]{0,2048}>#([0-9]{4,5})<\/a>/gi,
+  /\[#([0-9]{4,5})\]\(([^)\s]{1,2048})\)/g,
 ];
 const ORG_LINK = /github\.com[/:]woodpatchau\/([a-z0-9._-]+)/gi;
 const ORG_RAW = /raw\.githubusercontent\.com\/woodpatchau\/([a-z0-9._-]+)/gi;
@@ -59,8 +65,9 @@ const OWN_REPO = 'woodpatch-gcode-toolkit';
 // Only projects whose public trackers reach four digits: after any other name, such a
 // number can only be ours. A line merely naming the project exempts nothing else on it.
 const OUTSIDE_REF = /\b(linuxcnc|grbl)\b(\s+(issues?|prs?|bugs?))?\s+#[0-9]{4,5}(\/#[0-9]{4,5})*/gi;
-// The owner/repo#NNNN form.
-const REPO_REF = /\b([A-Za-z0-9-]+)\/[A-Za-z0-9._-]+#[0-9]{4,5}/g;
+// The owner/repo#NNNN form, bounded by GitHub's own limits (owner 39, repository 100),
+// so a long run of name characters can't make the scan quadratic.
+const REPO_REF = /\b([A-Za-z0-9-]{1,39})\/[A-Za-z0-9._-]{1,100}#[0-9]{4,5}/g;
 // What may follow a parameter inside an expression: a sign or a comparison.
 // ...and an operand after it: a number, a parameter, a bracket or a function (SIN[…]).
 const EXPR_NEXT =
@@ -70,7 +77,10 @@ const ABOUT_GCODE = /\b[GM][0-9]|param|coordinate|offset|\bhome\b|\baxis\b|posit
 /** The owner of a GitHub URL if it's another owner's, unambiguously; else undefined. */
 function outsideOwner(url) {
   if (SUSPECT_URL.test(url)) return undefined;
-  // A scheme part-way in ("see:https://…") starts the URL there.
+  // A scheme part-way in ("see:https://…") starts the URL there, and what's before it
+  // is ignored: "evil.example/https://github.com/o/r/issues/N" counts as o's link. The
+  // number it carries is then o's to have published, and an org link is still refused
+  // (SUSPECT_URL looks at the whole candidate).
   const k = url.search(/https?:\/\//i);
   const owner = GITHUB_ISSUE.exec(k > 0 ? url.slice(k) : url)?.[1]?.toLowerCase();
   return owner === 'woodpatchau' ? undefined : owner;
