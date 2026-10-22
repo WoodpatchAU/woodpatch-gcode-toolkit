@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // No ambient Node (or DOM) types: core runs in Node, browsers and workers, so it
+    // must not be able to reach a platform API by accident. Tests use tsconfig.test.json.
+    "types": []
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}
