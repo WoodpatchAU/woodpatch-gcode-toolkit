@@ -2649,40 +2649,58 @@ as an optional field in a new revision, or as version 2.
 ## ADR-0042: The travel check: certain or silent
 
 **Status:** Accepted, 2026-10-22. The reviewer's GO on the outline, with its three
-decisions and five additions. Implements ADR-0041's "the travel check uses what is
-knowable".
+decisions and five additions; revised after review the same day (eight programs that
+got a false "certain" result, all now regression tests). Implements ADR-0041's "the
+travel check uses what is knowable".
 
 **Context.** A preview doesn't know the operator's work offsets (G54 and the rest), any
-G92 offset left on the controller by an earlier program, tool lengths or cutter radii.
-The interpreter computes positions with all of those as 0. So a computed position is
-the real one plus an unknown shift per axis, except where the program put an axis
-somewhere known in machine terms.
+G92 offset left on the controller by an earlier program, a tool length offset left
+active, the stored G28/G30 positions, tool lengths or cutter radii. The interpreter
+computes positions with all of those as 0. So a computed position is the real one plus
+an unknown shift per axis, except where the program put an axis somewhere known in
+machine terms.
 
 **Decision.**
 
-- **Two additive fields.** Linear and arc steps carry `frame` (`TravelFrame`):
-  - `pinned`: the axes whose end is a known machine position. G53 pins the axes it names.
-    A Masso G28/G30 pins an axis only where the caller supplied that position; a
-    LinuxCNC G28/G30 never does, since the stored position lives on the controller. An
-    absolute work move pins an axis only if the offset in force on it is known. An
+- **Two additive fields.** Linear and arc steps carry `frame` (`TravelFrame`). Absent
+  means unknown. A second pass re-deriving this from the source was rejected
+  (decision a): it would drift from the interpreter's modal state.
+  - `pinned`: the axes whose end is a known machine position. G53 pins the axes it
+    names. A Masso G28/G30 pins an axis only where the caller supplied that position;
+    a LinuxCNC G28/G30 never does, since the stored position lives on the controller.
+    An absolute work move pins an axis only if the offset in force on it is known. An
     incremental move keeps what was known.
-  - `ids`: per axis, which unknown shift the end carries. An absolute work move takes the
-    shift of the offsets in force. An incremental move keeps its start's. The start
-    position has its own (id 0), and so does a return to an unknown home.
-  - The offsets' shift gets a new id on anything that may change it by an unknown amount:
-    a coordinate system change (Masso's extended ones included), a G10 to the active
-    system, G92 always (decision c), G52, G92.1/G92.2/G92.3, G43/G49 and any tool change
-    (Z only). Every offset write goes through one method, which starts the new id, so an
-    offset change the interpreter doesn't model in detail is still never mixed up.
-  - Absent means unknown. A second pass re-deriving this from the source was rejected
-    (decision a): it would drift from the interpreter's modal state.
-- **What counts as known.** A work offset is known only where the caller supplied it
-  (`workOffsets`, per coordinate system and axis), or the program wrote it as an
-  absolute value. G92 is unknown at the start, because a controller may keep it from an
-  earlier program (LinuxCNC does). It's known only once the program cancels or suspends
-  it (G92.1/G92.2), or when the caller supplies offsets. A supplied system is never
-  mixed with one that wasn't: moves under an unsupplied system fall back to the unknown
-  rules.
+  - `ids`: per axis, which unknown shift the end carries. An absolute work move takes
+    the shift of the offsets in force. An incremental move keeps its start's. The
+    start position has its own (id 0), and so does a move to somewhere unknown (a home
+    the program didn't set, a Masso G30 with no park position).
+  - The offsets' shift gets a new id on anything that may change it by an unknown
+    amount: a coordinate system change (Masso's extended ones included), a G10 to the
+    active system, G92 always (decision c), G52, G92.1/G92.2/G92.3, G43/G49 and any
+    tool change (Z only). Every offset write goes through one method, which starts the
+    new id.
+- **What counts as known.** An offset write is unknown unless it's an absolute value:
+  - known: G10 L2 (Masso L2 and L20 too), G52, G92.1's zeros, and the caller's
+    `workOffsets` (per coordinate system and axis; only systems 1-9 and 101-200);
+  - unknown: anything derived from a position or another offset (G10 L20, Masso L2.1
+    and L20.1, G92, a parameter assignment such as `#5221=[#5221+10]`), unless what
+    it's derived from is known. G92 from a pinned position under a known offset is
+    known, except on Z while a tool length offset may be in force (LinuxCNC's G92
+    includes it).
+  - **G92** is unknown at the start: a controller may keep it from an earlier program
+    (LinuxCNC does). It's known off after G92.1 or G92.2. Supplying `workOffsets`, even
+    `{}`, states that it's off at the start. That's the 5d contract, in the option's
+    documentation, but the stored values stay unknown, since G92.3 restores them.
+  - **A tool length offset** may be in force at the start (MDI, or one a controller
+    applies on a tool change), so Z under any offset is unknown until G49, or unless the
+    caller passes `toolLengthOffsetAtStart: 'off'`. A tool change makes it unknown
+    again.
+  - **Rotation** (G10 L2 ... R) isn't simulated: X and Y under a rotated system are
+    unknown.
+  - **A refused line** (any error) may still run on a controller, an unsupported code
+    for instance. Everything known before it is forgotten.
+  - A supplied system is never mixed with one that wasn't: moves under an unsupplied
+    system fall back to the unknown rules.
 - **`checkTravel(steps, travel)`** warns (decision b: the controller's soft limits are
   the stop) in two cases:
   - **TRAVEL_OUTSIDE_LIMITS:** a pinned end outside an axis's limits. Once per axis, at
@@ -2690,21 +2708,43 @@ somewhere known in machine terms.
   - **TRAVEL_EXTENT:** ends sharing one shift that span more than an axis's travel. The
     program can't fit, wherever the shift is. Once per axis and shift.
   - The points it counts: the start position (wherever the machine is, it's a real
-    place), each move's end, and an arc's extremes when both its ends are known alike.
-  - Comparisons are in machine millimetres after G20/G21. Messages give the axis, numbers
-    and a line, never program text.
-- **Cutter compensation (G41/G42):** the real path is offset by an unknown radius, either
-  way, in the plane. Those moves' plane axes aren't checked, and an info diagnostic,
-  TRAVEL_COMPENSATION_SKIPPED, says so. Nothing is understated silently.
-- **Proved by a property test.** A random program (moves, G53, G90/G91, G54-G56, G92 and
-  its cancels, G52, G10, canned cycles, arcs) is run with the offsets unknown, then again
-  with random offsets and a random start SUPPLIED: one possible truth. Every warning must
-  hold in that truth. Runs whose errors differ are skipped, since the start can decide
-  whether an arc's line runs at all. 80,000 cases passed locally, and CI runs 2,000. The
-  test also asserts it isn't vacuous: over 80% of cases compared, and warnings in
-  plenty. Mutating any of the frame rules fails it or a unit test.
+    place), each move's end, and an arc's extremes, only when every plane axis is known
+    alike at both ends (an arc's centre depends on both).
+  - Comparisons are in machine millimetres after G20/G21. Messages give the axis,
+    numbers and a line, never program text.
+  - Canned cycles are stamped per Z level. The initial level keeps what was known when
+    it was set, and under G90 the R plane and the hole are work levels. Where the
+    initial level and R coincide but are known differently, each such step gets a frame
+    of its own.
+- **Cutter compensation (G41/G42):** the real path is offset by an unknown radius,
+  either way, in the plane. Those moves' plane axes aren't checked, and an info
+  diagnostic, TRAVEL_COMPENSATION_SKIPPED, says so (with the subprogram file, if any).
+- **No consumer may ever show "within travel"** or any equivalent for a run with no
+  warnings. Silence means only that nothing certain was found.
+- **Proof.**
+  - **A property test.** A random program in either dialect is run as the check sees
+    it, then as one possible truth: random supplied offsets, a random start inside the
+    travel, sometimes a G92 left on the controller, random stored G28/G30 positions and
+    a Masso park position. Every warning must hold in that truth, up to the first line
+    where the two runs' errors differ. The programs mix moves, G53, G90/G91,
+    coordinate systems (G54.1 too), G92 and its cancels, G52, G10 L2/L20/L2.1/L20.1
+    (with R), parameter writes, G43/G49/M6, G28/G30, canned cycles with pecks, and arcs
+    in every plane (R-form and helical too).
+  - **What it can't model.** The interpreter doesn't apply tool lengths or cutter
+    radii (ADR-0016), so their truth there is 0 and no compensation. Unit tests pin
+    those rules.
+  - **Runs.** 60,000 cases passed locally (about 3% cut short at a differing error),
+    and CI runs 2,000. The test asserts it isn't vacuous: under half cut short, and
+    warnings in plenty.
+  - **Mutants.** Eleven mutants of the frame rules all fail the suite:
+    - the property test catches no new frames, G92 assumed off at the start, arc
+      interiors always counted, G10 L20 always known, and Masso G30 keeping its axes;
+    - unit tests catch cycle levels always in the work frame, G92 always known, the tool
+      length assumed off, refused lines forgetting nothing, and a stale stamp under
+      compensation.
 
 **Consequences.** Silence never means "fits". The check finds less than a check that
 assumed zero offsets would, and everything it finds is true. With the operator's offsets
-supplied, every move under them is checked exactly. `@woodpatch/gcode-db`'s machine
-record maps onto `TravelLimits` in the server (5d); core stays independent of it.
+supplied (and no tool length offset at the start), every move under them is checked
+exactly. `@woodpatch/gcode-db`'s machine record maps onto `TravelLimits` in the server
+(5d); core stays independent of it.

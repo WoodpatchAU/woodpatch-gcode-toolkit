@@ -199,13 +199,24 @@ export interface InterpretOptions {
     readonly park?: Partial<Position>;
   };
   /**
-   * The operator's work offsets, when known (the travel check, ADR-0041): coordinate
-   * system number (1-9 for G54-G59.3; 101-200 for Masso's G54.1 P1-P100) to its
-   * offset in machine millimetres. A supplied axis makes absolute moves on it under
-   * that system land at known machine positions. Systems or axes not supplied stay
-   * unknown; the two are never mixed.
+   * The operator's work offsets, when known (the travel check, ADR-0042): coordinate
+   * system number (1-9 for G54-G59.3; 101-200 for Masso's G54.1 P1-P100; any other key
+   * is ignored) to its offset in machine millimetres. A supplied axis makes absolute
+   * moves on it under that system land at known machine positions. Systems or axes not
+   * supplied stay unknown; the two are never mixed.
+   *
+   * **Contract:** supplying this at all, even `{}`, states that no G92 offset is in
+   * force when the program starts. It doesn't make the stored G92 values known: they
+   * persist on a controller, and G92.3 restores them.
    */
   readonly workOffsets?: Readonly<Record<number, Partial<Position>>>;
+  /**
+   * Whether a tool length offset is in force when the program starts (the travel
+   * check). `'unknown'` (the default): one may be, from MDI or a controller that applies
+   * it on a tool change, so Z positions stay unknown until the program cancels it (G49).
+   * `'off'`: the caller knows there's none.
+   */
+  readonly toolLengthOffsetAtStart?: 'off' | 'unknown';
   /** Safety caps for untrusted input. Hitting one stops the run with an error. */
   readonly limits?: Partial<InterpretLimits>;
   /**

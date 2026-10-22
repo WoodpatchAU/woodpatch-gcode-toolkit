@@ -63,8 +63,8 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
   });
   if (axes.length === 0) return out;
 
-  // Per axis: what was known where the previous move ended (an arc's interior is
-  // only as known as both its ends).
+  // Per axis (every axis, limits or not: an arc's interior depends on both its plane
+  // axes): what was known where the previous move ended.
   const prev = new Map<Axis, { pinned: boolean; id: number } | null>();
   // Per axis and frame id: the span of positions seen.
   const spans = new Map<string, Span>();
@@ -114,10 +114,10 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
     if (first) {
       first = false;
       const uncertainAtStart = frame?.compensated ? PLANE_AXES[frame.compensated] : [];
-      for (const a of axes) {
+      for (const a of AXES) {
         if (uncertainAtStart.includes(a)) continue;
-        extent(step, a, 0, step.from[a]);
         prev.set(a, { pinned: false, id: 0 });
+        if (axes.includes(a)) extent(step, a, 0, step.from[a]);
       }
     }
     if (!frame) {
@@ -128,9 +128,17 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
     const uncertain = frame.compensated ? PLANE_AXES[frame.compensated] : [];
     if (uncertain.length > 0) compensatedSkipped = true;
 
-    // An arc's extremes along the way, machine coordinates (X, Y, Z).
+    // An arc's extremes along the way, machine coordinates (X, Y, Z). They count only
+    // when EVERY plane axis is known alike at both ends: the centre depends on both (an
+    // R-form arc's most of all), so one axis's knowledge says nothing on its own.
     const interior: number[][] = [];
-    if (step.kind === 'arc') {
+    const alikeAtBothEnds = (a: Axis): boolean => {
+      const before = prev.get(a) ?? null;
+      if (before === null || uncertain.includes(a)) return false;
+      const pinned = frame.pinned.includes(a);
+      return before.pinned === pinned && (pinned || before.id === frame.ids[a]);
+    };
+    if (step.kind === 'arc' && PLANE_AXES[step.plane].every(alikeAtBothEnds)) {
       const a0 = startAngle(step);
       for (const f of cardinalFractions(a0, step.sweep)) {
         if (f <= 0 || f >= 1) continue;
@@ -139,23 +147,20 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
       }
     }
 
-    for (const a of axes) {
+    for (const a of AXES) {
       const pinned = frame.pinned.includes(a);
-      const now = { pinned, id: frame.ids[a] };
-      const before = prev.get(a) ?? null;
-      prev.set(a, uncertain.includes(a) ? null : now);
+      prev.set(a, uncertain.includes(a) ? null : { pinned, id: frame.ids[a] });
+    }
+    for (const a of axes) {
       if (uncertain.includes(a)) continue;
-
+      const pinned = frame.pinned.includes(a);
       const values = [step.to[a]];
-      // Interior points count only when both ends are known alike.
       const k = a === 'X' ? 0 : a === 'Y' ? 1 : a === 'Z' ? 2 : -1;
-      const sameAtBothEnds =
-        before !== null && before.pinned === now.pinned && (pinned || before.id === now.id);
-      if (k >= 0 && sameAtBothEnds) for (const p of interior) values.push(p[k] as number);
+      if (k >= 0) for (const p of interior) values.push(p[k] as number);
 
       for (const v of values) {
         if (pinned) pinnedAt(step, a, v);
-        else extent(step, a, now.id, v);
+        else extent(step, a, frame.ids[a], v);
       }
     }
   }
@@ -177,15 +182,17 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
       code: 'TRAVEL_COMPENSATION_SKIPPED',
       message:
         "Moves under cutter compensation (G41/G42) aren't travel-checked in their plane: the tool radius isn't known here",
-      line: firstCompensatedLine(steps),
+      ...firstCompensated(steps),
     });
   }
   return out.sort((x, y) => x.line - y.line);
 }
 
-function firstCompensatedLine(steps: readonly Step[]): number {
+/** Where the first compensated move is: its line, and its file if a subprogram's. */
+function firstCompensated(steps: readonly Step[]): { line: number; file?: string } {
   for (const s of steps) {
-    if ((s.kind === 'linear' || s.kind === 'arc') && s.frame?.compensated) return s.line;
+    if ((s.kind === 'linear' || s.kind === 'arc') && s.frame?.compensated)
+      return { line: s.line, ...(s.file !== undefined ? { file: s.file } : {}) };
   }
-  return 1;
+  return { line: 1 };
 }
