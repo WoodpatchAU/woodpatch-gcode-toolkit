@@ -24,6 +24,7 @@ import {
   type Position,
   type ProgramRequest,
   type Step,
+  type TravelFrame,
 } from './types.js';
 
 /** Severities, least to worst: the truncation note takes the worst it stands for. */
@@ -195,6 +196,9 @@ class Interpreter {
   private cycleZ: number | null = null;
   /** The level (machine Z) when the current run of canned cycles began; G98 returns here. */
   private cycleInitial: number | null = null;
+  /** What was known of the initial level's Z when it was set (the travel check). */
+  private cycleInitialPinned = false;
+  private cycleInitialFrame = 0;
   private offsetCache: Position | null = null;
 
   /** Immutable: replaced on every move, never mutated, so steps can share it safely. */
@@ -258,6 +262,38 @@ class Interpreter {
   /** The line of a spindle-speed change not yet settled by a dwell (Masso advice). */
   private settleLine: number | null = null;
 
+  // ── What's known of machine positions (the travel check, ADR-0041) ──────
+  // See TravelFrame. A position's real place is its computed one plus an unknown shift.
+  // Pinned: the axes now at a known machine position (no shift). Point ids: per axis,
+  // which unknown shift the current position carries. Offset ids: which unknown shift
+  // an absolute WORK move would take now; a new one wherever the offsets may change by
+  // an unknown amount. They differ: an incremental move keeps its point's shift, and
+  // the start position's shift (id 0, where the machine happens to be) is its own.
+  private readonly pinned = new Set<Axis>();
+  private readonly pointIds: Record<Axis, number> = { X: 0, Y: 0, Z: 0, A: 0, B: 0, C: 0 };
+  private readonly offsetIds: Record<Axis, number> = { X: 1, Y: 1, Z: 1, A: 1, B: 1, C: 1 };
+  private nextFrameId = 2;
+  /** Work-offset entries ("cs:axis") whose value is the machine's real one. */
+  private readonly knownOffsets = new Set<string>();
+  /**
+   * Per axis, whether the stored G92/G52 offset is the machine's real one. Not at the
+   * start: a controller can keep G92 offsets from an earlier program (LinuxCNC does),
+   * so they're unknown until the program cancels them or the caller supplies offsets.
+   */
+  private readonly g92Known: Record<Axis, boolean> = {
+    X: false,
+    Y: false,
+    Z: false,
+    A: false,
+    B: false,
+    C: false,
+  };
+  /** Whether G92 is known to be off on the machine (cancelled or suspended here, or the
+   *  caller supplied the offsets); at the start it may be on, from an earlier program. */
+  private g92OffKnown = false;
+  /** The stamp for the next motion step, reused until something it records changes. */
+  private frameCache: TravelFrame | null = null;
+
   constructor(options: InterpretOptions) {
     this.rules = options.rules ?? options.dialect?.expressions ?? LINUXCNC_RULES;
     this.behaviour =
@@ -272,6 +308,23 @@ class Interpreter {
     this.resolve = options.resolveProgram;
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.numbered.set(5220, 1);
+    // The operator's work offsets, when the caller knows them: seeded as parameters,
+    // and marked known per system and axis (never assumed for one not supplied).
+    // Supplied offsets are the whole story: no G92 offset left over from before.
+    if (options.workOffsets) {
+      this.g92OffKnown = true;
+      for (const a of AXES) this.g92Known[a] = true;
+    }
+    for (const [key, offset] of Object.entries(options.workOffsets ?? {})) {
+      const cs = Number(key);
+      if (!Number.isInteger(cs) || cs < 1) continue;
+      for (const a of AXES) {
+        const v = offset[a];
+        if (v === undefined || !Number.isFinite(v)) continue;
+        this.numbered.set(this.wcsBase(cs) + AXIS_INDEX[a], v);
+        this.knownOffsets.add(`${cs}:${a}`);
+      }
+    }
     // Predefined, read-only (LinuxCNC): the last subroutine's return value.
     this.globalNamed.set('_value', 0);
     this.globalNamed.set('_value_returned', 0);
@@ -827,6 +880,9 @@ class Interpreter {
           'Tool change with the spindle running: this controller requires M05 before M06',
         );
     }
+    // A tool change may bring a tool length the controller applies (or the operator
+    // sets): Z's shift is unknown from here on (the travel check). Conservative: always.
+    if (m.has('6') || m.has('6.1')) this.newFrame('Z');
     if (m.has('6.1')) {
       // Masso M6.1: unload the tool from the spindle. A tool change, so it stops the
       // spindle where M6 does.
@@ -936,6 +992,8 @@ class Interpreter {
     if (g.has('43')) {
       used.add('H');
       this.toolLength = true;
+      // Z now carries a tool length this preview doesn't know (the travel check).
+      this.newFrame('Z');
       this.reportOnce(
         n,
         'info',
@@ -943,7 +1001,10 @@ class Interpreter {
         'Tool length offsets are not applied (no tool table): Z is drawn as programmed',
       );
     }
-    if (g.has('49')) this.toolLength = false;
+    if (g.has('49')) {
+      if (this.toolLength) this.newFrame('Z');
+      this.toolLength = false;
+    }
     for (const [code, cs] of WCS_CODES) {
       if (g.has(code)) this.setParam(5220, cs);
     }
@@ -1006,6 +1067,7 @@ class Interpreter {
     if (g.has('92')) this.g92(words);
     if (g.has('52')) this.g52(words);
     if (g.has('92.1') || g.has('92.2')) {
+      this.g92OffKnown = true;
       this.setParam(5210, 0);
       if (g.has('92.1')) for (const a of AXES) this.setParam(5211 + AXIS_INDEX[a], 0);
     }
@@ -1601,8 +1663,12 @@ class Interpreter {
     }
     const offset = this.offset();
     const from = this.position;
+    // How the named axes arrive (the travel check), applied once the move runs.
+    const named = words.filter((w) => w.letter in AXIS_INDEX).map((w) => w.letter as Axis);
+    const how = g53 ? 'machine' : this.distance === 'incremental' ? 'relative' : 'work';
 
     if (this.motion === 'G0') {
+      this.arrive(named, how);
       this.steps.push({
         kind: 'linear',
         line: n,
@@ -1611,6 +1677,7 @@ class Interpreter {
         to: target,
         feed: null,
         offset,
+        frame: this.stamp(),
       });
       this.position = target;
       return;
@@ -1619,7 +1686,17 @@ class Interpreter {
     if (!feed) return;
     if (this.settleLine !== null) this.adviseSettle(n);
     if (this.motion === 'G1') {
-      this.steps.push({ kind: 'linear', line: n, rapid: false, from, to: target, feed, offset });
+      this.arrive(named, how);
+      this.steps.push({
+        kind: 'linear',
+        line: n,
+        rapid: false,
+        from,
+        to: target,
+        feed,
+        offset,
+        frame: this.stamp(),
+      });
       this.position = target;
       return;
     }
@@ -1750,6 +1827,7 @@ class Interpreter {
     }
     if (result.warning) this.report(n, 'warning', result.warning.code, result.warning.message);
     const arc = result.arc;
+    this.arrive(named, how);
     this.steps.push({
       kind: 'arc',
       line: n,
@@ -1764,6 +1842,7 @@ class Interpreter {
       turns,
       feed,
       offset,
+      frame: this.stamp(),
     });
     this.position = target;
   }
@@ -1850,7 +1929,11 @@ class Interpreter {
 
     const pos = this.position;
     const offset = this.offset();
-    if (this.cycleInitial === null) this.cycleInitial = pos.Z;
+    if (this.cycleInitial === null) {
+      this.cycleInitial = pos.Z;
+      this.cycleInitialPinned = this.pinned.has('Z');
+      this.cycleInitialFrame = this.pointIds.Z;
+    }
     let initial = this.cycleInitial;
     const incremental = this.distance === 'incremental';
     const x = get('X');
@@ -1893,6 +1976,31 @@ class Interpreter {
       holes.push({ x: hx, y: hy });
     }
 
+    // The travel check. X and Y arrive as any move's would. Z needs each level apart:
+    // the initial level keeps what was known when it was set; under G90 the R plane
+    // and the hole are work levels, and under G91 they're relative to the initial one.
+    const xy = [...(x ? ['X' as const] : []), ...(y ? ['Y' as const] : [])];
+    const workZ = { pinned: this.offsetKnown('Z'), id: this.offsetIds.Z };
+    let initialZ = { pinned: this.cycleInitialPinned, id: this.cycleInitialFrame };
+    // Under G90, an initial level that's numerically the R plane but known differently
+    // can't be told apart from it: each such step gets a frame of its own (unpinned).
+    const ambiguous = !incremental && r === initial && initialZ.pinned !== workZ.pinned;
+    const zAt = (z: number): { pinned: boolean; id: number } => {
+      if (ambiguous && z === r) return { pinned: false, id: this.nextFrameId++ };
+      return incremental || z === initial ? initialZ : workZ;
+    };
+    const withZ = (z: { pinned: boolean; id: number }): TravelFrame => {
+      const base = this.stamp();
+      const pinned: Axis[] = base.pinned.filter((a) => a !== 'Z');
+      if (z.pinned) pinned.push('Z');
+      return {
+        ...base,
+        pinned: AXES.filter((a) => pinned.includes(a)),
+        ids: { ...base.ids, Z: z.id },
+      };
+    };
+    let lastZ = { pinned: this.pinned.has('Z'), id: this.pointIds.Z };
+
     // Preliminary motion: from below R, rise to R once (convert_cycle_xy).
     let zNow = pos.Z;
     const steps: Step[] = [];
@@ -1902,11 +2010,16 @@ class Interpreter {
     if (this.settleLine !== null) this.adviseSettle(n);
     if (initial < r) {
       const to = at(pos.X, pos.Y, r);
-      steps.push({ kind: 'linear', line: n, rapid: true, from, to, feed: null, offset });
+      lastZ = incremental ? initialZ : workZ;
+      const frame = withZ(lastZ);
+      steps.push({ kind: 'linear', line: n, rapid: true, from, to, feed: null, offset, frame });
       from = to;
       zNow = r;
       initial = r;
+      initialZ = lastZ;
     }
+    // X and Y move to the holes after the rise (which is straight up, where they were).
+    this.arrive(xy, incremental ? 'relative' : 'work');
     const clear = this.retract === 'r-plane' ? r : initial;
     for (const op of cycleOps({
       code,
@@ -1927,6 +2040,7 @@ class Interpreter {
         continue;
       }
       const to = at(op.x, op.y, op.z);
+      lastZ = zAt(op.z);
       steps.push({
         kind: 'linear',
         line: n,
@@ -1935,11 +2049,17 @@ class Interpreter {
         to,
         feed: op.kind === 'feed' ? feed : null,
         offset,
+        frame: withZ(lastZ),
       });
       from = to;
     }
     this.steps.push(...steps);
     this.position = from;
+    // Z is left as its last level was known.
+    if (lastZ.pinned) this.pinned.add('Z');
+    else this.pinned.delete('Z');
+    this.pointIds.Z = lastZ.id;
+    this.frameCache = null;
     this.cycleR = r0;
     this.cycleZ = z0;
     if (q !== null) this.cycleQ = q;
@@ -2017,11 +2137,90 @@ class Interpreter {
     return 5221 + 20 * (cs - 1);
   }
 
-  /** Writes a parameter; any write from #5210 up (offsets) invalidates the cached offset. */
-  private setParam(i: number, v: number): void {
+  /**
+   * Writes a parameter; any write from #5210 up (offsets) invalidates the cached offset.
+   * `known`: for an offset, whether the value written is the machine's real one (an
+   * absolute value is; one derived from a position or another unknown offset may not
+   * be). An offset write also starts a new frame on the axes it can shift, so
+   * anything that changes an offset, modelled in detail or not, is never mixed up.
+   */
+  private setParam(i: number, v: number, known = true): void {
+    const old = this.numbered.get(i);
     this.numbered.set(i, v);
     // #5210 up: G92 and every coordinate system, including Masso's extended 101-200.
-    if (i >= 5210) this.offsetCache = null;
+    if (i < 5210) return;
+    this.offsetCache = null;
+    if (i === 5210 || i === 5220) {
+      // G92 on or off, or another coordinate system: every axis may shift.
+      if (old !== v) for (const a of AXES) this.newFrame(a);
+    } else if (i >= 5211 && i <= 5216) {
+      const a = AXES[i - 5211] as Axis;
+      this.g92Known[a] = known;
+      this.newFrame(a);
+    } else if (i >= 5221) {
+      const k = (i - 5221) % 20;
+      const cs = Math.floor((i - 5221) / 20) + 1;
+      if (k >= AXES.length) return;
+      const a = AXES[k] as Axis;
+      if (known) this.knownOffsets.add(`${cs}:${a}`);
+      else this.knownOffsets.delete(`${cs}:${a}`);
+      if (cs === this.coordinateSystem()) this.newFrame(a);
+    }
+  }
+
+  /** The offset on an axis may have changed by an unknown amount: work moves from now
+   *  on carry a new shift. Positions already reached keep theirs. */
+  private newFrame(a: Axis): void {
+    this.offsetIds[a] = this.nextFrameId++;
+  }
+
+  /** Whether the offset in force on an axis is the machine's real one. */
+  private offsetKnown(a: Axis): boolean {
+    const g92On = (this.numbered.get(5210) ?? 0) !== 0;
+    return (
+      this.knownOffsets.has(`${this.coordinateSystem()}:${a}`) &&
+      (g92On ? this.g92Known[a] : this.g92OffKnown) &&
+      !(a === 'Z' && this.toolLength)
+    );
+  }
+
+  /**
+   * Records how a move set its axes: to MACHINE coordinates (G53, a known home),
+   * to WORK coordinates (known where the offset is), or relative to where they were
+   * (an incremental move keeps what was known).
+   */
+  private arrive(axes: Iterable<Axis>, how: 'machine' | 'work' | 'relative'): void {
+    if (how === 'relative') return;
+    for (const a of axes) {
+      if (how === 'machine' || this.offsetKnown(a)) {
+        this.pinned.add(a);
+      } else {
+        this.pinned.delete(a);
+        this.pointIds[a] = this.offsetIds[a];
+      }
+    }
+    this.frameCache = null;
+  }
+
+  /** Axes sent somewhere unknown (a home the program never set): a new frame, unpinned. */
+  private lost(axes: Iterable<Axis>): void {
+    for (const a of axes) {
+      this.pinned.delete(a);
+      this.pointIds[a] = this.nextFrameId++;
+    }
+    this.frameCache = null;
+  }
+
+  /** The TravelFrame for a motion step ending now. */
+  private stamp(): TravelFrame {
+    if (this.frameCache) return this.frameCache;
+    const frame: TravelFrame = {
+      pinned: AXES.filter((a) => this.pinned.has(a)),
+      ids: { ...this.pointIds },
+      ...(this.cutterComp !== 'off' ? { compensated: this.plane } : {}),
+    };
+    this.frameCache = frame;
+    return frame;
   }
 
   private offset(): Position {
@@ -2100,18 +2299,21 @@ class Interpreter {
   private g92(words: readonly Word[]): void {
     const wcs = this.wcsOffsetOf(this.coordinateSystem());
     const on = (this.numbered.get(5210) ?? 0) !== 0;
-    for (const a of AXES) if (!on) this.setParam(5211 + AXIS_INDEX[a], 0);
+    // Zeroed only if it was off; the real controller's may not have been (g92Known).
+    for (const a of AXES) if (!on) this.setParam(5211 + AXIS_INDEX[a], 0, this.g92Known[a]);
     for (const w of words) {
       if (!(w.letter in AXIS_INDEX)) continue;
       const a = w.letter as Axis;
-      this.setParam(5211 + AXIS_INDEX[a], this.position[a] - wcs[a] - this.axisValue(w));
+      // Derived from where the tool is: known only if that and the system's offset are.
+      const known = this.pinned.has(a) && this.knownOffsets.has(`${this.coordinateSystem()}:${a}`);
+      this.setParam(5211 + AXIS_INDEX[a], this.position[a] - wcs[a] - this.axisValue(w), known);
     }
     this.setParam(5210, 1);
   }
 
   private g52(words: readonly Word[]): void {
     const on = (this.numbered.get(5210) ?? 0) !== 0;
-    for (const a of AXES) if (!on) this.setParam(5211 + AXIS_INDEX[a], 0);
+    for (const a of AXES) if (!on) this.setParam(5211 + AXIS_INDEX[a], 0, this.g92Known[a]);
     for (const w of words) {
       if (w.letter in AXIS_INDEX)
         this.setParam(5211 + AXIS_INDEX[w.letter as Axis], this.axisValue(w));
@@ -2136,8 +2338,13 @@ class Interpreter {
       );
     }
     const offset = this.offset();
+    const viaHow = this.distance === 'incremental' ? 'relative' : 'work';
     if (axisWords.length > 0) {
       const via = this.target(words, false);
+      this.arrive(
+        axisWords.map((w) => w.letter as Axis),
+        viaHow,
+      );
       this.steps.push({
         kind: 'linear',
         line: n,
@@ -2146,12 +2353,16 @@ class Interpreter {
         to: via,
         feed: null,
         offset,
+        frame: this.stamp(),
       });
       this.position = via;
     }
     const to: Record<Axis, number> = { ...this.position };
     const axes = axisWords.length > 0 ? axisWords.map((w) => w.letter as Axis) : [...AXES];
     for (const a of axes) to[a] = this.numbered.get(base + AXIS_INDEX[a]) ?? 0;
+    // The stored position lives on the machine (#5161-, #5181-), so where it really is
+    // isn't known here, even when this program stored it: never pinned.
+    this.lost(axes);
     this.steps.push({
       kind: 'linear',
       line: n,
@@ -2160,6 +2371,7 @@ class Interpreter {
       to,
       feed: null,
       offset,
+      frame: this.stamp(),
     });
     this.position = to;
   }
@@ -2216,6 +2428,10 @@ class Interpreter {
     if (which === 28) {
       if (axisWords.length > 0) {
         const via = this.target(words, false);
+        this.arrive(
+          axisWords.map((w) => w.letter as Axis),
+          this.distance === 'incremental' ? 'relative' : 'work',
+        );
         this.steps.push({
           kind: 'linear',
           line: n,
@@ -2224,6 +2440,7 @@ class Interpreter {
           to: via,
           feed: null,
           offset,
+          frame: this.stamp(),
         });
         this.position = via;
       }
@@ -2262,6 +2479,14 @@ class Interpreter {
         }
       }
       if (!moved) continue;
+      // A machine position the caller supplied is known; the default (the machine
+      // origin, for a home not supplied) is a guess.
+      const supplied = which === 28 ? this.machineHome : this.machinePark;
+      this.arrive(
+        group.filter((a) => supplied?.[a] !== undefined),
+        'machine',
+      );
+      this.lost(group.filter((a) => supplied?.[a] === undefined));
       this.steps.push({
         kind: 'linear',
         line: n,
@@ -2270,6 +2495,7 @@ class Interpreter {
         to,
         feed: null,
         offset,
+        frame: this.stamp(),
       });
       this.position = to;
     }

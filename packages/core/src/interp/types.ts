@@ -31,6 +31,37 @@ export type Feed =
   | { readonly mode: 'unspecified' };
 
 /**
+ * What a preview can know about where a move really ends on the machine (the travel
+ * check, ADR-0041). Positions are computed with every work offset the PROGRAM didn't
+ * set taken as 0, and the operator's own offsets (G54 and so on), tool lengths and
+ * cutter radii are unknown. So an endpoint is exact only up to an unknown shift per
+ * axis, except on axes the program put somewhere known in machine terms.
+ */
+export interface TravelFrame {
+  /**
+   * Axes whose `to` is a known machine position: moved by G53, by a Masso G28/G30 to
+   * a position the caller supplied, or under a work offset the caller supplied
+   * (`workOffsets`); an incremental move keeps the axis's state.
+   */
+  readonly pinned: readonly Axis[];
+  /**
+   * Per axis, an id for the unknown shift the endpoint carries (its real place is its
+   * computed one plus that shift). Two unpinned endpoints with the same id on an axis
+   * differ by exactly what their positions say. An absolute work move takes the shift of
+   * the offsets in force, which gets a new id wherever they may change by an unknown
+   * amount (a coordinate system change, a G10 to the active system, G92/G52 and their
+   * cancels, a tool length change, a tool change); an incremental move keeps its
+   * start's; the start position, and a return to an unknown home, have their own.
+   */
+  readonly ids: Readonly<Record<Axis, number>>;
+  /**
+   * Cutter compensation was on (G41/G42): the real path is offset by an unknown tool
+   * radius in the plane, so this move's plane axes are uncertain either way.
+   */
+  readonly compensated?: Plane;
+}
+
+/**
  * One thing the program makes the machine do, in execution order.
  *
  * Positions are MACHINE coordinates in millimetres (ADR-0019). `offset` is the total
@@ -55,6 +86,8 @@ type StepKind =
       readonly to: Position;
       readonly feed: Feed | null;
       readonly offset: Position;
+      /** What's known of the endpoint on the machine. Absent: unknown. */
+      readonly frame?: TravelFrame;
     }
   | {
       readonly kind: 'arc';
@@ -85,6 +118,8 @@ type StepKind =
       readonly turns: number;
       readonly feed: Feed;
       readonly offset: Position;
+      /** What's known of the endpoint on the machine. Absent: unknown. */
+      readonly frame?: TravelFrame;
     }
   | { readonly kind: 'dwell'; readonly line: number; readonly seconds: number }
   | { readonly kind: 'tool-change'; readonly line: number; readonly tool: number | null }
@@ -163,6 +198,14 @@ export interface InterpretOptions {
     readonly home?: Partial<Position>;
     readonly park?: Partial<Position>;
   };
+  /**
+   * The operator's work offsets, when known (the travel check, ADR-0041): coordinate
+   * system number (1-9 for G54-G59.3; 101-200 for Masso's G54.1 P1-P100) to its
+   * offset in machine millimetres. A supplied axis makes absolute moves on it under
+   * that system land at known machine positions. Systems or axes not supplied stay
+   * unknown; the two are never mixed.
+   */
+  readonly workOffsets?: Readonly<Record<number, Partial<Position>>>;
   /** Safety caps for untrusted input. Hitting one stops the run with an error. */
   readonly limits?: Partial<InterpretLimits>;
   /**
