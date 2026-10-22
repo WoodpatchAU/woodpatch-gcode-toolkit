@@ -2263,14 +2263,81 @@ a great deal of work.
 
 - **Not on any network.** The server listens only on a Unix socket on the calling
   application's host, never on TCP (any local process can reach localhost). The socket's
-  permissions (0660, the server's user and the caller's group) limit who can connect.
+  permissions (0660, owned by root and a dedicated group that holds only the caller)
+  limit who can connect, as the next point sets out.
   Customers never reach it directly: their requests go through the calling application.
-- **Caller identity from the kernel.** On each connection the server reads the peer's
-  credentials (`SO_PEERCRED`) and refuses any uid but the caller's. A bearer token is
-  optional defence in depth, not the control: on one host, whatever can read the
-  caller's config can read a token. mTLS adds nothing on a local socket. If the server
-  ever moves off the host, this decision is reopened (mTLS, or a token over TLS plus
-  network restriction).
+- **Caller identity from the socket's permissions, which the kernel enforces.** Only a
+  process that can search the socket's directory and write the socket can `connect()`,
+  so the socket's group IS the identity check:
+  - **The directory:** `/run/wp-gcode/`, owned `root:<group>`, mode 0750, made by
+    `tmpfiles.d` (`d /run/wp-gcode 0750 root <group> -`, which also corrects an existing
+    directory). Not `RuntimeDirectory=`: that directory belongs to the service's user,
+    so the server could swap the socket, and it's deleted when the service stops while
+    the socket unit still listens.
+  - **The socket:** `/run/wp-gcode/gcode.sock`, created by systemd's socket unit
+    (`ListenStream=`, `SocketUser=root`, `SocketGroup=<group>`, `SocketMode=0660`,
+    `RemoveOnStop=yes`). Nobody but root can replace it or change its mode.
+  - **The server** never creates or changes the socket: it receives it from systemd.
+  - **The group** is a local system group with a reserved gid outside the directory
+    service's range (the kernel checks the gid NUMBER). It holds ONLY the calling
+    application's user, and changing that is a reviewed change: **the review is the
+    real control**.
+  - **Directory-sourced identities.** Users and groups also come from the directory
+    service (LDAP via sssd), which `/etc/group` and `/etc/passwd` don't show. For those,
+    the control is the reserved gid: it lies outside every ID range the directory
+    service maps, so no directory user or group can carry it. The tripwire checks that
+    the sssd ID-range configuration excludes the gid.
+  - **A tripwire at start.** The check runs with full privileges, outside the sandbox
+    (`ExecStartPre=+…`, with no `-`, so a failure fails the start). It must: the
+    service's own user is a dynamic user outside `<group>`, so it can't enter the
+    directory or read `/etc/gshadow`. Adding that user to the group would break
+    "exactly the caller". The check refuses to start when:
+    - the group's members aren't exactly the caller's user, in `/etc/group` and in
+      `/etc/gshadow` alike;
+    - the group has a password that isn't locked (`!` or `*` in `/etc/gshadow`), or
+      has any group administrators (either would let `newgrp` or `gpasswd` get round
+      the membership rule);
+    - any user other than the caller's has the gid as its PRIMARY group. `getent`
+      lists only supplementary members, so the check reads `/etc/passwd` directly;
+    - another group has the same gid, or `getent group <gid>` doesn't resolve to that
+      name;
+    - the sssd ID ranges include the gid;
+    - the directory isn't `root:<group>` 0750.
+  - **The socket's own check runs after it is bound.** A socket unit's `ExecStartPre=`
+    runs before the socket exists (and with `RemoveOnStop=yes` it never exists then).
+    So the socket unit runs the group, directory and identity checks above in
+    `ExecStartPre=`, and checks the socket itself (`root:<group>` 0660) in
+    `ExecStartPost=`. A failure there fails the socket unit, which stops listening.
+  - **How it fails closed.** A single failed check doesn't trip anything by itself:
+    the server just doesn't run while the check fails. Repeated socket-triggered
+    starts then hit the service's start limit, and the socket unit fails with
+    `service-start-limit-hit` and stops listening. Nothing then answers on the
+    socket until an operator fixes the cause and restarts the units.
+  - **The directory exists before the socket.** The socket unit sets
+    `DirectoryMode=0750`, so if systemd has to create `/run/wp-gcode/` first it never
+    makes it 0755. tmpfiles then sets the owner (socket units order after
+    `systemd-tmpfiles-setup` by default), and installing runs
+    `systemd-tmpfiles --create` before the first start. Otherwise the tripwire refuses
+    a `root:root` directory, which is safe but confusing.
+  - **The unit files** (socket, service, tmpfiles and the check) ship with the server's
+    PR, and are reviewed against this list.
+  - **A token is optional defence in depth, not the control:** on one host, whatever
+    can read the caller's config can read a token. If used, it reaches the service as a
+    credential (`LoadCredential=`), never through the environment. The server logs
+    whether it runs with one, and never logs the token or a hash of it.
+  - **Off the host, this is reopened.** mTLS adds nothing on a local socket. If the
+    server ever moves off the host, this decision is reopened (mTLS, or a token over TLS
+    plus network restriction).
+  - **Amended before any server code.** This first said the server would read each
+    connection's peer credentials (`SO_PEERCRED`). Node doesn't expose them on a Unix
+    socket, and reading them would need a native addon, which this ADR rules out (it
+    would call for a container or VM). systemd's per-connection instances (`Accept=yes`)
+    WOULD expose the peer (systemd names each instance with the peer's pid and uid).
+    They were rejected for other reasons:
+    - one Node process per connection defeats the bounded pool, the fair share and the
+      cache;
+    - it adds Node's start-up time to every request;
+    - it lets any member of the group spawn processes.
 - **A sandbox that leaves a compromised parser with nothing.** It runs as a systemd
   service with:
   - its own unprivileged user (`DynamicUser=yes` or a dedicated no-login user);
@@ -2284,11 +2351,10 @@ a great deal of work.
     `RestrictNamespaces=yes`, `LockPersonality=yes`, `RestrictSUIDSGID=yes`,
     `ProtectClock=yes`, `ProtectHostname=yes`, `ProtectProc=invisible` and `UMask=0077`;
   - `MemoryMax=`, `CPUQuota=` and `TasksMax=`;
-  - the socket created by **socket activation**: a `.socket` unit creates it, with
-    `SocketGroup` set to the CALLER's group and `SocketMode=0660` (the dynamic user
-    doesn't exist yet when the socket is made, so it isn't the owner; the service
-    receives the listening socket from systemd and needs no permission on the file).
-    With `DynamicUser` and `ProtectSystem=strict` the service can't create the socket
+  - the socket created by **socket activation**, as above (the dynamic user doesn't
+    exist yet when the socket is made, so it isn't the owner; the service receives the
+    listening socket from systemd and needs no permission on the file). With
+    `DynamicUser` and `ProtectSystem=strict` the service can't create the socket
     itself, and the sandbox must not be loosened to let it;
   - NOT `MemoryDenyWriteExecute`, deliberately: V8's JIT needs writable executable
     memory.
