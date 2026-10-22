@@ -80,7 +80,8 @@ export function leaks(text) {
     for (const m of text.matchAll(pattern)) {
       const [url, n] = i === 0 ? [m[1] ?? '', m[2]] : [m[2] ?? '', m[1]];
       const owner = GITHUB_ISSUE.exec(url)?.[1]?.toLowerCase();
-      const same = new RegExp(`/(issues|pull)/${n}(?![0-9])`).test(url);
+      // The issue or PR the link points at (a fixed pattern; nothing built at run time).
+      const same = /\/(?:issues|pull)\/([0-9]+)(?![0-9])/.exec(url)?.[1] === n;
       // Only another owner's: a link into the organisation was refused above.
       if (owner !== undefined && owner !== 'woodpatchau' && same) {
         outside.push([m.index, m.index + m[0].length]);
