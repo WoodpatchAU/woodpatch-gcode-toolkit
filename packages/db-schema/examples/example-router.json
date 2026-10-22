@@ -1,0 +1,93 @@
+{
+  "format": "woodpatch-gcode-machine",
+  "version": 1,
+  "revision": 1,
+  "id": "example-1",
+  "name": "Example router (fictional)",
+  "dialect": "generic",
+  "axes": {
+    "X": {
+      "min": {
+        "value": 0,
+        "source": "seed"
+      },
+      "max": {
+        "value": 2440,
+        "source": "seed"
+      },
+      "maxVelocity": {
+        "value": 10000,
+        "source": "seed"
+      },
+      "acceleration": {
+        "value": 500,
+        "source": "seed"
+      }
+    },
+    "Y": {
+      "min": {
+        "value": 0,
+        "source": "seed"
+      },
+      "max": {
+        "value": 1220,
+        "source": "seed"
+      },
+      "maxVelocity": {
+        "value": 10000,
+        "source": "seed"
+      },
+      "acceleration": {
+        "value": 500,
+        "source": "seed"
+      }
+    },
+    "Z": {
+      "min": {
+        "value": -100,
+        "source": "seed"
+      },
+      "max": {
+        "value": 0,
+        "source": "seed"
+      },
+      "maxVelocity": {
+        "value": 2000,
+        "source": "seed"
+      },
+      "acceleration": {
+        "value": 200,
+        "source": "seed"
+      }
+    }
+  },
+  "planner": {
+    "junctionDeviation": {
+      "value": 0.02,
+      "source": "seed"
+    }
+  },
+  "spindle": {
+    "maxRpm": {
+      "value": 18000,
+      "source": "seed"
+    },
+    "spinUpSeconds": {
+      "value": 5,
+      "source": "seed"
+    },
+    "spinDownSeconds": {
+      "value": 5,
+      "source": "seed"
+    }
+  },
+  "overheads": {
+    "toolChangeSeconds": {
+      "value": 60,
+      "source": "seed"
+    }
+  },
+  "calibration": {
+    "status": "uncalibrated"
+  }
+}

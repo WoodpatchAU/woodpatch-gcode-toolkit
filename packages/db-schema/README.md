@@ -5,8 +5,21 @@ SPDX-License-Identifier: MIT
 
 # @woodpatch/gcode-db
 
-TypeScript types, JSON Schema and Zod for machine, tool and material records, shared by consuming applications.
+The machine record's format (`docs/DECISIONS.md`, ADR-0041), shared by the toolkit and
+the applications that store machine records. Zero runtime dependencies.
 
-**Placeholder.** It arrives in Phase 5 (see `docs/PLAN.md`). It stays `"private": true`
-until it has code; at that point it adopts `packages/core`'s build and publishing
-setup, and CI's licence-notice check starts covering it automatically.
+- `readMachine(text)`: the whole path for a record's text as received: the
+  16,384-byte cap, the strict parse, validation, and the content hash.
+- `validateMachine(record)`: every rule of ADR-0041. Returns a list of problems (empty
+  means valid); messages are printable ASCII. They never quote a value from the record,
+  only a field name, escaped and shortened.
+- `parseStrictJson(text)`: a JSON parser for untrusted records. It refuses repeated
+  keys (compared after unescaping), lone surrogates, numbers that overflow and deep
+  nesting, and builds null-prototype objects, so `__proto__` is an ordinary key.
+- `contentHash(value)`: SHA-256 of the record's RFC 8785 (JCS) canonical form. Only the
+  toolkit computes it; a storing application keeps the hash the server echoes.
+- `schema/machine-record-v1.schema.json`: JSON Schema draft 2020-12 for other
+  languages. It's a subset of `validateMachine`, which is authoritative.
+- `examples/example-router.json`: a fictional, uncalibrated example record.
+
+It stays `"private": true` until the release pipeline exists.
