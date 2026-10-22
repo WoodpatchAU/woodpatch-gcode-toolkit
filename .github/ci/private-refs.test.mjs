@@ -83,3 +83,42 @@ test('lets through G-code parameters, outside projects and colours', () => {
   ])
     assert.equal(leaks(line), false, line);
 });
+
+// Dependabot's release notes link each upstream issue as <a href="…/issues/N">#N</a>,
+// on redirect.github.com. The link names the owner, so the number is theirs. Built at
+// run time like the cases above: the pre-push hook's copy of an older matcher reads
+// this file too.
+const ISSUES = '/iss' + 'ues/';
+const PULL = '/pu' + 'll/';
+test("lets through a number that is the text of another owner's link to it", () => {
+  const vite = 'https://redirect.github.com/vitejs/vite';
+  for (const line of [
+    `<li><strong>deps:</strong> update launch-editor (<a href="${vite}${ISSUES}23654">${H}23654</a>) (<a href="https://github.com/vitejs/vite/commit/22fd1d5">22fd1d5</a>)</li>`,
+    `<a href="https://github.com/vitejs/vite${PULL}23653">${H}23653</a>`,
+    `fixed upstream in [${H}23653](https://github.com/vitejs/vite${PULL}23653)`,
+    `${vite}${ISSUES}23654`,
+    `(<a href="https://github.com/vitejs/vite/tree/HEAD/packages/vite${ISSUES}23657">${H}23657</a>)</li>`,
+  ])
+    assert.equal(leaks(line), false, line);
+});
+
+test('still refuses a linked number that is ours, or not what the link says', () => {
+  const vite = `https://redirect.github.com/vitejs/vite${ISSUES}23654`;
+  const N = '999' + '01'; // built at run time, like H
+  for (const line of [
+    // The text's number isn't the link's.
+    `<a href="${vite}">${H}99901</a>`,
+    `[${H}99901](${vite})`,
+    // The organisation's own link, on either host.
+    `<a href="https://redirect.github.com/${ORG}/x/issues/${N}">${H}99901</a>`,
+    `https://redirect.github.com/${ORG.toLowerCase()}/x/pull/3`,
+    `<a href="https://github.com/${ORG}/x/tree/HEAD/y/issues/${N}">${H}99901</a>`,
+    `(see https://github.com/${ORG.toLowerCase()}/x/tree/main/issues/${N})`,
+    `"something/deeper/path/issues/${N}"`,
+    // Not GitHub at all.
+    `<a href="https://example.com/issues/${N}">${H}99901</a>`,
+    // A private number beside a genuine Dependabot link.
+    `<a href="${vite}">${H}23654</a> and ${H}99902`,
+  ])
+    assert.equal(leaks(line), true, line);
+});

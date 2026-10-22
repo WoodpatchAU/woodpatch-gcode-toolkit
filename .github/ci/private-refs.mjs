@@ -31,8 +31,19 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 const NUMBER = /(^|[^0-9A-Za-z&])#([0-9]{4,5})(?![0-9A-Za-z])/g;
-const NUMBERED_LINK = /([a-z0-9.-]*\/[^\s/]*\/[^\s/]*)?\/(issues|pull)\/[0-9]{4,}/gi;
-const GITHUB_ISSUE = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([a-z0-9-]+)\//i;
+const NUMBERED_LINK = /\/(issues|pull)\/[0-9]{4,}/gi;
+// Where a URL starts, reading back from a match: after whitespace, a quote, a bracket
+// or an angle bracket (an href="…", a Markdown (…) or <…>).
+const URL_START = /[^\s"'()<>[\]]*$/;
+// redirect.github.com is the host Dependabot writes its release-note links with.
+const GITHUB_ISSUE = /^(?:https?:\/\/)?(?:www\.|redirect\.)?github\.com\/([a-z0-9-]+)\//i;
+// A number that is the text of a link to that same-numbered issue or PR, as Dependabot's
+// release notes write it: <a href="https://redirect.github.com/o/r/issues/N">#N</a>,
+// or in Markdown, [#N](https://github.com/o/r/pull/N). The link says whose it is.
+const LINKED_NUMBER = [
+  /<a\s+href="([^"]+)"[^>]*>#([0-9]{4,5})<\/a>/gi,
+  /\[#([0-9]{4,5})\]\(([^)\s]+)\)/g,
+];
 const ORG_LINK = /github\.com[/:]woodpatchau\/([a-z0-9._-]+)/gi;
 const ORG_RAW = /raw\.githubusercontent\.com\/woodpatchau\/([a-z0-9._-]+)/gi;
 const OWN_REPO = 'woodpatch-gcode-toolkit';
@@ -56,12 +67,26 @@ export function leaks(text) {
     if ((m[1] ?? '').toLowerCase().replace(/\.git$/, '') !== OWN_REPO) return true;
   for (const m of text.matchAll(ORG_RAW)) if ((m[1] ?? '').toLowerCase() !== OWN_REPO) return true;
   for (const m of text.matchAll(NUMBERED_LINK)) {
-    const owner = GITHUB_ISSUE.exec(m[1] ?? '')?.[1]?.toLowerCase();
+    // The whole URL before the match, however deep its path (Dependabot links
+    // github.com/o/r/tree/HEAD/packages/p/issues/N).
+    const url = URL_START.exec(text.slice(0, m.index))?.[0] ?? '';
+    const owner = GITHUB_ISSUE.exec(url)?.[1]?.toLowerCase();
     if (owner === undefined || owner === 'woodpatchau') return true;
   }
   // Spans of text that are an outside project's own references.
   const outside = [];
   for (const m of text.matchAll(OUTSIDE_REF)) outside.push([m.index, m.index + m[0].length]);
+  for (const [i, pattern] of LINKED_NUMBER.entries()) {
+    for (const m of text.matchAll(pattern)) {
+      const [url, n] = i === 0 ? [m[1] ?? '', m[2]] : [m[2] ?? '', m[1]];
+      const owner = GITHUB_ISSUE.exec(url)?.[1]?.toLowerCase();
+      const same = new RegExp(`/(issues|pull)/${n}(?![0-9])`).test(url);
+      // Only another owner's: a link into the organisation was refused above.
+      if (owner !== undefined && owner !== 'woodpatchau' && same) {
+        outside.push([m.index, m.index + m[0].length]);
+      }
+    }
+  }
   for (const m of text.matchAll(REPO_REF)) {
     // The organisation's own owner/repo#NNNN is private work (this repo's numbers are
     // two-digit); any other owner's is an outside project's.
