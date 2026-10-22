@@ -2329,10 +2329,10 @@ a great deal of work.
 - **A bounded, fair pool.** A fixed pool of workers serves a bounded queue; past it the
   server answers "busy" (429/503) instead of queueing without limit. Each customer or
   account gets a fair share (a per-scope concurrency limit), so one can't take the pool.
-- **No inputs that reach elsewhere.** Requests carry G-code text and IDs only: no file
-  paths, and no URLs for the server to fetch. Machine, tool and material are IDs checked
-  against known ones. (Machine records: amended by ADR-0041. The caller passes the
-  record with each request, and it's validated as untrusted input.)
+- **No inputs that reach elsewhere.** Requests carry G-code text, the machine record
+  (amended by ADR-0041: the caller passes it with each request, and it's validated as
+  untrusted input) and IDs only: no file paths, and no URLs for the server to fetch.
+  Tool and material are IDs checked against known ones.
 - **Customer geometry stays private.** G-code is never logged or echoed. Logs hold its
   size, timings and an HMAC of it keyed per scope (a plain hash would let anyone who can
   read the logs confirm a guessed file). Each scope's key is derived from one secret
@@ -2405,14 +2405,28 @@ user-defined controller (custom dialects) comes later, as an additive field.
     the server echoes and never recomputes it: PHP's `json_encode` isn't JCS (it
     escapes slashes and non-ASCII, and writes `2.0` where JCS writes `2`), so a second
     implementation would disagree silently.
+  - **Requests carry no hash.** The server hashes the record it parsed, and refuses a
+    request that supplies a hash of its own, so no caller can choose a cache key.
+  - **The wire form.** The request is a JSON envelope, and the record travels inside
+    it as a JSON STRING holding the record's own text, not as a nested object. So
+    "as received" has a meaning: the record's text is that string's value, once the
+    envelope is decoded.
   - **The record is untrusted input,** like the G-code. It's refused, and so is the
-    whole request, if it's over 16,384 bytes (its UTF-8 text as received, checked
-    before parsing), or if any rule below fails.
-  - **Duplicate keys are refused.** `JSON.parse` silently keeps the last of two equal
-    keys, so the storing application and the toolkit could read different records
-    from one text. The server parses the record with a check that refuses any object
-    with a repeated key. And the echoed hash, of the record the toolkit actually
-    used, is the authoritative identity of what was estimated.
+    whole request, if its text is over 16,384 bytes of UTF-8 (checked before the
+    record is parsed), or if any rule below fails. The envelope has its own overall
+    size limit (ADR-0040's input limits).
+  - **Duplicate keys are refused,** in the envelope (two `machine` keys) and in the
+    record alike. `JSON.parse` silently keeps the last of two equal keys, so the
+    storing application and the toolkit could read different records from one text.
+    The server's parser refuses any object with a repeated key, comparing keys after
+    their escapes are decoded (`"a"` and `"\u0061"` are the same key). And the echoed
+    hash, of the record the toolkit actually used, is the authoritative identity of
+    what was estimated.
+  - **No prototype tricks.** The parser builds null-prototype objects, so a
+    `"__proto__"` key is an ordinary own key (which validation then refuses as
+    unknown), never the object's prototype. Every field is read with `Object.hasOwn`,
+    so nothing is inherited: what is validated and hashed is exactly what is
+    estimated.
 - **One JSON document per machine,** in millimetres, seconds and rpm throughout:
 
   ```json
@@ -2443,8 +2457,9 @@ user-defined controller (custom dialects) comes later, as an additive field.
     characters from `A–Z a–z 0–9 . _ : -` (a JSON number is refused).
   - `name` R: 1–200 Unicode code points, none of them a control or format
     character: no `\p{Cc}`, `\p{Cf}` (which includes the bidi overrides), `\p{Zl}` or
-    `\p{Zp}`. Both id and name are echoed and logged, so neither may hide or reorder
-    text.
+    `\p{Zp}`. Both id and name are echoed and logged, so neither can hide text, break
+    a log line or override text direction. A right-to-left name may still display
+    reordered in a log viewer, as any right-to-left text does; that's cosmetic.
   - `dialect` R: a built-in dialect id (`masso-g3`, `linuxcnc`, `generic`).
   - `axes` R: X, Y and Z R, each with `maxVelocity` R (mm/min), `acceleration` R
     (mm/s²), and `min` R and `max` R (travel, MACHINE coordinates, mm). A, B and C O:
@@ -2530,9 +2545,10 @@ user-defined controller (custom dialects) comes later, as an additive field.
   - Version 1 starts at revision 1.
 - **What every estimate echoes, and how it states time.** Every `/estimate` response
   (Phase 5b/5d) echoes the record's `id`, `version`, `revision`,
-  `calibration.status` and content hash, so a stored quote traces to the exact record
-  that produced it. The storing application keeps the hash with each estimate it
-  stores. Times in the response are INTEGER milliseconds, never floats: the caller's
+  `calibration.status` and content hash. The storing application keeps the hash with
+  each estimate it stores, and an immutable snapshot of the record for each hash it
+  has been echoed: since it never recomputes the hash, the snapshot is what makes a
+  stored quote trace to the exact record that produced it. Times in the response are INTEGER milliseconds, never floats: the caller's
   cost path is float-free. The estimator works in floating point and rounds once, at
   the response: each time is rounded to the nearest millisecond, halves rounding up.
   A total is rounded from the unrounded sum, so a breakdown's parts may differ from
