@@ -11,7 +11,8 @@ the applications that store machine records. Zero runtime dependencies.
 - `readMachine(text)`: the whole path for a record's text as received: the
   16,384-byte cap, the strict parse, validation, and the content hash.
 - `validateMachine(record)`: every rule of ADR-0041. Returns a list of problems (empty
-  means valid); messages are printable ASCII and never quote a value from the record.
+  means valid); messages are printable ASCII. They never quote a value from the record,
+  only a field name, escaped and shortened.
 - `parseStrictJson(text)`: a JSON parser for untrusted records. It refuses repeated
   keys (compared after unescaping), lone surrogates, numbers that overflow and deep
   nesting, and builds null-prototype objects, so `__proto__` is an ordinary key.

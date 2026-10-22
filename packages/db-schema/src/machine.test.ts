@@ -203,7 +203,7 @@ describe('validateMachine: identity fields', () => {
     expect(validateMachine(withField('name', 'נתב ראשי'))).toEqual([]);
   });
 
-  it('takes only the built-in dialects, which are exactly core’s profiles', () => {
+  it("takes only the built-in dialects, which are exactly core's profiles", () => {
     expect([...MACHINE_DIALECTS].sort()).toEqual(DIALECTS.map((d) => d.id).sort());
     for (const d of MACHINE_DIALECTS) expect(validateMachine(withField('dialect', d))).toEqual([]);
     for (const bad of ['masso-g3', 'MASSO-G3-5.13', 'grbl', 3]) {
@@ -658,24 +658,24 @@ describe('the JSON Schema', () => {
             new RegExp(`^MACHINE_(RANGE|VERSION) ${w.replaceAll('.', '\\.')}$`),
           );
         const tiny = (x: number): number => Math.max(Math.abs(x) * 1e-9, 1e-9);
+        // The smallest step past a bound: 1 for an integer, a hair otherwise, so a bound
+        // that drifts by any amount between the schema and the code is caught.
+        const step = (x: number): number => (bounds['type'] === 'integer' ? 1 : tiny(x));
         const hi = bounds['maximum'] as number | undefined;
         const lo = bounds['minimum'] as number | undefined;
         const gt = bounds['exclusiveMinimum'] as number | undefined;
         const where = isP ? `${path}.value` : path;
         if (hi !== undefined) {
           if (!unreachable(path, 'hi')) expect(at(hi), `${path} at its maximum`).toEqual([]);
-          expect(at(hi + Math.max(tiny(hi), 1)), `${path} over`).toContainEqual(refusal(where));
+          expect(at(hi + step(hi)), `${path} over`).toContainEqual(refusal(where));
         }
         if (lo !== undefined) {
           if (!unreachable(path, 'lo')) expect(at(lo), `${path} at its minimum`).toEqual([]);
-          expect(at(lo - 1), `${path} under`).toContainEqual(refusal(where));
+          expect(at(lo - step(lo)), `${path} under`).toContainEqual(refusal(where));
         }
         if (gt !== undefined) {
           expect(at(gt), `${path} at its exclusive minimum`).toContainEqual(refusal(where));
-          expect(
-            at(gt + (bounds['type'] === 'integer' ? 1 : tiny(gt))),
-            `${path} just above`,
-          ).toEqual([]);
+          expect(at(gt + step(gt)), `${path} just above`).toEqual([]);
         }
         if (bounds['type'] === 'integer') {
           expect(at((hi ?? 10) - 0.5), `${path} a fraction`).toContain(`MACHINE_TYPE ${where}`);

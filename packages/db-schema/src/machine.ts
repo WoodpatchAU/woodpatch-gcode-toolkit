@@ -277,7 +277,8 @@ const FORBIDDEN_IN_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 /**
  * Checks a parsed record against ADR-0041. Returns every problem found (an empty
- * list means valid). Never throws on plain data: anything `parseStrictJson` returns,
+ * list means valid). There's no cap on the count: the 16,384-byte input that
+ * `readMachine` accepts bounds it at a few thousand. Never throws on plain data: anything `parseStrictJson` returns,
  * or any JSON-like value. (An exotic object, such as a Proxy whose traps throw, can
  * still throw; `readMachine` only ever passes parsed JSON.)
  */
