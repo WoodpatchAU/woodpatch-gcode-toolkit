@@ -9,8 +9,10 @@ One entry per decision: context, the decision, and its consequences. Entries are
 never deleted. A reversed decision gets a new entry that supersedes the old one, and
 the old one is marked as superseded.
 
-Status values: **Accepted** · **Pending** (proceeding on a stated default, isolated so
-it can be reversed) · **Superseded by ADR-NNNN**.
+Status values: **Proposed** (under review, not yet binding) · **Accepted** ·
+**Pending** (proceeding on a stated default, isolated so it can be reversed) ·
+**Superseded by ADR-NNNN** · **Amended by ADR-NNNN** (still binding, but part of it is
+replaced; the amending ADR says which part).
 
 ---
 
@@ -1242,13 +1244,13 @@ worker about 71 KB, inside the plan's 600 KB island budget.
 
 Each proceeds on its default and is listed in every PR that touches it.
 
-| Decision                                          | Default until decided                                                         |
-| ------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Stack (ADR-0003)                                  | As ADR-0003                                                                   |
-| Where the estimate service runs                   | Decided: ADR-0040 (a sandboxed service on a Unix socket, no container)        |
-| Source of truth for machine/tool/material records | Held by the consuming systems; the toolkit depends only on the schema         |
-| Machine parameter values                          | Placeholders flagged `TODO(calibrate)`; uncalibrated is a representable state |
-| Time-estimate accuracy target                     | ±5% after calibration                                                         |
+| Decision                                          | Default until decided                                                      |
+| ------------------------------------------------- | -------------------------------------------------------------------------- |
+| Stack (ADR-0003)                                  | As ADR-0003                                                                |
+| Where the estimate service runs                   | Decided: ADR-0040 (a sandboxed service on a Unix socket, no container)     |
+| Source of truth for machine/tool/material records | Machines decided: ADR-0041 (stored by the caller, passed per request)      |
+| Machine parameter values                          | Decided: ADR-0041 (provenance per value; calibration is an explicit state) |
+| Time-estimate accuracy target                     | ±5% after calibration                                                      |
 
 ## ADR-0029: The 2D plan view: Canvas 2D, in the viewer package
 
@@ -2248,8 +2250,12 @@ Operator decisions on an external review's findings.
 
 ## ADR-0040: The estimate server's security boundary
 
-**Status:** Accepted, 2026-10-12. Operator sign-off after review, before any server code
-(an external review asked that this be settled first). Binds `@woodpatch/gcode-server`.
+**Status:** Accepted, 2026-10-12. Amended in place 2026-10-22, before any server code:
+the caller check moved from `SO_PEERCRED` to the socket's permissions (see "Amended
+before any server code" below). **Amended by ADR-0041** (machine records come with each
+request, and the cache key holds their content hash). Operator sign-off after review,
+before any server code (an external review asked that this be settled first). Binds
+`@woodpatch/gcode-server`.
 
 **Context.** The server estimates machining time for G-code that customers upload, and
 the estimate feeds quotes. So its input is untrusted, it runs beside an application
@@ -2291,7 +2297,7 @@ a great deal of work.
     "exactly the caller". The check refuses to start when:
     - the group's members aren't exactly the caller's user, in `/etc/group` and in
       `/etc/gshadow` alike;
-    - the group has a password that isn't locked (`!` or `*` in `/etc/gshadow`), or
+    - the group's password field in `/etc/gshadow` doesn't start with `!` or `*`, or
       has any group administrators (either would let `newgrp` or `gpasswd` get round
       the membership rule);
     - any user other than the caller's has the gid as its PRIMARY group. `getent`
@@ -2308,14 +2314,21 @@ a great deal of work.
   - **How it fails closed.** A single failed check doesn't trip anything by itself:
     the server just doesn't run while the check fails. Repeated socket-triggered
     starts then hit the service's start limit, and the socket unit fails with
-    `service-start-limit-hit` and stops listening. Nothing then answers on the
-    socket until an operator fixes the cause and restarts the units.
-  - **The directory exists before the socket.** The socket unit sets
-    `DirectoryMode=0750`, so if systemd has to create `/run/wp-gcode/` first it never
-    makes it 0755. tmpfiles then sets the owner (socket units order after
-    `systemd-tmpfiles-setup` by default), and installing runs
-    `systemd-tmpfiles --create` before the first start. Otherwise the tripwire refuses
-    a `root:root` directory, which is safe but confusing.
+    `service-start-limit-hit` and stops listening. If the service's start limit is
+    ever disabled (`StartLimitIntervalSec=0`), the socket's own trigger limit does the
+    same job, and the socket unit fails with `trigger-limit-hit`. Either way, nothing
+    then answers on the socket until an operator fixes the cause and restarts the
+    units.
+  - **The directory exists before the socket.** tmpfiles makes it (socket units order
+    after `systemd-tmpfiles-setup` by default), and installing runs
+    `systemd-tmpfiles --create` before the first start. If it's missing or wrong, the
+    socket unit's `ExecStartPre=` check refuses before systemd would create it, so no
+    `DirectoryMode=` is needed.
+  - **What's left: the caller can hand its access on.** Any member of the group can
+    pass access to someone else, for instance with a setgid-`<group>` executable, by
+    passing on a connected socket, or by relaying requests. That is the caller acting
+    for them, and no permission check can stop it. The caller is trusted to this extent;
+    the check makes sure it's the ONLY one so trusted.
   - **The unit files** (socket, service, tmpfiles and the check) ship with the server's
     PR, and are reviewed against this list.
   - **A token is optional defence in depth, not the control:** on one host, whatever
@@ -2392,10 +2405,10 @@ a great deal of work.
 - **A bounded, fair pool.** A fixed pool of workers serves a bounded queue; past it the
   server answers "busy" (429/503) instead of queueing without limit. Each customer or
   account gets a fair share (a per-scope concurrency limit), so one can't take the pool.
-- **No inputs that reach elsewhere.** Requests carry G-code text and IDs only: no file
-  paths, and no URLs for the server to fetch. Machine, tool and material are IDs checked
-  against known ones. Machine profiles are loaded at startup from versioned data, never
-  from a request.
+- **No inputs that reach elsewhere.** Requests carry G-code text, the machine record
+  (amended by ADR-0041: the caller passes it with each request, and it's validated as
+  untrusted input) and IDs only: no file paths, and no URLs for the server to fetch.
+  Tool and material are IDs checked against known ones.
 - **Customer geometry stays private.** G-code is never logged or echoed. Logs hold its
   size, timings and an HMAC of it keyed per scope (a plain hash would let anyone who can
   read the logs confirm a guessed file). Each scope's key is derived from one secret
@@ -2411,10 +2424,11 @@ a great deal of work.
   time a response whether that exact file was submitted before. So the key includes the
   caller and the customer or account scope, and covers EVERY input that can change the
   result, and the code that computes it: the file's hash, the machine, tool and
-  material, the dialect and options, the profile version, and the server and core build
+  material, the dialect and options, the machine record's content hash (ADR-0041; it
+  replaces the "profile version" this first said), and the server and core build
   version (a deployed estimator fix must not keep serving old answers). It's bounded
-  (LRU), and the profile version changes on EVERY profile edit, not only on deploys, so
-  a recalibrated machine never gets an old answer.
+  (LRU), and any edit to a record changes its hash, so a recalibrated machine never
+  gets an old answer.
 - **An uncalibrated estimate says so, and that binds.** Every result carries
   `calibrated: true | false`. A quote must never be priced automatically from an
   uncalibrated estimate: it needs manual review, or a flag the customer and staff can
@@ -2430,3 +2444,204 @@ application files. Moving it to another host reopens the transport and identity 
 above. The limits are a test target in their own right: Phase 5 adds a hostile-input
 suite (expansion bombs, huge lines, deep nesting, superlinear shapes in every pass,
 oversized output) that must stay within the budgets.
+
+## ADR-0041: The machine record, version 1
+
+**Status:** Accepted, 2026-10-22: frozen, with the reviewer's and the storing
+application's sign-off. Proposed 2026-10-18, re-cut after three reviews (parcel 5a). Binds
+`@woodpatch/gcode-db`, the estimator and the estimate server. **Amends ADR-0040** (see
+"Where the record comes from").
+
+**Context.** The time estimate feeds quotes, so the machine it's computed for must be
+explicit data with honest provenance. The toolkit defines the record's format; the
+calling application stores the records. The same record drives the travel check (does a
+program stay inside the machine's envelope?) and the estimator (Phase 5b). A
+user-defined controller (custom dialects) comes later, as an additive field.
+
+**Decision.**
+
+- **Where the record comes from (amends ADR-0040).** ADR-0040 said machine profiles are
+  "loaded at startup from versioned data, never from a request". The operator ruled on
+  2026-10-18 that the calling application stores machine records and passes one in with
+  each request; the toolkit never reads any store. That bullet of ADR-0040 is replaced
+  by this one. What it protected is kept by other means:
+  - **The cache key** holds a content hash of the WHOLE record. The record's id and
+    revision aren't enough: a recalibrated machine keeps both, and must not get a
+    stale answer.
+  - **The hash** is SHA-256 of the record's canonical form, the JSON Canonicalization
+    Scheme (RFC 8785, JCS), computed on the record AS RECEIVED, before any default is
+    applied:
+    - keys sorted by their UTF-16 code units, no insignificant whitespace;
+    - numbers in ECMAScript's shortest round-trip form (`-0` becomes `0`, `2.0`
+      becomes `2`, `1e21` becomes `1e+21`);
+    - strings escaped as JCS says: only `"`, `\` and the controls U+0000 to U+001F,
+      with the short forms where they exist, and everything else as literal UTF-8;
+    - a string holding a lone surrogate is refused, since it has no UTF-8 form.
+  - **Only the toolkit computes the hash.** The storing application keeps the hash
+    the server echoes and never recomputes it: PHP's `json_encode` isn't JCS (it
+    escapes slashes and non-ASCII, and writes `2.0` where JCS writes `2`), so a second
+    implementation would disagree silently.
+  - **Requests carry no hash.** The server hashes the record it parsed, and refuses a
+    request that supplies a hash of its own, so no caller can choose a cache key.
+  - **The wire form.** The request is a JSON envelope, and the record travels inside
+    it as a JSON STRING holding the record's own text, not as a nested object. So
+    "as received" has a meaning: the record's text is that string's value, once the
+    envelope is decoded.
+  - **The record is untrusted input,** like the G-code. It's refused, and so is the
+    whole request, if its text is over 16,384 bytes of UTF-8 (checked before the
+    record is parsed), or if any rule below fails. The envelope has its own overall
+    size limit (ADR-0040's input limits).
+  - **Duplicate keys are refused,** in the envelope (two `machine` keys) and in the
+    record alike. `JSON.parse` silently keeps the last of two equal keys, so the
+    storing application and the toolkit could read different records from one text.
+    The server's parser refuses any object with a repeated key, comparing keys after
+    their escapes are decoded (`"a"` and `"\u0061"` are the same key). And the echoed
+    hash, of the record the toolkit actually used, is the authoritative identity of
+    what was estimated.
+  - **No prototype tricks.** The parser builds null-prototype objects, so a
+    `"__proto__"` key is an ordinary own key (which validation then refuses as
+    unknown), never the object's prototype. Every field is read with `Object.hasOwn`,
+    so nothing is inherited: what is validated and hashed is exactly what is
+    estimated.
+- **One JSON document per machine,** in millimetres, seconds and rpm throughout:
+
+  ```json
+  {
+    "format": "woodpatch-gcode-machine",
+    "version": 1,
+    "revision": 1,
+    "id": "17",
+    "name": "Example router",
+    "dialect": "masso-g3",
+    "axes": {
+      "X": { "min": P, "max": P, "maxVelocity": P, "acceleration": P },
+      "Y": { "min": P, "max": P, "maxVelocity": P, "acceleration": P },
+      "Z": { "min": P, "max": P, "maxVelocity": P, "acceleration": P }
+    },
+    "rapidRate": P,
+    "planner": { "junctionDeviation": P, "blockRate": P, "lookahead": P },
+    "spindle": { "minRpm": P, "maxRpm": P, "spinUpSeconds": P, "spinDownSeconds": P },
+    "overheads": { "toolChangeSeconds": P, "programStartSeconds": P, "pauseSeconds": P },
+    "calibration": { "status": "uncalibrated" }
+  }
+  ```
+
+- **Fields, required (R) or optional (O):**
+  - `format` R: exactly `"woodpatch-gcode-machine"`. `version` R and `revision` R:
+    each an integer of at least 1 (`Number.isSafeInteger`; see "Versioning").
+  - `id` R: the storing application's id, opaque to the toolkit: a string of 1–64
+    characters from `A–Z a–z 0–9 . _ : -` (a JSON number is refused).
+  - `name` R: 1–200 Unicode code points, none of them a control or format
+    character: no `\p{Cc}`, `\p{Cf}` (which includes the bidi overrides), `\p{Zl}` or
+    `\p{Zp}`. Both id and name are echoed and logged, so neither can hide text, break
+    a log line or override text direction. A right-to-left name may still display
+    reordered in a log viewer, as any right-to-left text does; that's cosmetic.
+  - `dialect` R: a built-in dialect id (`masso-g3`, `linuxcnc`, `generic`).
+  - `axes` R: X, Y and Z R, each with `maxVelocity` R (mm/min), `acceleration` R
+    (mm/s²), and `min` R and `max` R (travel, MACHINE coordinates, mm). A, B and C O:
+    rotary, in degrees, degrees/min and degrees/s². On a rotary axis `min` and `max`
+    are both present or both absent (absent: continuous rotation). `jerk` O (mm/s³) is reserved for an S-curve
+    planner.
+  - `rapidRate` O (mm/min): LINEAR axes only. Absent: rapids run at each axis's
+    `maxVelocity`.
+  - `planner` R: `junctionDeviation` R (mm, GRBL's cornering model); `blockRate` O
+    (blocks/s the controller can process; dense tiny segments slow to it); `lookahead`
+    O (blocks, an integer: `Number.isSafeInteger`).
+  - `spindle` R: `maxRpm` R, `minRpm` O (default 0), `spinUpSeconds` R,
+    `spinDownSeconds` R. These are the controller's own delays: Masso waits that long
+    on M3/M4 and on M5.
+  - `overheads` O, each field O, default 0: `toolChangeSeconds` (per tool change),
+    `programStartSeconds` (once per program), `pauseSeconds` (per M0/M1: an assumed
+    operator response).
+  - `calibration` R, below.
+- **Every physical value carries its provenance.** `P` is an object with exactly two
+  fields: `value`, a number, and `source`, one of `"seed"`, `"manual"`, `"measured"`
+  or `"fitted"`:
+  - **seed:** a starting point, nobody has checked it;
+  - **manual:** entered from a datasheet or the controller's settings;
+  - **measured:** timed or measured on the machine;
+  - **fitted:** set by calibration.
+- **Numbers.** Every number is finite (`Number.isFinite`). Then:
+  - velocities, accelerations, `junctionDeviation`, `blockRate` and `rapidRate` are
+    greater than 0; `lookahead` is a positive integer;
+  - spin times and overheads are >= 0; 0 <= `minRpm` <= `maxRpm`;
+  - travel: `min` < `max` (negatives allowed).
+
+  Plausibility upper bounds catch a slipped decimal point, and a factor that would make
+  a quote near-free:
+
+  | value                             | at most                |
+  | --------------------------------- | ---------------------- |
+  | linear `maxVelocity`, `rapidRate` | 200,000 mm/min         |
+  | rotary `maxVelocity`              | 1,000,000 °/min        |
+  | `acceleration`                    | 50,000 mm/s² (or °/s²) |
+  | travel `min`/`max`                | ±100,000 mm (or °)     |
+  | `junctionDeviation`               | 10 mm                  |
+  | `blockRate`                       | 100,000 blocks/s       |
+  | `lookahead`                       | 10,000 blocks          |
+  | `maxRpm`                          | 100,000 rpm            |
+  | spin times                        | 600 s                  |
+  | overheads                         | 86,400 s               |
+  | `timeFactor`                      | 0.5 to 2.0             |
+  | `accelFactor`                     | 0.25 to 4.0            |
+
+- **Calibration is a state, never a default.** One of:
+  - `{ "status": "uncalibrated" }`;
+  - `{ "status": "calibrated", ... }`, with `fittedOn` (a valid ISO date, YYYY-MM-DD),
+    `timeFactor`, `accelFactor`, and `residuals`: `jobs` (an integer of at least 1,
+    `Number.isSafeInteger`), `meanAbsPercent` and `maxAbsPercent` (0 <= mean <= max
+    <= 100; an estimate off by more than its own size isn't a calibration).
+
+  A calibrated record may hold no `seed` value: calibration means the numbers were
+  confirmed. Only the storing application's calibration flow sets the status. It
+  refuses to price automatically from an uncalibrated estimate, reading the status from
+  its own stored record, not from the server's echo. The toolkit trusts what it's given,
+  and reports it.
+
+- **Validation: the code is authoritative.** `validateMachine(record)` returns a list of
+  problems and never throws: a missing or misspelt field (refused, never read as zero),
+  a bad type, a rule above. A JSON Schema file describes the same shape for other
+  languages, written to JSON Schema draft 2020-12. Every object has
+  `additionalProperties: false`, including `P`. `calibration` is a `oneOf` of two
+  CLOSED objects, one per status, each listing all its own fields; no shared parent
+  object carries `additionalProperties: false`, since that would refuse the
+  calibrated branch's fields. Each field's description names its unit, so other
+  languages' messages can too. The schema can't express everything (min below max,
+  the rule that a calibrated record has no seed), so it is a subset of the code, never
+  the other way round. A record with any problem refuses the whole request. No validation
+  library: core stays dependency-free.
+- **Versioning.**
+  - **revision:** within a version, a revision only ADDS optional fields. A record
+    states the revision it was written for, and is validated STRICTLY against that
+    revision: unknown fields refused, so a misspelling is caught. The toolkit accepts
+    an older revision, never a newer one. So the toolkit is deployed BEFORE the storing
+    application writes a newer revision.
+  - **version:** a breaking change is a new version, with a documented migration from
+    the last. An unknown version is refused.
+  - Version 1 starts at revision 1.
+- **What every estimate echoes, and how it states time.** Every `/estimate` response
+  (Phase 5b/5d) echoes the record's `id`, `version`, `revision`,
+  `calibration.status` and content hash. The storing application keeps the hash with
+  each estimate it stores, and an immutable snapshot of the record for each hash it
+  has been echoed: since it never recomputes the hash, the snapshot is what makes a
+  stored quote trace to the exact record that produced it. Times in the response are INTEGER milliseconds, never floats: the caller's
+  cost path is float-free. The estimator works in floating point and rounds once, at
+  the response: each time is rounded to the nearest millisecond, halves rounding up.
+  A total is rounded from the unrounded sum, so a breakdown's parts may differ from
+  the total by a few milliseconds; the total is the figure to price from.
+- **The travel check uses what is knowable.** A preview doesn't know the work offsets
+  the operator will set, so:
+  - **certain:** a program whose extent along an axis exceeds that axis's travel can
+    never fit. That's a warning, whatever the offsets;
+  - **certain:** moves in machine coordinates (G53, G28/G30 targets) are checked against
+    the limits directly;
+  - **when the user gives a work origin** (optionally, per job), every move is checked
+    against the limits.
+- **The real machine's record lives where machine records live,** with the storing
+  application, entered from the controller's settings (`source: "manual"`) and
+  uncalibrated until 5c's fit. This repository is public: it ships only a clearly
+  fictional example record, and test fixtures.
+
+**Consequences.** The estimator reads only this record, and its numbers can always be
+traced to a source. The format is frozen once signed off; anything needed later arrives
+as an optional field in a new revision, or as version 2.
