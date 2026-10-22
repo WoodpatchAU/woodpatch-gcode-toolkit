@@ -19,6 +19,7 @@ export {
 export { CanonicalJsonError, canonicalJson, contentHash, sha256Hex, utf8 } from './jcs.js';
 export {
   MACHINE_DIALECTS,
+  MACHINE_FIELDS,
   MACHINE_FORMAT,
   MACHINE_REVISION,
   MACHINE_VERSION,
@@ -28,6 +29,7 @@ export {
   utf8Length,
   validateMachine,
   type Calibrated,
+  type FieldSet,
   type LinearAxis,
   type MachineDialect,
   type MachineProblem,

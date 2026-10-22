@@ -13,7 +13,7 @@
  * on exactly its own fields. A missing field is a problem, never read as zero.
  */
 
-import { hasLoneSurrogate, parseStrictJson, type JsonError } from './json.js';
+import { hasLoneSurrogate, parseStrictJson, quoteKey, type JsonError } from './json.js';
 import { contentHash } from './jcs.js';
 
 export const MACHINE_FORMAT = 'woodpatch-gcode-machine';
@@ -119,6 +119,50 @@ export interface MachineProblem {
 export type MachineResult =
   { ok: true; record: MachineRecord; hash: string } | { ok: false; problems: MachineProblem[] };
 
+/** The fields an object may hold: every one of `required`, any of `optional`, nothing else. */
+export interface FieldSet {
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
+}
+
+/**
+ * Every object in a version 1 record and its fields, in one table: the validator
+ * reads it, and a test checks the JSON Schema lists exactly these fields.
+ */
+export const MACHINE_FIELDS = {
+  record: {
+    required: [
+      'format',
+      'version',
+      'revision',
+      'id',
+      'name',
+      'dialect',
+      'axes',
+      'planner',
+      'spindle',
+      'calibration',
+    ],
+    optional: ['rapidRate', 'overheads'],
+  },
+  axes: { required: ['X', 'Y', 'Z'], optional: ['A', 'B', 'C'] },
+  linearAxis: { required: ['min', 'max', 'maxVelocity', 'acceleration'], optional: ['jerk'] },
+  rotaryAxis: { required: ['maxVelocity', 'acceleration'], optional: ['min', 'max', 'jerk'] },
+  planner: { required: ['junctionDeviation'], optional: ['blockRate', 'lookahead'] },
+  spindle: { required: ['maxRpm', 'spinUpSeconds', 'spinDownSeconds'], optional: ['minRpm'] },
+  overheads: {
+    required: [],
+    optional: ['toolChangeSeconds', 'programStartSeconds', 'pauseSeconds'],
+  },
+  uncalibrated: { required: ['status'], optional: [] },
+  calibrated: {
+    required: ['status', 'fittedOn', 'timeFactor', 'accelFactor', 'residuals'],
+    optional: [],
+  },
+  residuals: { required: ['jobs', 'meanAbsPercent', 'maxAbsPercent'], optional: [] },
+  p: { required: ['value', 'source'], optional: [] },
+} as const satisfies Record<string, FieldSet>;
+
 // ---------------------------------------------------------------------------
 // The checks. Each helper adds problems and returns whether its field was usable,
 // so later cross-field rules (min < max) run only on values that passed.
@@ -129,9 +173,6 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !
 const own = (o: Obj, k: string): unknown => (Object.hasOwn(o, k) ? o[k] : undefined);
 const join = (path: string, k: string): string => (path === '' ? k : `${path}.${k}`);
 
-/** A field name from the record, made safe to put in a message: escaped and short. */
-const shown = (k: string): string => JSON.stringify(k.length > 40 ? `${k.slice(0, 40)}…` : k);
-
 class Checker {
   readonly problems: MachineProblem[] = [];
 
@@ -140,19 +181,15 @@ class Checker {
   }
 
   /** An object with exactly the allowed keys. Missing required keys are reported. */
-  object(
-    v: unknown,
-    path: string,
-    required: readonly string[],
-    optional: readonly string[],
-  ): v is Obj {
+  object(v: unknown, path: string, fields: FieldSet): v is Obj {
+    const { required, optional } = fields;
     if (!isObj(v)) {
       this.add('MACHINE_TYPE', path, 'must be an object');
       return false;
     }
     for (const k of Object.keys(v)) {
       if (!required.includes(k) && !optional.includes(k)) {
-        this.add('MACHINE_UNKNOWN_FIELD', path, `has an unknown field ${shown(k)}`);
+        this.add('MACHINE_UNKNOWN_FIELD', path, `has an unknown field ${quoteKey(k)}`);
       }
     }
     for (const k of required) {
@@ -198,7 +235,7 @@ class Checker {
     rule: Parameters<Checker['number']>[2],
     sources: Source[],
   ): number | undefined {
-    if (!this.object(v, path, ['value', 'source'], [])) return undefined;
+    if (!this.object(v, path, MACHINE_FIELDS.p)) return undefined;
     const source = own(v, 'source');
     if (Object.hasOwn(v, 'source')) {
       if (typeof source === 'string' && (SOURCES as readonly string[]).includes(source)) {
@@ -215,10 +252,13 @@ class Checker {
 
 const TRAVEL = 100_000;
 const LINEAR = { velocity: 200_000, unit: 'mm' } as const;
-const ROTARY = { velocity: 1_000_000, unit: '°' } as const;
+const ROTARY = { velocity: 1_000_000, unit: 'deg' } as const;
 const ACCELERATION = 50_000;
 
-/** True if `s` is a real calendar date written YYYY-MM-DD. */
+/**
+ * True if `s` is a real calendar date written YYYY-MM-DD. Years 0000-0099 are refused
+ * (`Date.UTC` reads them as 1900-1999); no calibration is that old.
+ */
 function isIsoDate(s: string): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
   if (m === null) return false;
@@ -237,31 +277,15 @@ const FORBIDDEN_IN_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 /**
  * Checks a parsed record against ADR-0041. Returns every problem found (an empty
- * list means valid). Never throws, whatever it's given.
+ * list means valid). Never throws on plain data: anything `parseStrictJson` returns,
+ * or any JSON-like value. (An exotic object, such as a Proxy whose traps throw, can
+ * still throw; `readMachine` only ever passes parsed JSON.)
  */
 export function validateMachine(record: unknown): MachineProblem[] {
   const c = new Checker();
   const sources: Source[] = [];
 
-  if (
-    !c.object(
-      record,
-      '',
-      [
-        'format',
-        'version',
-        'revision',
-        'id',
-        'name',
-        'dialect',
-        'axes',
-        'planner',
-        'spindle',
-        'calibration',
-      ],
-      ['rapidRate', 'overheads'],
-    )
-  ) {
+  if (!c.object(record, '', MACHINE_FIELDS.record)) {
     return c.problems;
   }
   const r = record;
@@ -297,7 +321,7 @@ export function validateMachine(record: unknown): MachineProblem[] {
   if (Object.hasOwn(r, 'id')) {
     const id = own(r, 'id');
     if (typeof id !== 'string' || !/^[A-Za-z0-9._:-]{1,64}$/.test(id)) {
-      c.add('MACHINE_VALUE', 'id', 'must be 1–64 characters from A–Z a–z 0–9 . _ : -');
+      c.add('MACHINE_VALUE', 'id', 'must be 1-64 characters from A-Z a-z 0-9 . _ : -');
     }
   }
 
@@ -309,7 +333,7 @@ export function validateMachine(record: unknown): MachineProblem[] {
       c.add('MACHINE_VALUE', 'name', 'must not contain control, format or separator characters');
     } else {
       const n = codePoints(name);
-      if (n < 1 || n > 200) c.add('MACHINE_RANGE', 'name', 'must be 1–200 characters');
+      if (n < 1 || n > 200) c.add('MACHINE_RANGE', 'name', 'must be 1-200 characters');
     }
   }
 
@@ -322,18 +346,15 @@ export function validateMachine(record: unknown): MachineProblem[] {
 
   // Axes.
   const axes = own(r, 'axes');
-  if (Object.hasOwn(r, 'axes') && c.object(axes, 'axes', ['X', 'Y', 'Z'], ['A', 'B', 'C'])) {
+  if (Object.hasOwn(r, 'axes') && c.object(axes, 'axes', MACHINE_FIELDS.axes)) {
     for (const name of ['X', 'Y', 'Z', 'A', 'B', 'C'] as const) {
       if (!Object.hasOwn(axes, name)) continue;
       const rotary = name === 'A' || name === 'B' || name === 'C';
       const kind = rotary ? ROTARY : LINEAR;
       const path = join('axes', name);
       const axis = own(axes, name);
-      const required = rotary
-        ? ['maxVelocity', 'acceleration']
-        : ['min', 'max', 'maxVelocity', 'acceleration'];
-      const optional = rotary ? ['min', 'max', 'jerk'] : ['jerk'];
-      if (!c.object(axis, path, required, optional)) continue;
+      const fields = rotary ? MACHINE_FIELDS.rotaryAxis : MACHINE_FIELDS.linearAxis;
+      if (!c.object(axis, path, fields)) continue;
 
       const field = (k: string, rule: Parameters<Checker['number']>[2]): number | undefined =>
         Object.hasOwn(axis, k) ? c.p(own(axis, k), join(path, k), rule, sources) : undefined;
@@ -341,8 +362,8 @@ export function validateMachine(record: unknown): MachineProblem[] {
       const min = field('min', travel);
       const max = field('max', travel);
       field('maxVelocity', { gt: 0, max: kind.velocity, unit: `${kind.unit}/min` });
-      field('acceleration', { gt: 0, max: ACCELERATION, unit: `${kind.unit}/s²` });
-      field('jerk', { gt: 0, unit: `${kind.unit}/s³` });
+      field('acceleration', { gt: 0, max: ACCELERATION, unit: `${kind.unit}/s^2` });
+      field('jerk', { gt: 0, unit: `${kind.unit}/s^3` });
 
       if (rotary && Object.hasOwn(axis, 'min') !== Object.hasOwn(axis, 'max')) {
         c.add('MACHINE_MISSING', path, 'a rotary axis needs both min and max, or neither');
@@ -359,10 +380,7 @@ export function validateMachine(record: unknown): MachineProblem[] {
 
   // Planner.
   const planner = own(r, 'planner');
-  if (
-    Object.hasOwn(r, 'planner') &&
-    c.object(planner, 'planner', ['junctionDeviation'], ['blockRate', 'lookahead'])
-  ) {
+  if (Object.hasOwn(r, 'planner') && c.object(planner, 'planner', MACHINE_FIELDS.planner)) {
     const field = (k: string, rule: Parameters<Checker['number']>[2]): void => {
       if (Object.hasOwn(planner, k)) c.p(own(planner, k), join('planner', k), rule, sources);
     };
@@ -373,10 +391,7 @@ export function validateMachine(record: unknown): MachineProblem[] {
 
   // Spindle.
   const spindle = own(r, 'spindle');
-  if (
-    Object.hasOwn(r, 'spindle') &&
-    c.object(spindle, 'spindle', ['maxRpm', 'spinUpSeconds', 'spinDownSeconds'], ['minRpm'])
-  ) {
+  if (Object.hasOwn(r, 'spindle') && c.object(spindle, 'spindle', MACHINE_FIELDS.spindle)) {
     const field = (k: string, rule: Parameters<Checker['number']>[2]): number | undefined =>
       Object.hasOwn(spindle, k)
         ? c.p(own(spindle, k), join('spindle', k), rule, sources)
@@ -392,9 +407,8 @@ export function validateMachine(record: unknown): MachineProblem[] {
 
   // Overheads.
   const overheads = own(r, 'overheads');
-  const overheadFields = ['toolChangeSeconds', 'programStartSeconds', 'pauseSeconds'];
-  if (Object.hasOwn(r, 'overheads') && c.object(overheads, 'overheads', [], overheadFields)) {
-    for (const k of overheadFields) {
+  if (Object.hasOwn(r, 'overheads') && c.object(overheads, 'overheads', MACHINE_FIELDS.overheads)) {
+    for (const k of MACHINE_FIELDS.overheads.optional) {
       if (Object.hasOwn(overheads, k)) {
         c.p(own(overheads, k), join('overheads', k), { min: 0, max: 86_400, unit: 's' }, sources);
       }
@@ -409,16 +423,9 @@ export function validateMachine(record: unknown): MachineProblem[] {
     } else {
       const status = own(cal, 'status');
       if (status === 'uncalibrated') {
-        c.object(cal, 'calibration', ['status'], []);
+        c.object(cal, 'calibration', MACHINE_FIELDS.uncalibrated);
       } else if (status === 'calibrated') {
-        if (
-          c.object(
-            cal,
-            'calibration',
-            ['status', 'fittedOn', 'timeFactor', 'accelFactor', 'residuals'],
-            [],
-          )
-        ) {
+        if (c.object(cal, 'calibration', MACHINE_FIELDS.calibrated)) {
           if (Object.hasOwn(cal, 'fittedOn')) {
             const d = own(cal, 'fittedOn');
             if (typeof d !== 'string' || !isIsoDate(d)) {
@@ -433,10 +440,7 @@ export function validateMachine(record: unknown): MachineProblem[] {
           }
           const res = own(cal, 'residuals');
           const rp = 'calibration.residuals';
-          if (
-            Object.hasOwn(cal, 'residuals') &&
-            c.object(res, rp, ['jobs', 'meanAbsPercent', 'maxAbsPercent'], [])
-          ) {
+          if (Object.hasOwn(cal, 'residuals') && c.object(res, rp, MACHINE_FIELDS.residuals)) {
             if (Object.hasOwn(res, 'jobs')) {
               c.number(own(res, 'jobs'), join(rp, 'jobs'), { min: 1, integer: true });
             }

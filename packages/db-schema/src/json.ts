@@ -61,6 +61,28 @@ export function hasLoneSurrogate(s: string): boolean {
   return false;
 }
 
+/** The most UTF-16 units of an untrusted key that {@link quoteKey} shows. */
+export const MAX_QUOTED_KEY = 64;
+
+/**
+ * Quotes an untrusted key for a message that will be echoed and logged: printable
+ * ASCII only. Everything else, including line and paragraph separators, NEL and the
+ * bidi controls, becomes a `\uXXXX` escape (a surrogate pair as two), so a key can't
+ * forge a log line or flip the direction of the text around it. Long keys are cut
+ * to {@link MAX_QUOTED_KEY} units and marked with "...".
+ */
+export function quoteKey(key: string): string {
+  const cut = key.length > MAX_QUOTED_KEY;
+  let out = '"';
+  for (let i = 0; i < Math.min(key.length, MAX_QUOTED_KEY); i++) {
+    const c = key.charCodeAt(i);
+    if (c === 0x22 || c === 0x5c) out += `\\${key[i]}`;
+    else if (c >= 0x20 && c <= 0x7e) out += key[i];
+    else out += `\\u${c.toString(16).padStart(4, '0')}`;
+  }
+  return `${out}"${cut ? '...' : ''}`;
+}
+
 const NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
 const ESCAPES: Record<string, string> = {
   '"': '"',
@@ -173,9 +195,7 @@ export function parseStrictJson(text: string): JsonResult {
       const at = pos;
       const key = string();
       if (Object.hasOwn(out, key)) {
-        // The key is untrusted: quote it escaped and short, never raw.
-        const shown = JSON.stringify(key.length > 64 ? `${key.slice(0, 64)}…` : key);
-        fail('JSON_DUPLICATE_KEY', `the key ${shown} appears more than once`, at);
+        fail('JSON_DUPLICATE_KEY', `the key ${quoteKey(key)} appears more than once`, at);
       }
       ws();
       if (text[pos] !== ':') fail('JSON_SYNTAX', "expected ':'");

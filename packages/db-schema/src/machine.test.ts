@@ -8,6 +8,7 @@ import { contentHash } from './jcs.js';
 import { parseStrictJson, type JsonValue } from './json.js';
 import {
   MACHINE_DIALECTS,
+  MACHINE_FIELDS,
   MAX_RECORD_BYTES,
   readMachine,
   utf8Length,
@@ -224,6 +225,49 @@ describe('validateMachine: identity fields', () => {
   });
 });
 
+describe('messages are printable ASCII, whatever the record holds', () => {
+  const PRINTABLE = /^[\x20-\x7e]*$/;
+  const cp = (...points: number[]): string => String.fromCodePoint(...points);
+  // Line and paragraph separators, NEL, newline, bidi overrides and isolates, a
+  // zero-width space, an astral character, and a forged log prefix.
+  const hostile = [
+    `x [ERROR] forged${cp(0x202e)}${cp(0x85)}`,
+    `k${cp(0x2028)}next${cp(0x2029)}`,
+    `a${cp(0x0a)}[WARN] fake line`,
+    `${cp(0x2066)}rtl${cp(0x2069)}${cp(0x200b)}`,
+    `emoji ${cp(0x1f528)} "quoted" back\\slash`,
+    'z'.repeat(500),
+  ];
+
+  it.each(hostile)('an unknown field named %j', (key) => {
+    const r = example();
+    (r['planner'] as Rec)[key] = 1;
+    const problems = validateMachine(r);
+    expect(problems.map((x) => x.code)).toEqual(['MACHINE_UNKNOWN_FIELD']);
+    for (const x of problems) expect(x.message).toMatch(PRINTABLE);
+    expect(problems[0]?.message.length).toBeLessThan(200);
+  });
+
+  it.each(hostile)('a repeated key named %j', (key) => {
+    const k = JSON.stringify(key);
+    const r = readMachine(EXAMPLE_TEXT.replace('"planner": {', `"planner": {${k}: 1, ${k}: 2,`));
+    expect(r.ok ? [] : codes(r.problems)).toEqual(['MACHINE_JSON ']);
+    if (!r.ok) for (const x of r.problems) expect(x.message).toMatch(PRINTABLE);
+  });
+
+  it('for any key, and for every problem a broken record can produce', () => {
+    fc.assert(
+      fc.property(fc.string({ unit: 'binary', maxLength: 80 }), fc.anything(), (key, v) => {
+        const r = example();
+        (r['axes'] as Rec)[key] = v;
+        r['name'] = key;
+        r['id'] = key;
+        for (const x of validateMachine(r)) expect(x.message).toMatch(PRINTABLE);
+      }),
+    );
+  });
+});
+
 describe('validateMachine: numbers', () => {
   it.each([
     ['axes.X.maxVelocity', 200_000, 200_000.01, 0],
@@ -408,6 +452,10 @@ describe('readMachine', () => {
   it('counts bytes, not UTF-16 units', () => {
     expect(utf8Length('aé€' + String.fromCodePoint(0x1f528))).toBe(1 + 2 + 3 + 4);
     expect(utf8Length(String.fromCharCode(0xd800))).toBe(3);
+    // A lone high surrogate before an ordinary character: 3 bytes for the surrogate's
+    // replacement, then the character's own.
+    expect(utf8Length(`${String.fromCharCode(0xd800)}a`)).toBe(3 + 1);
+    expect(utf8Length(String.fromCharCode(0xdc00, 0xd800))).toBe(3 + 3);
   });
 
   it('refuses a repeated key as a JSON problem', () => {
@@ -441,39 +489,204 @@ describe('the JSON Schema', () => {
     const walk = (s: unknown, path: string): void => {
       if (typeof s !== 'object' || s === null) return;
       const o = s as S;
-      if (o['type'] === 'object') expect(o['additionalProperties'], path).toBe(false);
+      // A physical field is closed through its $ref to P, which is closed itself.
+      if (o['type'] === 'object' && o['$ref'] !== '#/$defs/P') {
+        expect(o['additionalProperties'], path).toBe(false);
+      }
       for (const [k, v] of Object.entries(o)) walk(v, `${path}/${k}`);
     };
     walk(SCHEMA, '');
   });
 
-  it('lists the same fields as the code accepts', () => {
-    // Each listed field is accepted by validateMachine; anything else is refused.
-    expect(props(SCHEMA)).toEqual(
-      [
-        'format',
-        'version',
-        'revision',
-        'id',
-        'name',
-        'dialect',
-        'axes',
-        'rapidRate',
-        'planner',
-        'spindle',
-        'overheads',
-        'calibration',
-      ].sort(),
-    );
-    expect(props(at('axes'))).toEqual(['A', 'B', 'C', 'X', 'Y', 'Z']);
-    expect(props(at('axes', 'X'))).toEqual(['acceleration', 'jerk', 'max', 'maxVelocity', 'min']);
-    expect(props(at('planner'))).toEqual(['blockRate', 'junctionDeviation', 'lookahead']);
-    expect(props(at('spindle'))).toEqual(['maxRpm', 'minRpm', 'spinDownSeconds', 'spinUpSeconds']);
-    expect(props(at('overheads'))).toEqual([
-      'pauseSeconds',
-      'programStartSeconds',
-      'toolChangeSeconds',
-    ]);
+  /**
+   * A record with every optional field present, valid. The parity tests below start
+   * from it, so a field the schema lists is checked in a record the code accepts.
+   */
+  function full(): Rec {
+    const r = example();
+    const axes = r['axes'] as Rec;
+    for (const a of ['X', 'Y', 'Z']) (axes[a] as Rec)['jerk'] = p(5000);
+    for (const a of ['A', 'B', 'C']) {
+      axes[a] = {
+        min: p(-90),
+        max: p(90),
+        maxVelocity: p(3600),
+        acceleration: p(500),
+        jerk: p(5000),
+      };
+    }
+    r['rapidRate'] = p(10_000);
+    r['planner'] = { junctionDeviation: p(0.02), blockRate: p(500), lookahead: p(200) };
+    (r['spindle'] as Rec)['minRpm'] = p(6000);
+    r['overheads'] = { toolChangeSeconds: p(60), programStartSeconds: p(30), pauseSeconds: p(120) };
+    return r;
+  }
+  function fullCalibrated(): Rec {
+    const r = JSON.parse(JSON.stringify(full()).replaceAll('"seed"', '"fitted"')) as Rec;
+    r['calibration'] = calibrated()['calibration'];
+    return r;
+  }
+
+  /**
+   * Every closed object in the schema, paired with the path of the same object in a
+   * record. `P` is reached through each physical field.
+   */
+  function closedObjects(): {
+    schemaPath: string;
+    recordPath: string;
+    schema: S;
+    record: () => Rec;
+  }[] {
+    const out: { schemaPath: string; recordPath: string; schema: S; record: () => Rec }[] = [];
+    const visit = (s: S, schemaPath: string, recordPath: string, record: () => Rec): void => {
+      const target = s['$ref'] === '#/$defs/P' ? ((SCHEMA['$defs'] as S)['P'] as S) : s;
+      if (target['additionalProperties'] === false) {
+        out.push({ schemaPath, recordPath, schema: target, record });
+      }
+      for (const [k, v] of Object.entries((s['properties'] ?? {}) as S)) {
+        if (s['$ref'] !== undefined && k === 'value') continue; // a P's own value
+        visit(v as S, `${schemaPath}/${k}`, recordPath === '' ? k : `${recordPath}.${k}`, record);
+      }
+      const branches = s['oneOf'] as S[] | undefined;
+      branches?.forEach((b, i) =>
+        visit(b, `${schemaPath}/oneOf/${i}`, recordPath, i === 0 ? record : fullCalibrated),
+      );
+    };
+    visit(SCHEMA, '', '', full);
+    return out;
+  }
+
+  const get = (r: Rec, path: string): unknown =>
+    path === '' ? r : path.split('.').reduce<unknown>((o, k) => (o as Rec)[k], r);
+
+  it('the full records are valid, so the parity tests start from accepted input', () => {
+    expect(validateMachine(full())).toEqual([]);
+    expect(validateMachine(fullCalibrated())).toEqual([]);
+  });
+
+  it('every field the schema lists is present in the full records, and accepted', () => {
+    const objects = closedObjects();
+    expect(objects.length).toBeGreaterThan(40);
+    for (const o of objects) {
+      const record = o.record();
+      const here = get(record, o.recordPath) as Rec;
+      // The record holds exactly the schema's fields at this object: nothing the
+      // schema lists is missing, and nothing the code accepts is unlisted.
+      expect(Object.keys(here).sort(), o.schemaPath).toEqual(
+        Object.keys(o.schema['properties'] as S).sort(),
+      );
+      expect(validateMachine(record), o.schemaPath).toEqual([]);
+    }
+  });
+
+  it("each schema object lists exactly the code's fields, with the same required set", () => {
+    const def = (s: S): S => (s['$ref'] === '#/$defs/P' ? ((SCHEMA['$defs'] as S)['P'] as S) : s);
+    const axes = at('axes');
+    const cal = (at('calibration')['oneOf'] as S[]).map(def);
+    const pairs: [keyof typeof MACHINE_FIELDS, S][] = [
+      ['record', SCHEMA],
+      ['axes', axes],
+      ['linearAxis', at('axes', 'X')],
+      ['rotaryAxis', at('axes', 'A')],
+      ['planner', at('planner')],
+      ['spindle', at('spindle')],
+      ['overheads', at('overheads')],
+      ['uncalibrated', cal[0] as S],
+      ['calibrated', cal[1] as S],
+      ['residuals', ((cal[1] as S)['properties'] as S)['residuals'] as S],
+      ['p', def(at('rapidRate'))],
+    ];
+    for (const [name, schema] of pairs) {
+      const fields = MACHINE_FIELDS[name];
+      expect(props(schema), name).toEqual([...fields.required, ...fields.optional].sort());
+      expect([...((schema['required'] ?? []) as string[])].sort(), name).toEqual(
+        [...fields.required].sort(),
+      );
+    }
+    for (const a of ['Y', 'Z']) expect(at('axes', a)).toEqual(at('axes', 'X'));
+    for (const a of ['B', 'C']) expect(at('axes', a)).toEqual(at('axes', 'A'));
+  });
+
+  it('every closed object in the schema is closed in the code too', () => {
+    for (const o of closedObjects()) {
+      const record = o.record();
+      (get(record, o.recordPath) as Rec)['stray'] = 1;
+      expect(codes(validateMachine(record)), o.schemaPath).toEqual([
+        `MACHINE_UNKNOWN_FIELD ${o.recordPath}`,
+      ]);
+    }
+  });
+
+  it("every numeric bound in the schema is the code's bound", () => {
+    // Fields in a cross-field rule (min < max, minRpm <= maxRpm): the partner is moved
+    // to the far extreme first, so only the field's own bound decides. A travel min at
+    // its maximum (or max at its minimum) can't satisfy min < max at all, so for those
+    // only the refusal side is tested.
+    const partnerOf = (path: string): [string, number] | undefined => {
+      if (/^axes\.[A-Z]\.min$/.test(path)) return [path.replace(/min$/, 'max'), 100_000];
+      if (/^axes\.[A-Z]\.max$/.test(path)) return [path.replace(/max$/, 'min'), -100_000];
+      if (path === 'spindle.minRpm') return ['spindle.maxRpm', 100_000];
+      if (path === 'spindle.maxRpm') return ['spindle.minRpm', 0];
+      const res = 'calibration.residuals.';
+      if (path === `${res}meanAbsPercent`) return [`${res}maxAbsPercent`, 100];
+      if (path === `${res}maxAbsPercent`) return [`${res}meanAbsPercent`, 0];
+      return undefined;
+    };
+    const unreachable = (path: string, side: 'hi' | 'lo'): boolean =>
+      (side === 'hi' && /^axes\.[A-Z]\.min$/.test(path)) ||
+      (side === 'lo' && /^axes\.[A-Z]\.max$/.test(path));
+    let checked = 0;
+    for (const o of closedObjects()) {
+      for (const [k, raw] of Object.entries(o.schema['properties'] as S)) {
+        const field = raw as S;
+        const isP = field['$ref'] === '#/$defs/P';
+        const bounds = (isP ? (field['properties'] as S)['value'] : field) as S;
+        if (bounds['type'] !== 'number' && bounds['type'] !== 'integer') continue;
+        const path = o.recordPath === '' ? k : `${o.recordPath}.${k}`;
+        const shape = (v: number): unknown =>
+          isP ? p(v, o.record === full ? 'seed' : 'fitted') : v;
+        const at = (v: number): string[] => {
+          const r = o.record();
+          const pair = partnerOf(path);
+          if (pair) withField(pair[0], shape(pair[1]), r);
+          withField(path, shape(v), r);
+          return codes(validateMachine(r));
+        };
+        // Out of range, or (for revision) newer than this toolkit reads.
+        const refusal = (w: string): unknown =>
+          expect.stringMatching(
+            new RegExp(`^MACHINE_(RANGE|VERSION) ${w.replaceAll('.', '\\.')}$`),
+          );
+        const tiny = (x: number): number => Math.max(Math.abs(x) * 1e-9, 1e-9);
+        const hi = bounds['maximum'] as number | undefined;
+        const lo = bounds['minimum'] as number | undefined;
+        const gt = bounds['exclusiveMinimum'] as number | undefined;
+        const where = isP ? `${path}.value` : path;
+        if (hi !== undefined) {
+          if (!unreachable(path, 'hi')) expect(at(hi), `${path} at its maximum`).toEqual([]);
+          expect(at(hi + Math.max(tiny(hi), 1)), `${path} over`).toContainEqual(refusal(where));
+        }
+        if (lo !== undefined) {
+          if (!unreachable(path, 'lo')) expect(at(lo), `${path} at its minimum`).toEqual([]);
+          expect(at(lo - 1), `${path} under`).toContainEqual(refusal(where));
+        }
+        if (gt !== undefined) {
+          expect(at(gt), `${path} at its exclusive minimum`).toContainEqual(refusal(where));
+          expect(
+            at(gt + (bounds['type'] === 'integer' ? 1 : tiny(gt))),
+            `${path} just above`,
+          ).toEqual([]);
+        }
+        if (bounds['type'] === 'integer') {
+          expect(at((hi ?? 10) - 0.5), `${path} a fraction`).toContain(`MACHINE_TYPE ${where}`);
+        }
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(40);
+  });
+
+  it("the dialects are the code's", () => {
     expect((at('dialect')['enum'] as string[]).sort()).toEqual([...MACHINE_DIALECTS].sort());
   });
 
