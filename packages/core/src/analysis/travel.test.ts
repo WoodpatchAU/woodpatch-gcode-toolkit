@@ -243,6 +243,63 @@ describe('checkTravel: the review of #71', () => {
   });
 });
 
+// Round two of the review of #71: three more classes that were falsely certain.
+describe('checkTravel: the review of #71, round two', () => {
+  it("1. a helix's own axis adds no interior points", () => {
+    const src = 'F100\nG53 G0 Z-140\nG0 X100 Y100\nG17 G2 X100 Y100 I100 J0 Z160\n';
+    expect(check(src)).toEqual([]);
+    // The helix starts in one Z frame (before G43) and ends in another.
+    expect(check('F100\nG0 Z-140\nG43 H1\nG17 G2 X100 Y0 I50 J0 Z160\n')).toEqual([]);
+  });
+
+  it('2. an absolute centre (G90.1) counts only with both ends in its frame', () => {
+    expect(check('F100\nG90.1\nG91 G2 X0 Y0 I500 J0\n')).toEqual([]);
+    expect(check('F100\nG0 X0 Y0\nG90.1\nG55\nG2 X0 Y0 I500 J0\n')).toEqual([]);
+    // Ends and centre all in one frame: the circle's 1000 mm in Y is certain.
+    expect(codes(check('F100\nG0 X0 Y0\nG90.1\nG2 X0 Y0 I500 J0\n'))).toEqual(['TRAVEL_EXTENT 4']);
+  });
+
+  it('3. a rotated system makes X and Y incomparable, for good', () => {
+    // 1100 along a 45-degree X is 778 x 778 on the machine: it may fit.
+    expect(check('G10 L2 P1 R45\nG0 X0 Y0\nG0 X1100 Y0\n')).toEqual([]);
+    // A later G10 without R keeps the rotation (LinuxCNC keeps it): never re-pinned.
+    const G54 = { workOffsets: { 1: { X: 0, Y: 0 } } };
+    const repin = 'G92.1\nG10 L2 P1 X0 Y0 R180\nG10 L2 P1 X0 Y0\nG0 X-500 Y-100\n';
+    expect(check(repin, G54)).toEqual([]);
+    expect(
+      check('G92.1\nG10 L2 P2 X0 Y0 R90\nG55\nG10 L20 P2 X0 Y0\nG0 X-500 Y-100\n', G54),
+    ).toEqual([]);
+    // A G92 taken under a rotated system isn't known either, even from a G53 position,
+    // and it carries over to the next system.
+    const both = { workOffsets: { 1: { X: 0, Y: 0 }, 2: { X: 0, Y: 0 } } };
+    const g92 =
+      'G92.1\nG10 L2 P1 X0 Y0 R90\nG10 L2 P1 X0 Y0\nG53 G0 X500 Y500\nG92 X0 Y0\nG55\nG0 X-600\n';
+    expect(check(g92, both)).toEqual([]);
+    // Incremental moves under rotation move both axes.
+    expect(check('G10 L2 P1 R45\nG91 G0 X600\nG0 X600\n')).toEqual([]);
+    // Z isn't rotated: still checked.
+    expect(codes(check('G10 L2 P1 R45\nG0 Z0\nG0 Z-200\n'))).toEqual(['TRAVEL_EXTENT 3']);
+  });
+
+  it('a rotation may be in force at the start only if the caller says so', () => {
+    const src = 'G0 X0 Y0\nG0 X1100 Y0\n';
+    expect(codes(check(src))).toEqual(['TRAVEL_EXTENT 2']); // the contract: none
+    expect(check(src, { coordinateRotationAtStart: 'unknown' })).toEqual([]);
+  });
+
+  it('a cycle starting where another cycle left the tool, in another frame', () => {
+    // Found by the every-truth oracle: the second cycle starts at the first one's R
+    // (a G54 level); under G55 its own R and hole are another frame.
+    expect(check('F100\nG81 X0 Y0 R46 Z45\nG55\nG81 X0 Y0 R-104 Z-105\nG92.1\n')).toEqual([]);
+  });
+
+  it("4. a cycle keeps its initial level in that level's own frame", () => {
+    // The initial level is 100 above the start (start frame); R and the hole are work
+    // levels. Lumped together they'd span 160.
+    expect(check('G91 G0 Z100\nG90 G98 G81 X0 Y0 R-10 Z-60 F100\n')).toEqual([]);
+  });
+});
+
 describe('checkTravel: canned cycles', () => {
   it('keeps the initial level as known as it was, and the hole in work terms', () => {
     // Z starts pinned at machine 0; the holes go 50 below a work R plane.
@@ -320,7 +377,8 @@ function arcPoints(s: Extract<Step, { kind: 'arc' }>): Record<'X' | 'Y' | 'Z', n
 
 describe('checkTravel: every warning holds, whatever the unknowns', () => {
   const axis = fc.constantFrom('X', 'Y', 'Z');
-  const v = fc.integer({ min: -2500, max: 2500 });
+  // Values near the travel's own size, so a truth often fits and a false claim shows.
+  const v = fc.integer({ min: -900, max: 900 });
   const small = fc.integer({ min: 1, max: 600 });
   const common = [
     fc.tuple(fc.constantFrom('G0', 'G1'), axis, v).map(([g, a, x]) => `${g} ${a}${x}`),
@@ -339,7 +397,10 @@ describe('checkTravel: every warning holds, whatever the unknowns', () => {
       'G49',
       'T1 M6',
     ),
-    fc.constantFrom('G28', 'G28 Z0', 'G30', 'G80', 'G98', 'G99'),
+    fc.constantFrom('G28', 'G28 Z0', 'G30', 'G80', 'G98', 'G99', 'G90.1', 'G91.1'),
+    // Absolute helices (R-form), and arcs with a centre that G90.1 makes absolute.
+    fc.tuple(v, v, v).map(([x, y, z]) => `G17 G2 X${x} Y${y} Z${z} R2000`),
+    fc.tuple(small, v, v).map(([rad, x, y]) => `G17 G3 X${x} Y${y} I${x - rad} J${y}`),
     fc.tuple(fc.integer({ min: 0, max: 3 }), axis, v).map(([p, a, x]) => `G10 L2 P${p} ${a}${x}`),
     // Canned cycles (R above Z), with pecks.
     fc
@@ -383,9 +444,9 @@ describe('checkTravel: every warning holds, whatever the unknowns', () => {
     Z: fc.integer({ min: -150, max: 0 }),
   });
   const offset = fc.record({
-    X: fc.integer({ min: -2000, max: 2000 }),
-    Y: fc.integer({ min: -2000, max: 2000 }),
-    Z: fc.integer({ min: -2000, max: 2000 }),
+    X: fc.integer({ min: -500, max: 1000 }),
+    Y: fc.integer({ min: -400, max: 800 }),
+    Z: fc.integer({ min: -150, max: 150 }),
   });
   const scenario = fc.oneof(
     fc.record({
@@ -398,95 +459,114 @@ describe('checkTravel: every warning holds, whatever the unknowns', () => {
     }),
   );
 
-  it('holds for random programs and unknowns', () => {
-    let compared = 0;
-    let truncated = 0;
+  // One possible truth: the unknowns a program doesn't set.
+  const truth = fc.record({
+    w: fc.array(offset, { minLength: 6, maxLength: 6 }),
+    start: inside,
+    home: inside,
+    g28: inside,
+    g30: inside,
+    leftover: fc.option(offset, { nil: undefined }),
+  });
+  type Truth = typeof truth extends fc.Arbitrary<infer T> ? T : never;
+
+  /** Every place the machine really is under one truth, up to the first differing error. */
+  function places(
+    src: string,
+    masso: boolean,
+    home: Truth['home'],
+    seenErrors: { line: number; code: string }[],
+    t: Truth,
+  ): { places: Record<'X' | 'Y' | 'Z', number>[]; cutoff: number } {
+    const prefix = masso
+      ? ''
+      : [
+          ...(['X', 'Y', 'Z'] as const).map((a, i) => `#${5161 + i}=${t.g28[a]}`),
+          ...(['X', 'Y', 'Z'] as const).map((a, i) => `#${5181 + i}=${t.g30[a]}`),
+          ...(t.leftover
+            ? [
+                ...(['X', 'Y', 'Z'] as const).map((a, i) => `#${5211 + i}=${t.leftover?.[a]}`),
+                '#5210=1',
+              ]
+            : []),
+        ].join('\n') + '\n';
+    const shift = prefix === '' ? 0 : prefix.split('\n').length - 1;
+    const workOffsets = Object.fromEntries(
+      (masso ? [1, 2, 3, 101, 102, 103] : [1, 2, 3, 4, 5, 6]).map((cs, i) => [
+        cs,
+        t.w[i] ?? { X: 0, Y: 0, Z: 0 },
+      ]),
+    );
+    const real = interpret(parse(prefix + src), {
+      ...(masso ? { dialect: MASSO_G3, machine: { home, park: t.g30 } } : {}),
+      workOffsets,
+      start: t.start,
+    });
+    const b = real.diagnostics
+      .filter((d) => d.severity === 'error')
+      .map((d) => ({ line: d.line - shift, code: d.code }))
+      .filter((e) => e.line > 0);
+    let cutoff = Infinity;
+    for (let i = 0; i < Math.max(seenErrors.length, b.length); i++) {
+      if (seenErrors[i]?.line !== b[i]?.line || seenErrors[i]?.code !== b[i]?.code) {
+        cutoff = Math.min(seenErrors[i]?.line ?? Infinity, b[i]?.line ?? Infinity);
+        break;
+      }
+    }
+    const out: Record<'X' | 'Y' | 'Z', number>[] = [t.start];
+    for (const s of real.steps) {
+      if (s.kind !== 'linear' && s.kind !== 'arc') continue;
+      if (s.line - shift >= cutoff) break;
+      out.push(s.to);
+      if (s.kind === 'arc') out.push(...arcPoints(s));
+    }
+    return { places: out, cutoff };
+  }
+
+  // The oracle (the reviewer's, round two): a warning must hold in EVERY one of many
+  // sampled truths, not just one. So a false claim fails as soon as any sampled truth
+  // fits. It's stochastic: which mutants it catches can vary from run to run.
+  it('holds in every sampled truth, for random programs', () => {
     let warned = 0;
-    const runs = Number(process.env['TRAVEL_RUNS'] ?? 2000);
+    let checks = 0;
+    const runs = Number(process.env['TRAVEL_RUNS'] ?? 300);
+    const truths = Number(process.env['TRAVEL_TRUTHS'] ?? 40);
     fc.assert(
       fc.property(
         scenario,
-        fc.array(offset, { minLength: 6, maxLength: 6 }),
-        fc.tuple(inside, inside, inside, inside),
-        fc.option(offset, { nil: undefined }),
-        ({ dialect, lines }, w, [start, home, g28, g30], leftover) => {
+        inside,
+        fc.array(truth, { minLength: truths, maxLength: truths }),
+        ({ dialect, lines }, home, ts) => {
           const src = `F100\n${lines.join('\n')}\n`;
           const masso = dialect === 'masso';
-          const workOffsets = Object.fromEntries(
-            (masso ? [1, 2, 3, 101, 102, 103] : [1, 2, 3, 4, 5, 6]).map((cs, i) => [
-              cs,
-              w[i] ?? { X: 0, Y: 0, Z: 0 },
-            ]),
-          );
-          const seenOptions: InterpretOptions = masso
-            ? { dialect: MASSO_G3, machine: { home } }
-            : {};
-          const seen = interpret(parse(src), seenOptions);
-          // LinuxCNC's truth: stored G28/G30 positions, and maybe a G92 left on, set by
-          // parameter lines ahead of the program (so its lines shift by that many).
-          const prefix = masso
-            ? ''
-            : [
-                ...(['X', 'Y', 'Z'] as const).map((a, i) => `#${5161 + i}=${g28[a]}`),
-                ...(['X', 'Y', 'Z'] as const).map((a, i) => `#${5181 + i}=${g30[a]}`),
-                ...(leftover
-                  ? [
-                      ...(['X', 'Y', 'Z'] as const).map((a, i) => `#${5211 + i}=${leftover[a]}`),
-                      '#5210=1',
-                    ]
-                  : []),
-              ].join('\n') + '\n';
-          const shift = prefix === '' ? 0 : prefix.split('\n').length - 1;
-          const real = interpret(parse(prefix + src), {
-            ...(masso ? { dialect: MASSO_G3, machine: { home, park: g30 } } : {}),
-            workOffsets,
-            start,
-          });
-          // Compare up to the first line where the two runs' errors differ.
-          const errs = (ds: readonly Diagnostic[], by: number) =>
-            ds
-              .filter((d) => d.severity === 'error')
-              .map((d) => ({ line: d.line - by, code: d.code }));
-          const a = errs(seen.diagnostics, 0);
-          const b = errs(real.diagnostics, shift).filter((e) => e.line > 0);
-          let cutoff = Infinity;
-          for (let i = 0; i < Math.max(a.length, b.length); i++) {
-            if (a[i]?.line !== b[i]?.line || a[i]?.code !== b[i]?.code) {
-              cutoff = Math.min(a[i]?.line ?? Infinity, b[i]?.line ?? Infinity);
-              break;
-            }
-          }
-          if (cutoff !== Infinity) truncated++;
-          compared++;
-          const warnings = checkTravel(seen.steps, TRAVEL).filter(
-            (d) => d.severity === 'warning' && d.line < cutoff,
-          );
+          const seen = interpret(parse(src), masso ? { dialect: MASSO_G3, machine: { home } } : {});
+          const seenErrors = seen.diagnostics
+            .filter((d) => d.severity === 'error')
+            .map((d) => ({ line: d.line, code: d.code }));
+          const warnings = checkTravel(seen.steps, TRAVEL).filter((d) => d.severity === 'warning');
           warned += warnings.length;
-          // Every place the machine really is, before the cutoff.
-          const places: Record<'X' | 'Y' | 'Z', number>[] = [start];
-          for (const s of real.steps) {
-            if (s.kind !== 'linear' && s.kind !== 'arc') continue;
-            if (s.line - shift >= cutoff) break;
-            places.push(s.to);
-            if (s.kind === 'arc') places.push(...arcPoints(s));
-          }
-          for (const d of warnings) {
-            const ax = d.message[0] as 'X' | 'Y' | 'Z';
-            const t = TRAVEL[ax] as { min: number; max: number };
-            const leaves = places.some((p) => p[ax] < t.min - 1e-6 || p[ax] > t.max + 1e-6);
-            expect(leaves, `${d.code} at ${d.line}: ${d.message}\n${dialect}\n${src}`).toBe(true);
+          if (warnings.length === 0) return;
+          for (const t of ts) {
+            const { places: ps, cutoff } = places(src, masso, home, seenErrors, t);
+            for (const d of warnings) {
+              if (d.line >= cutoff) continue;
+              checks++;
+              const ax = d.message[0] as 'X' | 'Y' | 'Z';
+              const lim = TRAVEL[ax] as { min: number; max: number };
+              const leaves = ps.some((p) => p[ax] < lim.min - 1e-6 || p[ax] > lim.max + 1e-6);
+              expect(leaves, `${d.code} at ${d.line}: ${d.message}\n${dialect}\n${src}`).toBe(true);
+            }
           }
         },
       ),
       { numRuns: runs },
     );
-    // Not vacuous: most cases compare whole, and there are warnings to test.
-    expect(compared).toBe(runs);
-    expect(truncated).toBeLessThan(runs * 0.5);
-    expect(warned).toBeGreaterThan(runs / 4);
+    // Not vacuous: warnings to test, each against many truths.
+    expect(warned).toBeGreaterThan(runs / 10);
+    expect(checks).toBeGreaterThan(warned * 10);
     if (process.env['TRAVEL_STATS']) {
       process.stderr.write(
-        `travel property: ${runs} runs, ${truncated} truncated, ${warned} warnings\n`,
+        `travel property: ${runs} programs x ${truths} truths, ${warned} warnings, ${checks} checks\n`,
       );
     }
   }, 300_000);

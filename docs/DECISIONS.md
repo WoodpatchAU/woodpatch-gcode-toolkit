@@ -2649,8 +2649,9 @@ as an optional field in a new revision, or as version 2.
 ## ADR-0042: The travel check: certain or silent
 
 **Status:** Accepted, 2026-10-22. The reviewer's GO on the outline, with its three
-decisions and five additions; revised after review the same day (eight programs that
-got a false "certain" result, all now regression tests). Implements ADR-0041's "the
+decisions and five additions. Revised after two rounds of review (2026-10-22 and
+10-23): eleven classes of program got a false "certain" result, and each is now a
+regression test. Implements ADR-0041's "the
 travel check uses what is knowable".
 
 **Context.** A preview doesn't know the operator's work offsets (G54 and the rest), any
@@ -2695,8 +2696,17 @@ machine terms.
     applies on a tool change), so Z under any offset is unknown until G49, or unless the
     caller passes `toolLengthOffsetAtStart: 'off'`. A tool change makes it unknown
     again.
-  - **Rotation** (G10 L2 ... R) isn't simulated: X and Y under a rotated system are
-    unknown.
+  - **Rotation** (G10 L2 ... R) isn't simulated. Once a system is rotated it stays so:
+    LinuxCNC keeps the rotation when a later G10 omits R. Under it, any X or Y move other
+    than G53 (absolute, incremental, a cycle, an arc) leaves both axes somewhere unknown,
+    with no pin and no shared frame. A later G10 can't make its X/Y offsets known again,
+    and nor can a G92 taken under it.
+  - **A rotation already in force at the start** is the same class of unknown as a
+    leftover G92. **By contract it's assumed absent** (`coordinateRotationAtStart`,
+    default `'none'`). The caller passes `'unknown'` when it can't say, and then no X/Y
+    claim is made. The alternative, X/Y claims that hold under any rotation (comparing
+    XY distance with the travel's diagonal), was weighed and would find far less. It's
+    put to the operator in the PR.
   - **A refused line** (any error) may still run on a controller, an unsupported code
     for instance. Everything known before it is forgotten.
   - A supplied system is never mixed with one that wasn't: moves under an unsupplied
@@ -2708,40 +2718,54 @@ machine terms.
   - **TRAVEL_EXTENT:** ends sharing one shift that span more than an axis's travel. The
     program can't fit, wherever the shift is. Once per axis and shift.
   - The points it counts: the start position (wherever the machine is, it's a real
-    place), each move's end, and an arc's extremes, only when every plane axis is known
-    alike at both ends (an arc's centre depends on both).
+    place), each move's end, and an arc's extremes on its plane axes, only when every
+    plane axis is known alike at both ends (an arc's centre depends on both). A helix's
+    own axis runs straight between its ends, so its interior adds nothing there. An
+    absolute centre (G90.1) is in the offsets' frame, so the interior also needs both
+    ends in that frame (`TravelFrame.centreApart` says when they aren't).
   - Comparisons are in machine millimetres after G20/G21. Messages give the axis,
     numbers and a line, never program text.
-  - Canned cycles are stamped per Z level. The initial level keeps what was known when
-    it was set, and under G90 the R plane and the hole are work levels. Where the
-    initial level and R coincide but are known differently, each such step gets a frame
-    of its own.
+  - Canned cycles are stamped per Z level, each known as the level it is:
+    - the initial level, as it was when set;
+    - the level the tool is at when the cycle starts, as it is then (a previous cycle may
+      have left it in another frame);
+    - under G90, the R plane, the hole and the pecks as work levels (under G91, relative
+      to the initial level).
+
+    Where one value is two levels known differently, each such step gets a frame of its
+    own.
 - **Cutter compensation (G41/G42):** the real path is offset by an unknown radius,
   either way, in the plane. Those moves' plane axes aren't checked, and an info
   diagnostic, TRAVEL_COMPENSATION_SKIPPED, says so (with the subprogram file, if any).
 - **No consumer may ever show "within travel"** or any equivalent for a run with no
   warnings. Silence means only that nothing certain was found.
 - **Proof.**
-  - **A property test.** A random program in either dialect is run as the check sees
-    it, then as one possible truth: random supplied offsets, a random start inside the
-    travel, sometimes a G92 left on the controller, random stored G28/G30 positions and
-    a Masso park position. Every warning must hold in that truth, up to the first line
-    where the two runs' errors differ. The programs mix moves, G53, G90/G91,
-    coordinate systems (G54.1 too), G92 and its cancels, G52, G10 L2/L20/L2.1/L20.1
-    (with R), parameter writes, G43/G49/M6, G28/G30, canned cycles with pecks, and arcs
-    in every plane (R-form and helical too).
-  - **What it can't model.** The interpreter doesn't apply tool lengths or cutter
-    radii (ADR-0016), so their truth there is 0 and no compensation. Unit tests pin
-    those rules.
-  - **Runs.** 60,000 cases passed locally (about 3% cut short at a differing error),
-    and CI runs 2,000. The test asserts it isn't vacuous: under half cut short, and
-    warnings in plenty.
-  - **Mutants.** Eleven mutants of the frame rules all fail the suite:
-    - the property test catches no new frames, G92 assumed off at the start, arc
-      interiors always counted, G10 L20 always known, and Masso G30 keeping its axes;
-    - unit tests catch cycle levels always in the work frame, G92 always known, the tool
-      length assumed off, refused lines forgetting nothing, and a stale stamp under
-      compensation.
+  - **A property test, with an every-truth oracle** (the reviewer's, round two). A random
+    program in either dialect is run as the check sees it. Then, for each of 40 sampled
+    truths, it's run again: random supplied offsets, a random start inside the travel,
+    sometimes a G92 left on the controller, random stored G28/G30 positions and a Masso
+    park position, with values near the travel's own size so a truth often fits. Every
+    warning must hold in EVERY truth, up to the first line where that truth's errors
+    differ from the seen run's (the start can decide whether an arc's line runs at all).
+    The programs mix moves, G53, G90/G91, coordinate systems (G54.1 too), G92 and its
+    cancels, G52, G10 L2/L20/L2.1/L20.1 (with R), parameter writes, G43/G49/M6, G28/G30,
+    canned cycles with pecks, and arcs in every plane: incremental, R-form, G90 helices,
+    and G90.1 centres. On its first run it found a twelfth class, a cycle starting where
+    another cycle left the tool in another frame, now fixed and a unit test.
+  - **What it can't model.** The interpreter doesn't apply tool lengths, cutter radii or
+    rotation, so their truth there is the identity. Unit tests pin those rules.
+  - **Runs.** CI runs 300 programs x 40 truths (about 14,000 checks). Locally, 1,500 x 40
+    passed five times (about 78,000 checks each). The test asserts it isn't vacuous:
+    warnings to test, each checked against many truths.
+  - **Mutants.** The oracle is stochastic: which mutants it catches can vary from run
+    to run. The whole suite catches all fourteen at CI size. Across two runs of 1,500 x 40:
+    - the oracle catches both times: no new offset frames, G92 assumed off at the start,
+      arc interiors whatever the plane axes, cycle levels always the cycle's own, G92
+      always known, G10 L20 always known, and rotation not losing X/Y;
+    - the oracle catches in one of the two runs: Masso G30 keeping its axes;
+    - unit tests only: the tool length assumed off, refused lines forgetting nothing, a
+      stale stamp under compensation, a helix's axis given interior points, an absolute
+      centre ignored, and rotation not sticky.
 
 **Consequences.** Silence never means "fits". The check finds less than a check that
 assumed zero offsets would, and everything it finds is true. With the operator's offsets

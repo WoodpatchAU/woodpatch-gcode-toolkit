@@ -298,6 +298,14 @@ class Interpreter {
   /** offsetKnown for every axis as bits (AXIS_INDEX), worked out when first needed after
    *  a change: a move asks per axis, and building "cs:axis" keys each time is slow. */
   private knownBits: number | null = null;
+  /**
+   * Coordinate systems a G10 ... R has rotated (sticky: a later G10 without R keeps the
+   * rotation on LinuxCNC). Rotation isn't simulated, so X and Y moved under one aren't
+   * comparable with anything: no pin, no shared frame.
+   */
+  private readonly rotatedSystems = new Set<number>();
+  /** A rotation may already be in force at the start (the caller said so). */
+  private rotationUnknown = false;
   /** The stamp for the next motion step, reused until something it records changes. */
   private frameCache: TravelFrame | null = null;
 
@@ -324,6 +332,7 @@ class Interpreter {
     // A tool length offset left active (MDI G43, or one a controller applies on a tool
     // change) is unknown unless the caller says there's none.
     this.tloUnknown = options.toolLengthOffsetAtStart !== 'off';
+    this.rotationUnknown = options.coordinateRotationAtStart === 'unknown';
     for (const [key, offset] of Object.entries(options.workOffsets ?? {})) {
       const cs = Number(key);
       // G54-G59.3 (1-9) and Masso's G54.1 P1-P100 (101-200); nothing else is a system.
@@ -1846,7 +1855,12 @@ class Interpreter {
     }
     if (result.warning) this.report(n, 'warning', result.warning.code, result.warning.message);
     const arc = result.arc;
+    // An absolute centre (G90.1) is in the offsets' frame: the arc's interior is
+    // comparable with its ends only if both ends are in that frame too.
+    const absoluteCentre = !r && this.arcDistance === 'absolute';
+    const startInFrame = [a1, a2].every((a) => this.inOffsetFrame(a));
     this.arriveWords(words, how);
+    const apart = absoluteCentre && !(startInFrame && [a1, a2].every((a) => this.inOffsetFrame(a)));
     this.steps.push({
       kind: 'arc',
       line: n,
@@ -1861,7 +1875,7 @@ class Interpreter {
       turns,
       feed,
       offset,
-      frame: this.stamp(),
+      frame: apart ? { ...this.stamp(), centreApart: true } : this.stamp(),
     });
     this.position = target;
   }
@@ -2001,17 +2015,28 @@ class Interpreter {
     const xy = [...(x ? ['X' as const] : []), ...(y ? ['Y' as const] : [])];
     const workZ = { pinned: this.offsetKnown('Z'), id: this.offsetIds[2] };
     let initialZ = { pinned: this.cycleInitialPinned, id: this.cycleInitialFrame };
-    // Under G90, an initial level that's numerically the R plane but known differently
-    // (pinned or not, or another frame) can't be told apart from it: each such step gets
-    // a frame of its own, unpinned.
+    // A Z level is known as the level it is: the initial level as it was when set, the
+    // level the tool is at when the cycle starts as it is now (a previous cycle may have
+    // left it in another frame), and under G90 the R plane, the hole and the pecks as
+    // work levels (under G91 they're relative to the initial level). Where one value is
+    // two levels known differently, it can't be told apart: each such step gets a frame
+    // of its own, unpinned.
     const alike = (p: { pinned: boolean; id: number }, q: { pinned: boolean; id: number }) =>
       p.pinned === q.pinned && (p.pinned || p.id === q.id);
+    const startZ = { pinned: this.isPinned('Z'), id: this.pointIds[2] };
+    const startLevel = pos.Z;
+    const levelZ = incremental ? initialZ : workZ;
     const zAt = (z: number): { pinned: boolean; id: number } => {
-      if (incremental) return initialZ;
-      if (z !== initial) return workZ;
-      if (r === initial && !alike(initialZ, workZ))
-        return { pinned: false, id: this.nextFrameId++ };
-      return initialZ;
+      const known: { pinned: boolean; id: number }[] = [];
+      if (z === initial) known.push(initialZ);
+      if (z === startLevel) known.push(startZ);
+      // Any other value is one of the cycle's own levels; R and the bottom can also
+      // coincide with the initial or start level.
+      if (known.length === 0 || z === r || z === bottom) known.push(levelZ);
+      const first = known[0] as { pinned: boolean; id: number };
+      return known.every((k) => alike(k, first))
+        ? first
+        : { pinned: false, id: this.nextFrameId++ };
     };
     const withZ = (z: { pinned: boolean; id: number }): TravelFrame => {
       const base = this.stamp();
@@ -2187,6 +2212,9 @@ class Interpreter {
       const cs = Math.floor((i - 5221) / 20) + 1;
       if (k >= AXES.length) return;
       const a = AXES[k] as Axis;
+      // X and Y under a rotated system stay unknown, whatever is written.
+      if ((a === 'X' || a === 'Y') && (this.rotationUnknown || this.rotatedSystems.has(cs)))
+        known = false;
       if (known) this.knownOffsets.add(`${cs}:${a}`);
       else this.knownOffsets.delete(`${cs}:${a}`);
       if (cs === this.coordinateSystem()) this.newFrame(a);
@@ -2222,8 +2250,11 @@ class Interpreter {
    * (an incremental move keeps what was known).
    */
   private arrive(axes: Iterable<Axis>, how: 'machine' | 'work' | 'relative'): void {
+    const list = [...axes];
+    const rotated = how !== 'machine' && this.underRotation();
+    if (rotated && list.some((a) => a === 'X' || a === 'Y')) this.lost(['X', 'Y']);
     if (how === 'relative') return;
-    for (const a of axes) this.arrive1(a, how);
+    for (const a of list) if (!(rotated && (a === 'X' || a === 'Y'))) this.arrive1(a, how);
   }
 
   private arrive1(a: Axis, how: 'machine' | 'work'): void {
@@ -2253,11 +2284,30 @@ class Interpreter {
 
   /** `arrive` for the axes a line's words name, without building a list of them. */
   private arriveWords(words: readonly Word[], how: 'machine' | 'work' | 'relative'): void {
+    if (how !== 'machine' && this.underRotation()) {
+      // Rotated: a move on X or Y moves both, by amounts not simulated.
+      if (words.some((w) => w.letter === 'X' || w.letter === 'Y')) this.lost(['X', 'Y']);
+    }
     if (how === 'relative') return;
     for (const w of words) {
-      if ((AXIS_INDEX as Readonly<Record<string, number | undefined>>)[w.letter] !== undefined)
-        this.arrive1(w.letter as Axis, how);
+      if ((AXIS_INDEX as Readonly<Record<string, number | undefined>>)[w.letter] === undefined)
+        continue;
+      if (how !== 'machine' && (w.letter === 'X' || w.letter === 'Y') && this.underRotation())
+        continue;
+      this.arrive1(w.letter as Axis, how);
     }
+  }
+
+  /** Whether the active coordinate system may be rotated. */
+  private underRotation(): boolean {
+    if (this.rotatedSystems.size === 0) return this.rotationUnknown; // the usual case: cheap
+    return this.rotationUnknown || this.rotatedSystems.has(this.coordinateSystem());
+  }
+
+  /** Whether an axis's position is in the frame its offset is in (or both are known). */
+  private inOffsetFrame(a: Axis): boolean {
+    const i = AXIS_INDEX[a];
+    return this.isPinned(a) ? this.offsetKnown(a) : this.pointIds[i] === this.offsetIds[i];
   }
 
   /** Axes sent somewhere unknown (a home the program never set): a new frame, unpinned. */
@@ -2367,6 +2417,7 @@ class Interpreter {
    * it are unknown (the travel check), whatever their offsets are.
    */
   private rotated(cs: number): void {
+    this.rotatedSystems.add(cs);
     for (const a of ['X', 'Y'] as const) {
       this.knownOffsets.delete(`${cs}:${a}`);
       this.knownBits = null;

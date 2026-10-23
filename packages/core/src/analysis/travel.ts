@@ -138,7 +138,11 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
       const pinned = frame.pinned.includes(a);
       return before.pinned === pinned && (pinned || before.id === frame.ids[a]);
     };
-    if (step.kind === 'arc' && PLANE_AXES[step.plane].every(alikeAtBothEnds)) {
+    if (
+      step.kind === 'arc' &&
+      !frame.centreApart &&
+      PLANE_AXES[step.plane].every(alikeAtBothEnds)
+    ) {
       const a0 = startAngle(step);
       for (const f of cardinalFractions(a0, step.sweep)) {
         if (f <= 0 || f >= 1) continue;
@@ -155,8 +159,11 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
       if (uncertain.includes(a)) continue;
       const pinned = frame.pinned.includes(a);
       const values = [step.to[a]];
+      // Only the plane's axes: along a helix's axis the path runs straight between its
+      // ends, so its interior adds nothing, and its frames needn't match the plane's.
       const k = a === 'X' ? 0 : a === 'Y' ? 1 : a === 'Z' ? 2 : -1;
-      if (k >= 0) for (const p of interior) values.push(p[k] as number);
+      const inPlane = step.kind === 'arc' && PLANE_AXES[step.plane].includes(a);
+      if (k >= 0 && inPlane) for (const p of interior) values.push(p[k] as number);
 
       for (const v of values) {
         if (pinned) pinnedAt(step, a, v);

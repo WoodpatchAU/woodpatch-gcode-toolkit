@@ -59,6 +59,11 @@ export interface TravelFrame {
    * radius in the plane, so this move's plane axes are uncertain either way.
    */
   readonly compensated?: Plane;
+  /**
+   * An arc whose centre isn't comparable with its ends: an absolute centre (G90.1) is in
+   * the offsets' frame, and its ends weren't both in it. Its interior isn't checked.
+   */
+  readonly centreApart?: true;
 }
 
 /**
@@ -217,6 +222,13 @@ export interface InterpretOptions {
    * `'off'`: the caller knows there's none.
    */
   readonly toolLengthOffsetAtStart?: 'off' | 'unknown';
+  /**
+   * Whether a coordinate system rotation (G10 L2 ... R) may be in force when the program
+   * starts (the travel check). `'none'` (the default) is a CONTRACT: the caller states
+   * no rotation is left on the controller, as rotation isn't simulated. `'unknown'`: X
+   * and Y moves are then never comparable, so no X/Y travel claim is made.
+   */
+  readonly coordinateRotationAtStart?: 'none' | 'unknown';
   /** Safety caps for untrusted input. Hitting one stops the run with an error. */
   readonly limits?: Partial<InterpretLimits>;
   /**
