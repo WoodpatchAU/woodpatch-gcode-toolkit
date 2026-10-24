@@ -2512,7 +2512,7 @@ user-defined controller (custom dialects) comes later, as an additive field.
     "revision": 1,
     "id": "17",
     "name": "Example router",
-    "dialect": "masso-g3",
+    "dialect": "masso-g3-5.13",
     "axes": {
       "X": { "min": P, "max": P, "maxVelocity": P, "acceleration": P },
       "Y": { "min": P, "max": P, "maxVelocity": P, "acceleration": P },
@@ -2536,7 +2536,14 @@ user-defined controller (custom dialects) comes later, as an additive field.
     `\p{Zp}`. Both id and name are echoed and logged, so neither can hide text, break
     a log line or override text direction. A right-to-left name may still display
     reordered in a log viewer, as any right-to-left text does; that's cosmetic.
-  - `dialect` R: a built-in dialect id (`masso-g3`, `linuxcnc`, `generic`).
+  - `dialect` R: the id of a built-in dialect profile, which names the controller's
+    firmware line (today `generic`, `linuxcnc-2.9`, `masso-g3-5.13`; ADR-0024 pins the
+    Masso profile to 5.13). A new firmware line is a NEW profile id, never a
+    redefinition of an existing one, so an old record keeps its meaning and its hash.
+    The test "takes only the built-in dialects, which are exactly core's profiles" in
+    `packages/db-schema/src/machine.test.ts` keeps the validator's list equal to core's
+    profile ids. (Corrected 2026-10-22, after acceptance: the first text gave
+    unversioned names, which core never used.)
   - `axes` R: X, Y and Z R, each with `maxVelocity` R (mm/min), `acceleration` R
     (mm/s²), and `min` R and `max` R (travel, MACHINE coordinates, mm). A, B and C O:
     rotary, in degrees, degrees/min and degrees/s². On a rotary axis `min` and `max`
