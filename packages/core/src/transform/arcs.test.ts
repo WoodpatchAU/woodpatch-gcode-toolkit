@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
 // SPDX-License-Identifier: MIT
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { arcPoint, startAngle } from '../path/path.js';
 import {
   GENERIC,
@@ -14,6 +14,11 @@ import {
   type Step,
   type TransformOp,
 } from '../index.js';
+
+// Some tests here run whole corpus files or thousands of property cases: about 1-2 s
+// alone, but past vitest's 5 s default when every package's suite runs at once. This
+// file checks results, not the runner's speed.
+vi.setConfig({ testTimeout: 30_000 });
 
 // Arc to line conversion (parcel 4d, ADR-0037).
 
