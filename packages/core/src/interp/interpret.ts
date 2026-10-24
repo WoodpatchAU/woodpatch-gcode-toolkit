@@ -113,6 +113,16 @@ const WCS_CODES = [
 const MOTION_CODES = ['0', '1', '2', '3', '80', '73', '81', '82', '83'] as const;
 const CYCLES: ReadonlySet<string> = new Set(['G73', 'G81', 'G82', 'G83']);
 
+/**
+ * Modal G groups whose mode changes where the tool goes (the travel check): motion,
+ * plane, distance, arc distance, units, cutter compensation, tool length offset, cycle
+ * return, coordinate system and rotation. Feed mode (5), path control (13: blending
+ * stays inside the programmed corners) and spindle speed mode (14) don't.
+ */
+const POSITION_GROUPS: ReadonlySet<number> = new Set([1, 2, 3, 4, 6, 7, 8, 10, 12, 16]);
+/** A G code not known here, or not evaluated: it may be in any group. */
+const ANY_MODE = -1;
+
 /** Letters the fast path accepts, as bits (any other letter takes the general path). */
 const FAST_LETTERS: Readonly<Record<string, number>> = {
   X: 1,
@@ -306,6 +316,16 @@ class Interpreter {
   private readonly rotatedSystems = new Set<number>();
   /** A rotation may already be in force at the start (the caller said so). */
   private rotationUnknown = false;
+  /**
+   * Modal groups a refused line may have changed on the controller (the travel check).
+   * While any is here, no motion step is comparable with any other: each gets a frame of
+   * its own. An accepted line setting the group takes it out again. A line holding G68,
+   * G69 or a code not known here is always refused, so rotation and ANY_MODE stay for
+   * the rest of the run.
+   */
+  private readonly unknownModes = new Set<number>();
+  /** Errors reported so far: a line that adds one was refused. */
+  private errorsSeen = 0;
   /** The stamp for the next motion step, reused until something it records changes. */
   private frameCache: TravelFrame | null = null;
 
@@ -502,7 +522,44 @@ class Interpreter {
   // ── One line ────────────────────────────────────────────────────────────
 
   private line(line: Line, index: number): void {
-    if (this.fastLine(line)) return;
+    const e0 = this.errorsSeen;
+    if (this.fastLine(line)) {
+      // The usual case costs one comparison: no G word but G0 or G1, no refused mode.
+      if (this.unknownModes.size > 0 || this.errorsSeen > e0)
+        this.modesAfter(line, this.errorsSeen > e0);
+      return;
+    }
+    this.lineBody(line, index);
+    this.modesAfter(line, this.errorsSeen > e0);
+  }
+
+  /**
+   * After a line: the modes it may have set without our knowing (if it was refused), or
+   * set for certain (if not). A refused line may still run on a controller, and a modal
+   * code in it stays in force there; forgetting positions once (forgetAll) doesn't model
+   * that. Only groups that move where the tool goes count (POSITION_GROUPS); a G code
+   * that isn't known here, or whose value can't be evaluated, may be anything, so it
+   * counts as a mode that is never recovered.
+   */
+  private modesAfter(line: Line, refused: boolean): void {
+    const before = this.unknownModes.size;
+    for (const t of line.tokens) {
+      if (t.kind !== 'word' || t.letter !== 'G') continue;
+      const info = t.value?.kind === 'number' ? G_CODES.get(codeKey(t.value.value)) : undefined;
+      const group = info ? info.group : ANY_MODE;
+      if (refused) {
+        if (group === ANY_MODE || POSITION_GROUPS.has(group)) this.unknownModes.add(group);
+      } else {
+        this.unknownModes.delete(group);
+      }
+    }
+    if (this.unknownModes.size !== before) this.frameCache = null;
+    // Known again: but every position and offset reached meanwhile was worked out under
+    // a mode that may have been wrong (a G53 pin in the wrong units, say): none of it holds.
+    if (before > 0 && this.unknownModes.size === 0) this.forgetAll();
+  }
+
+  private lineBody(line: Line, index: number): void {
     const n = line.lineNo;
     const tokens = line.tokens;
     if (tokens.length === 0) return;
@@ -2042,6 +2099,7 @@ class Interpreter {
     // with any other's: every step gets X and Y frames of its own (no claim inside).
     const rotated = this.underRotation();
     const withZ = (z: { pinned: boolean; id: number }): TravelFrame => {
+      if (this.unknownModes.size > 0) return this.blindFrame();
       const base = this.stamp();
       const pinned: Axis[] = base.pinned.filter(
         (a) => a !== 'Z' && !(rotated && (a === 'X' || a === 'Y')),
@@ -2344,6 +2402,7 @@ class Interpreter {
 
   /** The TravelFrame for a motion step ending now. */
   private stamp(): TravelFrame {
+    if (this.unknownModes.size > 0) return this.blindFrame();
     if (this.frameCache) return this.frameCache;
     const frame: TravelFrame = {
       pinned: AXES.filter((a) => this.isPinned(a)),
@@ -2359,6 +2418,12 @@ class Interpreter {
     };
     this.frameCache = frame;
     return frame;
+  }
+
+  /** A frame shared with nothing: no pinned axis, and a new id on every axis. */
+  private blindFrame(): TravelFrame {
+    const id = () => this.nextFrameId++;
+    return { pinned: [], ids: { X: id(), Y: id(), Z: id(), A: id(), B: id(), C: id() } };
   }
 
   private offset(): Position {
@@ -2775,7 +2840,10 @@ class Interpreter {
   private add(d: Diagnostic): void {
     // A refused line may still run on a controller (an unsupported code, say), doing
     // something unknown: nothing known before it holds after it (the travel check).
-    if (d.severity === 'error') this.forgetAll();
+    if (d.severity === 'error') {
+      this.errorsSeen++;
+      this.forgetAll();
+    }
     if (this.diagnostics.length < this.limits.maxDiagnostics) {
       this.diagnostics.push(d);
       return;

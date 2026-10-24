@@ -2712,6 +2712,20 @@ machine terms.
     put to the operator in the PR.
   - **A refused line** (any error) may still run on a controller, an unsupported code
     for instance. Everything known before it is forgotten.
+  - **A modal code in a refused line may stay in force on the controller,** so
+    forgetting once isn't enough (review of #71, round four: a refused G68 rotated the
+    machine, and X/Y claims resumed on the next line). The groups that move where the
+    tool goes count: motion (1), plane (2), distance (3), arc distance (4), units (6),
+    cutter compensation (7), tool length offset (8), cycle return (10), coordinate
+    system (12) and rotation (16). Feed mode, path control and spindle speed mode don't.
+    - While such a group is unknown, every motion step gets a frame of its own, canned
+      cycle levels included: no pin and no extent.
+    - An accepted line that sets the group makes it known again, and everything reached
+      meanwhile is forgotten (a G53 pin in the wrong units, say).
+    - G68 and G69 aren't interpreted, so any line with them is refused, and rotation
+      stays unknown for the rest of the run. So does a G code not known here, or one
+      whose value can't be evaluated: it may be in any group.
+    - Refused M codes are forgotten once only: none of the known ones is a position mode.
   - A supplied system is never mixed with one that wasn't: moves under an unsupplied
     system fall back to the unknown rules.
 - **`checkTravel(steps, travel)`** warns (decision b: the controller's soft limits are
@@ -2766,7 +2780,7 @@ machine terms.
     20261024), so a run is reproducible and a real bug can't surface as a red run on an
     unrelated PR. `TRAVEL_SEED=random` and `TRAVEL_RUNS` are for wider runs. The test
     asserts it isn't vacuous: warnings to test, each against many truths.
-  - **Mutants.** All seventeen frame-rule mutants fail the whole suite at CI size.
+  - **Mutants.** All twenty-three frame-rule mutants fail the whole suite at CI size.
     - The oracle alone, at CI size and the fixed seed, catches six: no new offset frames,
       G92 assumed off at the start, cycle levels always the cycle's own, G92 always known,
       the initial level not its own, and rotation not losing X/Y.
@@ -2774,7 +2788,11 @@ machine terms.
       known, the tool length assumed off, Masso G30 keeping its axes, refused lines
       forgetting nothing, a stale stamp under compensation, a helix's axis given
       interior points, an absolute centre ignored, rotation not sticky, the rotation
-      parameter ignored, and a rotated cycle sharing X/Y.
+      parameter ignored, a rotated cycle sharing X/Y, and six on refused modes (not
+      sticky, cycle levels shared, G68 not counted, an unknown code not counted, a plain
+      G0 not making motion known, positions not forgotten when a mode is known again).
+
+      The oracle can't see refused modes: its truths run through the same interpreter.
 
 **Consequences.** Silence never means "fits". The check finds less than a check that
 assumed zero offsets would, and everything it finds is true. With the operator's offsets

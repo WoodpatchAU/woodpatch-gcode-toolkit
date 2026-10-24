@@ -322,6 +322,61 @@ describe('checkTravel: the review of #71, round three', () => {
   });
 });
 
+describe('checkTravel: the review of #71, round four', () => {
+  const far = 'G0 X0 Y0\nG0 X1100 Y0\n';
+
+  it('a refused G68 still rotates the controller: no X/Y claim for the rest of the run', () => {
+    // G68 isn't interpreted, but Masso runs it: under R45 the move fits.
+    expect(check(`G68 X0 Y0 R45\n${far}`, { dialect: MASSO_G3 })).toEqual([]);
+    expect(check(`G68 X0 Y0 R45\n${far}`)).toEqual([]);
+    // Nothing accepted here sets the rotation back, G0 and G90 included.
+    expect(check(`G68 X0 Y0 R45\nG90 G0 X0\n${far}`, { dialect: MASSO_G3 })).toEqual([]);
+  });
+
+  it('a refused modal code is unknown until an accepted line sets its group', () => {
+    // The repeated X refuses the line, but a controller may still take its G91.
+    const refused = 'G91 X10 X20\n';
+    expect(check(refused + far)).toEqual([]);
+    expect(codes(check(`${refused}G90\n${far}`))).toEqual(['TRAVEL_EXTENT 4']);
+    // Units, plane, work offset and motion the same way.
+    for (const g of ['G20', 'G18', 'G55', 'G2']) {
+      expect(check(`${g} X10 X20\n${far}`), g).toEqual([]);
+    }
+  });
+
+  it('a plain G0 line sets the motion mode again', () => {
+    expect(codes(check(`G2 X10 X20\nG0 X0\n${far}`))).toEqual(['TRAVEL_EXTENT 4']);
+  });
+
+  it('a canned cycle under an unknown mode claims nothing, its Z levels included', () => {
+    // The refused G21 may have run: Z-8 is then 8 mm, not 203.
+    expect(check('G20\nG21 X1 X2\nG0 X1 Y1 Z0.2\nG81 X2 Y2 Z-8 R0.1 F10\n')).toEqual([]);
+  });
+
+  it('positions reached while a mode was unknown are forgotten when it is known again', () => {
+    // The G53 X40 may have been 40 mm, not 40 inches: a move on from it claims nothing.
+    expect(check('G20\nG21 X1 X2\nG53 G0 X40\nG20\nG91 G0 X0.1\n')).toEqual([]);
+    // Known again from G20 on: a pin made after it holds.
+    const after = 'G20\nG21 X1 X2\nG20\nG53 G0 X40\nG91 G0 X0.1\n';
+    expect(codes(check(after))).toEqual(['TRAVEL_OUTSIDE_LIMITS 4']);
+  });
+
+  it('an unknown or unevaluated G code may be any mode, for good', () => {
+    // G51 (scaling, on some controllers) isn't known here.
+    expect(check(`G51 X0 Y0 P2\nG90 G0 X0\n${far}`)).toEqual([]);
+    expect(check(`G[1/0] X0\nG90 G0 X0\n${far}`)).toEqual([]);
+  });
+
+  it('a refused mode that moves nothing loses positions once only', () => {
+    expect(codes(check(`G93 X10 X20\n${far}`))).toEqual(['TRAVEL_EXTENT 3']);
+    expect(codes(check(`X10 X20\n${far}`))).toEqual(['TRAVEL_EXTENT 3']);
+  });
+
+  it('a rotation parameter rotates whatever its value, zero included', () => {
+    expect(check(`#5230=0\n${far}`)).toEqual([]);
+  });
+});
+
 describe('checkTravel: canned cycles', () => {
   it('keeps the initial level as known as it was, and the hole in work terms', () => {
     // Z starts pinned at machine 0; the holes go 50 below a work R plane.
