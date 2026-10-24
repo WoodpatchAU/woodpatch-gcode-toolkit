@@ -39,7 +39,10 @@ export const MAX_LISTED = 100;
 
 /** The longest text in a response, in code points: messages, notes, paths. */
 export const MAX_TEXT = 500;
-/** `build`: printable ASCII, no spaces, at most 128 characters. */
+/**
+ * `build`: printable ASCII, no spaces, at most 128 characters. As for SCOPE, a PCRE
+ * client must use `\z` or the `D` modifier, or its `$` also matches before a newline.
+ */
 export const BUILD = /^[\x21-\x7e]{1,128}$/;
 
 /**
@@ -121,19 +124,26 @@ export interface EstimateRequest {
 
 export type ParseResult = { ok: true; request: EstimateRequest } | { ok: false; error: ErrorBody };
 
-const fail = (code: ErrorCode, message: string, problems?: MachineProblem[]): ParseResult => {
-  // At most MAX_LISTED problems (a 16 KB record can hold hundreds of unknown fields),
-  // each with bounded text.
+/**
+ * An error body, bounded: at most MAX_LISTED problems (a 16 KB record can hold hundreds
+ * of unknown fields), and every text cut to MAX_TEXT.
+ */
+export function errorBody(
+  code: ErrorCode,
+  message: string,
+  problems?: MachineProblem[],
+): ErrorBody {
   const listed = problems?.slice(0, MAX_LISTED).map((p) => ({
     code: p.code,
     path: boundText(p.path),
     message: boundText(p.message),
   }));
   const error = { code, message: boundText(message) };
-  return {
-    ok: false,
-    error: { v: REQUEST_VERSION, error: listed ? { ...error, problems: listed } : error },
-  };
+  return { v: REQUEST_VERSION, error: listed ? { ...error, problems: listed } : error };
+}
+
+const fail = (code: ErrorCode, message: string, problems?: MachineProblem[]): ParseResult => {
+  return { ok: false, error: errorBody(code, message, problems) };
 };
 
 const JSON_MESSAGES: Record<JsonErrorCode, string> = {

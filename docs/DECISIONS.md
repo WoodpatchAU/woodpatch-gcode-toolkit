@@ -2983,7 +2983,7 @@ message; an integer, not a float; "unknown", not a partial figure that looks who
   - `v: 1`;
   - `build`: the deployed server and core build that computed it: 1-128 printable ASCII
     characters, no spaces. It's opaque, and changes whenever the deployed code does
-    (5d-2 sets its form). The caller stores it
+    (the deployment sets it: ADR-0045). The caller stores it
     with the estimate, so a re-estimate after a deployment can be told apart;
   - `record`: ADR-0041's echo. That's `id`, `version`, `revision`, `calibration`
     (`"calibrated"` or `"uncalibrated"`) and `hash`. The hash is SHA-256 of the record's
@@ -3097,3 +3097,133 @@ message; an integer, not a float; "unknown", not a partial figure that looks who
 before the HTTP layer exists. Changing any field, code or rule above is a new version of
 the request or the response, which the client must be able to tell. 5d-2 adds the HTTP
 layer, the workers and the budgets; 5d-3 adds the deployment files.
+
+## ADR-0045: The estimate server's runtime
+
+**Status:** Proposed, 2026-10-24 (parcel 5d-2). It implements ADR-0040's boundary and
+ADR-0044's contract, under the reviewer's 5d-2 conditions on the outline. Binds
+`@woodpatch/gcode-server`, and states the timeouts the caller must configure.
+
+**Context.** ADR-0040 settled what the server may and may not do; ADR-0044 what it says.
+This records how it runs: how it starts, takes requests, shares its workers, and gives
+up, with the numbers.
+
+**Decision.**
+
+- **Started by systemd only.** `dist/main.js` refuses to start unless systemd passed it
+  exactly one socket meant for this process (`LISTEN_FDS=1`, and `LISTEN_PID` equal to
+  its pid). It listens on fd 3 and never creates a socket or binds a port, so there's no
+  fallback to fall into. It also refuses to start without these:
+  - `WP_GCODE_BUILD`: ADR-0044's `build` (1-128 printable ASCII). The deployment sets
+    it (5d-3);
+  - the `log-key` credential (`LoadCredential=`), at least 32 bytes;
+  - a valid `WP_GCODE_WORKERS`, if given (1 to 16).
+
+  It unsets the `LISTEN_*` variables, and listens only once its workers have loaded:
+  until then systemd holds connections on the socket. Each refusal is one fixed line on
+  stderr.
+
+- **The HTTP layer** answers only `POST /estimate` with `application/json` (no charset,
+  or UTF-8).
+  - A declared length over 25,000,000 bytes is refused before reading. A body that
+    grows past it is refused as soon as it does, and the connection is closed.
+  - The body is decoded with a fatal UTF-8 decoder: a stray byte is REQUEST_MALFORMED,
+    never a U+FFFD in someone's program.
+  - Node's header timeout is 10 s, and the whole request must arrive within 10 s.
+  - Every answer carries `Cache-Control: no-store` and `X-Content-Type-Options:
+nosniff`.
+- **The request is parsed on the main thread,** so the fair share is applied before any
+  worker is taken. It's linear and capped by the body. Measured on the development host
+  on 2026-10-24, it takes about 0.8 s for a 20 MB program and 2.1 s for a body that is
+  nearly all JSON escapes. The budget allows 5 s, and a test holds both cases under it.
+  The cost is that a large parse delays other requests by that long.
+  - The alternative was to parse in a worker, with a second round trip so the main
+    thread could then judge the scope. It frees the main thread, but takes a worker
+    before the fair share can be applied. It's the change to make if the delay ever
+    matters.
+- **A fixed pool of worker threads,** each with Node's `resourceLimits`, an empty
+  environment, and its stdout and stderr discarded:
+  - a job's budget starts when its worker reports that it has loaded, so start-up time
+    never counts against a job;
+  - past `jobMs` the worker is TERMINATED, thread and heap, and the job answers
+    ESTIMATE_BUDGET_EXCEEDED. So does a worker that runs out of heap;
+  - a worker that throws, crashes or exits unasked answers INTERNAL. It's replaced either
+    way;
+  - after three workers in a row die before loading (a broken build), the pool stops
+    respawning and answers INTERNAL. The entry point then exits, and systemd's start
+    limits take over;
+  - on SIGTERM the server stops accepting, and what's in flight finishes. Anything
+    queued or still running when the workers end answers SERVER_BUSY, so no request goes
+    unanswered.
+- **Admission is decided at once,** and nothing queues without limit:
+  - a scope already holding `perScope` requests, running and waiting together, gets
+    SCOPE_BUSY;
+  - a full queue gets SERVER_BUSY;
+  - a request that waits past `queueMs` gets SERVER_BUSY;
+  - both busy answers carry Retry-After.
+- **The cache** (ADR-0040) is in memory, and LRU by entries and by bytes. No one
+  response may take more than a quarter of it.
+  - Its key holds the scope, the G-code's SHA-256, the record's hash and the build, each
+    length-prefixed so no two inputs run together.
+  - The key is an HMAC under a key made fresh for each process, so memory holds nothing
+    to match a guessed file against.
+  - A scope never sees another's entry, and a deployment (a new build) or a changed
+    record never gets an old answer.
+- **The log** is one JSON object per line on stdout (journald). Its fields are fixed:
+  - the event, time, status, code and bytes;
+  - the scope's pseudonym: an HMAC under a key derived (HKDF) with the info `scope-id`;
+  - the G-code's HMAC under a key derived with the info `gcode:<scope>`, and its size;
+  - the parse, queue and run times, and whether it was cached.
+
+  It never holds the G-code, a diagnostic, an error's message, or a scope as sent. A
+  scope can't contain `:`, so its key can never be the pseudonyms' key. The secret is
+  rotated by replacing the credential file and restarting.
+
+- **Any throw is INTERNAL,** with a fixed message, in a worker or in the HTTP layer
+  (ADR-0044's acceptance check). An uncaught error anywhere logs the event `fatal`,
+  with no message, and exits, and systemd restarts the server.
+- **The budgets,** in `budgets.ts`:
+
+  | budget                                | value                        |
+  | ------------------------------------- | ---------------------------- |
+  | workers                               | 2 (`WP_GCODE_WORKERS`, 1-16) |
+  | queue / per scope                     | 8 / 2                        |
+  | queue wait (`queueMs`)                | 5 s                          |
+  | job (`jobMs`)                         | 20 s                         |
+  | worker heap / young / stack           | 1,536 / 64 / 4 MB            |
+  | Retry-After: SERVER_BUSY / SCOPE_BUSY | 5 s / 10 s                   |
+  | headers / whole request               | 10 s / 10 s                  |
+  | parse allowance                       | 5 s                          |
+  | cache                                 | 1,000 responses, 64 MB       |
+
+  **The chain nests** (ADR-0040). The server's worst answer is 40 s: the request
+  (10 s), the parse allowance (5 s), the queue (5 s) and the job (20 s). That's less than
+  the caller's HTTP timeout of 45 s, which is less than its queued job's timeout
+  (60 s), its queue worker's timeout (90 s) and its queue's retry-after (120 s). The
+  server can't set the caller's four; it states them, `CALLER_BUDGETS` records them, and
+  a test checks the whole chain. A slower worker host can lower `WP_GCODE_WORKERS`; it
+  must never raise a budget past the chain.
+
+- **Hostile input** (ADR-0040's suite). Each case must answer within its budgets, with a
+  bounded body, and leave the server serving:
+  - a loop to the iteration cap, and nested loops;
+  - a canned cycle repeated a million times, and a peck bomb;
+  - a subroutine fan-out, and 20,000 nested brackets;
+  - a 15 MB line, and a million refused lines;
+  - a thousand arcs of a million turns each, and 200,000 tool changes.
+
+  The proofs of the rest are tests too:
+  - the out-of-heap and over-budget workers;
+  - both busy answers, and a wait past the queue's limit;
+  - INTERNAL's fixed message;
+  - a log free of the G-code, its diagnostics and the scope;
+  - startup refusals, and a real socket-activated run (`systemd-socket-activate`);
+  - eight mutants of the guards, each red.
+
+- **Not here:** the unit files and the tripwire (5d-3), and the form of `build`, which
+  the deployment's build sets (5d-3). The optional token (ADR-0040) isn't implemented.
+  The socket's permissions are the control.
+
+**Consequences.** The server can be run and tested end to end on any host with systemd's
+tools. The caller must configure its four timeouts as stated, or the chain breaks.
+Changing a budget means rechecking the chain test and this table.

@@ -125,6 +125,24 @@ describe('the JSON Schemas', () => {
     }
   });
 
+  it('bound every string in a response or an error body', () => {
+    // The request's strings are bounded by the code's byte caps instead (ADR-0044).
+    const strings = (o: unknown, path = ''): [string, Schema][] => {
+      if (typeof o !== 'object' || o === null) return [];
+      const node = o as Schema;
+      const here: [string, Schema][] = node.type === 'string' ? [[path, node]] : [];
+      return here.concat(Object.entries(node).flatMap(([k, v]) => strings(v, `${path}/${k}`)));
+    };
+    for (const s of [RESPONSE, ERROR]) {
+      const all = strings(s);
+      expect(all.length).toBeGreaterThan(3);
+      for (const [path, node] of all) {
+        expect(node.maxLength, path).toBeTypeOf('number');
+        expect(node.maxLength as number, path).toBeLessThanOrEqual(500);
+      }
+    }
+  });
+
   it('describe the request the parser takes', () => {
     expect(REQUEST.required).toEqual([...REQUEST_FIELDS]);
     expect(Object.keys(REQUEST.properties as object)).toEqual([...REQUEST_FIELDS]);

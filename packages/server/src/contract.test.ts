@@ -10,7 +10,9 @@ import {
   MAX_GCODE_BYTES,
   MAX_LISTED,
   MAX_GCODE_LINES,
+  MAX_TEXT,
   countLines,
+  errorBody,
   parseRequest,
   type ErrorCode,
 } from './contract.js';
@@ -107,6 +109,22 @@ describe('parseRequest', () => {
     expect(r.error.error.problems).toHaveLength(MAX_LISTED);
   });
 
+  it('bounds every text in an error body, and its problems', () => {
+    const long = 'm'.repeat(2 * MAX_TEXT);
+    const problems = Array.from({ length: MAX_LISTED + 5 }, () => ({
+      code: 'MACHINE_UNKNOWN_FIELD' as const,
+      path: long,
+      message: long,
+    }));
+    const e = errorBody('MACHINE_INVALID', long, problems).error;
+    expect(e.message).toHaveLength(MAX_TEXT);
+    expect(e.problems).toHaveLength(MAX_LISTED);
+    for (const p of e.problems ?? []) {
+      expect(p.path).toHaveLength(MAX_TEXT);
+      expect(p.message).toHaveLength(MAX_TEXT);
+    }
+  });
+
   it('accepts 1.0 and 1e0 as version 1: JSON has one number 1', () => {
     expect(codeOf(body(GOOD).replace('"v":1', '"v":1.0'))).toBe('ok');
     expect(codeOf(body(GOOD).replace('"v":1', '"v":1e0'))).toBe('ok');
@@ -175,8 +193,12 @@ describe('ERRORS', () => {
 
   it("matches the table in ADR-0044's text", () => {
     const adr = readFileSync(new URL('../../../docs/DECISIONS.md', import.meta.url), 'utf8');
-    const section = adr.slice(adr.indexOf('## ADR-0044'));
+    // ADR-0044's own section only: a later ADR reusing a code mustn't silently win.
+    const from = adr.indexOf('## ADR-0044');
+    const to = adr.indexOf('\n## ', from + 1);
+    const section = adr.slice(from, to === -1 ? undefined : to);
     const rows = [...section.matchAll(/^\s*\| ([A-Z_]+) +\| (\d{3}) +\| (yes|no) +\|/gm)];
+    expect(rows).toHaveLength(Object.keys(ERRORS).length);
     const table = rows.map((m) => [m[1], { status: Number(m[2]), retriable: m[3] === 'yes' }]);
     expect(Object.fromEntries(table)).toEqual(ERRORS);
   });

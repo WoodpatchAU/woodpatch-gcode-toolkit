@@ -45,7 +45,8 @@
             "required": ["code", "path", "message"],
             "properties": {
               "code": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               "path": {
                 "type": "string",
