@@ -544,12 +544,23 @@ class Interpreter {
   private modesAfter(line: Line, refused: boolean): void {
     const before = this.unknownModes.size;
     for (const t of line.tokens) {
+      // A refused call runs code we never read (a subprogram, or an M code not known here,
+      // which may be a macro): it may have set anything. (A refused O-word line stops the
+      // run today, so nothing follows it; it's here in case that changes.)
+      if (refused && (t.kind === 'oword' || (t.kind === 'word' && t.letter === 'M'))) {
+        const v = t.kind === 'word' && t.value?.kind === 'number' ? codeKey(t.value.value) : null;
+        if (v === null || v === '98' || v === '99' || !M_CODES.has(v))
+          this.unknownModes.add(ANY_MODE);
+        continue;
+      }
       if (t.kind !== 'word' || t.letter !== 'G') continue;
       const info = t.value?.kind === 'number' ? G_CODES.get(codeKey(t.value.value)) : undefined;
       const group = info ? info.group : ANY_MODE;
       if (refused) {
         if (group === ANY_MODE || POSITION_GROUPS.has(group)) this.unknownModes.add(group);
-      } else {
+      } else if (group !== ANY_MODE) {
+        // An accepted G[0] or G#1 is still some known code, but which group isn't known
+        // here: it can't make ANY_MODE known again.
         this.unknownModes.delete(group);
       }
     }

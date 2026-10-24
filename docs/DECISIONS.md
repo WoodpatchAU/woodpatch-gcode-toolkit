@@ -2745,7 +2745,12 @@ machine terms.
     - G68 and G69 aren't interpreted, so any line with them is refused, and rotation
       stays unknown for the rest of the run. So does a G code not known here, or one
       whose value can't be evaluated: it may be in any group.
-    - Refused M codes are forgotten once only: none of the known ones is a position mode.
+    - A refused call may have set anything, so it's ANY_MODE, for the rest of the run:
+      M98, M99, an M code not known here (it may be a macro) and an O-word line (which
+      stops the run today). Other refused M codes are forgotten once only: none of the
+      known ones is a position mode.
+    - An accepted G word whose code is only known when it runs (`G[0]`, `G#1`) can't
+      make ANY_MODE known again: its group isn't known here.
   - A supplied system is never mixed with one that wasn't: moves under an unsupplied
     system fall back to the unknown rules.
 - **`checkTravel(steps, travel)`** warns (decision b: the controller's soft limits are
@@ -2800,7 +2805,7 @@ machine terms.
     20261024), so a run is reproducible and a real bug can't surface as a red run on an
     unrelated PR. `TRAVEL_SEED=random` and `TRAVEL_RUNS` are for wider runs. The test
     asserts it isn't vacuous: warnings to test, each against many truths.
-  - **Mutants.** All twenty-three frame-rule mutants fail the whole suite at CI size.
+  - **Mutants.** All twenty-six frame-rule mutants fail the whole suite at CI size.
     - The oracle alone, at CI size and the fixed seed, catches six: no new offset frames,
       G92 assumed off at the start, cycle levels always the cycle's own, G92 always known,
       the initial level not its own, and rotation not losing X/Y.
@@ -2808,9 +2813,11 @@ machine terms.
       known, the tool length assumed off, Masso G30 keeping its axes, refused lines
       forgetting nothing, a stale stamp under compensation, a helix's axis given
       interior points, an absolute centre ignored, rotation not sticky, the rotation
-      parameter ignored, a rotated cycle sharing X/Y, and six on refused modes (not
+      parameter ignored, a rotated cycle sharing X/Y, and nine on refused modes (not
       sticky, cycle levels shared, G68 not counted, an unknown code not counted, a plain
-      G0 not making motion known, positions not forgotten when a mode is known again).
+      G0 not making motion known, positions not forgotten when a mode is known again,
+      an accepted `G[0]` clearing ANY_MODE, refused calls not counted, and M codes not
+      known here not counted).
 
       The oracle can't see refused modes: its truths run through the same interpreter.
 

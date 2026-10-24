@@ -367,6 +367,25 @@ describe('checkTravel: the review of #71, round four', () => {
     expect(check(`G[1/0] X0\nG90 G0 X0\n${far}`)).toEqual([]);
   });
 
+  it('an accepted G word whose code is only known when run keeps ANY_MODE', () => {
+    // Review of round five: an accepted G[0] made the refused G51's mode known again.
+    expect(check(`G51 X0 Y0 P2\nG[0] Y0\n${far}`)).toEqual([]);
+    expect(check(`G51 X0 Y0 P2\n#1=0\nG#1 Y0\n${far}`)).toEqual([]);
+    expect(check(`G[1/0] X0\nG[0] Y0\n${far}`)).toEqual([]);
+  });
+
+  it('a refused call may have set anything, for good', () => {
+    // 50 inches can't fit; but the subprogram the controller may still run sets G21.
+    const inch = 'G0 X0 Y0\nG0 X50 Y0\n';
+    const sub = 'M30\nO100\nG21\nM99\n';
+    expect(codes(check(`G20\n${inch}`))).toEqual(['TRAVEL_EXTENT 3']);
+    expect(check(`G20\nM98 P100\n${inch}${sub}`)).toEqual([]);
+    // An M code not known here may be a macro.
+    expect(check(`G20\nM150\n${inch}`)).toEqual([]);
+    // A known M code in a refused line is no call: positions are lost once only.
+    expect(codes(check(`G20\nM8 X1 X2\n${inch}`))).toEqual(['TRAVEL_EXTENT 4']);
+  });
+
   it('a refused mode that moves nothing loses positions once only', () => {
     expect(codes(check(`G93 X10 X20\n${far}`))).toEqual(['TRAVEL_EXTENT 3']);
     expect(codes(check(`X10 X20\n${far}`))).toEqual(['TRAVEL_EXTENT 3']);
