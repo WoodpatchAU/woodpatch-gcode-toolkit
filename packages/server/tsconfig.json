@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // No ambient Node types here yet: the contract and the mapping are pure, so they
+    // run anywhere. The HTTP layer (5d-2) adds Node. Tests use tsconfig.test.json.
+    "types": []
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

@@ -658,8 +658,9 @@ describe('the JSON Schema', () => {
             new RegExp(`^MACHINE_(RANGE|VERSION) ${w.replaceAll('.', '\\.')}$`),
           );
         const tiny = (x: number): number => Math.max(Math.abs(x) * 1e-9, 1e-9);
-        // The smallest step past a bound: 1 for an integer, a hair otherwise, so a bound
-        // that drifts by any amount between the schema and the code is caught.
+        // A small step past a bound: 1 for an integer, tiny(x) otherwise. So a bound that
+        // drifts between the schema and the code by more than tiny(x) is caught (a drift
+        // smaller than that passes).
         const step = (x: number): number => (bounds['type'] === 'integer' ? 1 : tiny(x));
         const hi = bounds['maximum'] as number | undefined;
         const lo = bounds['minimum'] as number | undefined;
@@ -667,7 +668,9 @@ describe('the JSON Schema', () => {
         const where = isP ? `${path}.value` : path;
         if (hi !== undefined) {
           if (!unreachable(path, 'hi')) expect(at(hi), `${path} at its maximum`).toEqual([]);
-          expect(at(hi + step(hi)), `${path} over`).toContainEqual(refusal(where));
+          // Past MAX_SAFE_INTEGER an integer is no longer safe: the code refuses its type.
+          const over = hi === Number.MAX_SAFE_INTEGER ? `MACHINE_TYPE ${where}` : refusal(where);
+          expect(at(hi + step(hi)), `${path} over`).toContainEqual(over);
         }
         if (lo !== undefined) {
           if (!unreachable(path, 'lo')) expect(at(lo), `${path} at its minimum`).toEqual([]);
@@ -678,7 +681,9 @@ describe('the JSON Schema', () => {
           expect(at(gt + step(gt)), `${path} just above`).toEqual([]);
         }
         if (bounds['type'] === 'integer') {
-          expect(at((hi ?? 10) - 0.5), `${path} a fraction`).toContain(`MACHINE_TYPE ${where}`);
+          // Near MAX_SAFE_INTEGER, x - 0.5 rounds to an integer: test the fraction lower down.
+          const f = Math.min(hi ?? 10, 10) - 0.5;
+          expect(at(f), `${path} a fraction`).toContain(`MACHINE_TYPE ${where}`);
         }
         checked++;
       }

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WoodpatchAU/woodpatch-gcode-toolkit/packages/server/schema/estimate-error-v1.schema.json",
+  "title": "Woodpatch /estimate error body, version 1",
+  "description": "ADR-0044. Branch on error.code, never on the message. The codes are a closed list; ADR-0044 gives each one's HTTP status and whether it is retriable (SERVER_BUSY and SCOPE_BUSY only, with Retry-After).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "error"],
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "enum": [
+            "REQUEST_TOO_LARGE",
+            "REQUEST_MALFORMED",
+            "REQUEST_INVALID",
+            "REQUEST_VERSION",
+            "MACHINE_INVALID",
+            "PROGRAM_TOO_LARGE",
+            "ESTIMATE_BUDGET_EXCEEDED",
+            "SERVER_BUSY",
+            "SCOPE_BUSY",
+            "METHOD_NOT_ALLOWED",
+            "NOT_FOUND",
+            "UNSUPPORTED_MEDIA_TYPE",
+            "INTERNAL"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "problems": {
+          "type": "array",
+          "description": "MACHINE_INVALID only: why the record was refused (ADR-0041).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "path", "message"],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

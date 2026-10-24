@@ -281,6 +281,24 @@ describe('estimateTime: guards', () => {
     expect(() => estimateTime(steps, machine)).toThrow(RangeError);
   });
 
+  it('names what a JavaScript caller got wrong (review of #72)', () => {
+    const asIs = (o: object) => o as unknown as EstimateMachine;
+    const cases: [object, RegExp][] = [
+      [{ ...m(), rapidModel: 'peraxis' }, /rapidModel must be/],
+      [{ ...m(), rapidModelConfirmed: 'yes' }, /rapidModelConfirmed/],
+      [{ ...m(), spinUpSeconds: undefined }, /spinUpSeconds is required/],
+      [{ ...m(), calibration: undefined }, /calibration is required/],
+      [{ ...m(), axes: { X: AXIS, Y: AXIS } }, /axes\.Z is required/],
+      [
+        { ...m(), axes: { X: { maxVelocity: 1000 }, Y: AXIS, Z: AXIS } },
+        /X\.acceleration is required/,
+      ],
+    ];
+    for (const [machine, message] of cases) {
+      expect(() => estimateTime(steps, asIs(machine))).toThrow(message);
+    }
+  });
+
   it('an incomplete estimate has no total, only the known part', () => {
     const r = est('G1 X100 F6000\nG95 G1 X200 F0.1\n');
     expect(r.complete).toBe(false);

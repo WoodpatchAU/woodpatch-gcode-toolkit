@@ -216,12 +216,35 @@ function checkMachine(machine: EstimateMachine, options: EstimateOptions): void 
     if (v !== undefined && !(Number.isFinite(v) && v >= 0))
       fail(`${what} must be a finite number, 0 or more`);
   };
+  // A JavaScript caller can leave out what the type requires: name the field, rather
+  // than fail later with "the estimate is not finite" (review of #72).
+  const required = (v: unknown, what: string): void => {
+    if (v === undefined) fail(`${what} is required`);
+  };
+  for (const a of ['X', 'Y', 'Z'] as const) required(machine.axes[a], `axes.${a}`);
   for (const [a, lim] of Object.entries(machine.axes)) {
     if (lim === undefined) continue;
+    required(lim.maxVelocity, `${a}.maxVelocity`);
+    required(lim.acceleration, `${a}.acceleration`);
     positive(lim.maxVelocity, `${a}.maxVelocity`);
     positive(lim.acceleration, `${a}.acceleration`);
   }
   positive(machine.rapidRate, 'rapidRate');
+  // A mistyped model ('peraxis') would otherwise run as coordinated, and say complete.
+  if (machine.rapidModel !== 'coordinated' && machine.rapidModel !== 'per-axis')
+    fail("rapidModel must be 'coordinated' or 'per-axis'");
+  if (typeof machine.rapidModelConfirmed !== 'boolean')
+    fail('rapidModelConfirmed must be true or false');
+  for (const k of [
+    'junctionDeviation',
+    'spinUpSeconds',
+    'spinDownSeconds',
+    'toolChangeSeconds',
+    'programStartSeconds',
+    'pauseSeconds',
+    'calibration',
+  ] as const)
+    required(machine[k], k);
   nonNegative(machine.junctionDeviation, 'junctionDeviation');
   positive(machine.blockRate, 'blockRate');
   if (

@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WoodpatchAU/woodpatch-gcode-toolkit/packages/server/schema/estimate-response-v1.schema.json",
+  "title": "Woodpatch /estimate response (200), version 1",
+  "description": "ADR-0044. Every time is an integer number of milliseconds. Price only from estimate.totalMs, and only when estimate.complete and estimate.calibrated are both true; knownMs is an 'at least', never a price input.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "build", "record", "estimate", "travel", "diagnostics"],
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "build": {
+      "type": "string",
+      "description": "The deployed server and core build that computed this. Opaque: store it with the estimate."
+    },
+    "record": {
+      "description": "What the estimate was computed for (ADR-0041's echo).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "revision", "calibration", "hash"],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "const": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "calibration": {
+          "enum": ["calibrated", "uncalibrated"]
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the record's RFC 8785 canonical form, as received (ADR-0041)."
+        }
+      }
+    },
+    "estimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "totalMs",
+        "knownMs",
+        "cutMs",
+        "rapidMs",
+        "eventMs",
+        "dwellMs",
+        "complete",
+        "calibrated",
+        "perTool",
+        "unknowns",
+        "notes"
+      ],
+      "properties": {
+        "totalMs": {
+          "description": "Integer milliseconds, the figure to price from. Null unless complete.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "knownMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "The time that is known, complete or not."
+        },
+        "cutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Motion at a programmed feed."
+        },
+        "rapidMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Rapid motion."
+        },
+        "eventMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Spindle delays, tool changes, pauses, program start."
+        },
+        "dwellMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "G4 dwells."
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "calibrated": {
+          "type": "boolean"
+        },
+        "perTool": {
+          "description": "Motion and dwell time per tool in the spindle (tool null: none yet).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count", "items"],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "items": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["tool", "ms"],
+                "properties": {
+                  "tool": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                }
+              }
+            }
+          }
+        },
+        "unknowns": {
+          "description": "Time that couldn't be worked out, and isn't in the totals.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count", "items"],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "items": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["line", "reason"],
+                "properties": {
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": [
+                      "LINE_REFUSED",
+                      "FEED_UNSPECIFIED",
+                      "FEED_ZERO",
+                      "RPM_UNKNOWN",
+                      "WAIT_FOR_INPUT",
+                      "AXIS_NOT_DESCRIBED"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Assumptions a quote should show."
+        }
+      }
+    },
+    "travel": {
+      "description": "The travel check's warnings (ADR-0042). Each is certain; none means only that nothing certain was found.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "items"],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["severity", "code", "message", "line"],
+            "properties": {
+              "severity": {
+                "enum": ["error", "warning", "info"]
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "file": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "diagnostics": {
+      "description": "The parser's and the interpreter's findings, in line order. Messages may quote the G-code: show them only to whoever sent it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "items"],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["severity", "code", "message", "line"],
+            "properties": {
+              "severity": {
+                "enum": ["error", "warning", "info"]
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "file": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
