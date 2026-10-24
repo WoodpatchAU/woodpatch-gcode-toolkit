@@ -2038,15 +2038,21 @@ class Interpreter {
         ? first
         : { pinned: false, id: this.nextFrameId++ };
     };
+    // Under a rotation each hole of the line lands somewhere its X/Y can't be compared
+    // with any other's: every step gets X and Y frames of its own (no claim inside).
+    const rotated = this.underRotation();
     const withZ = (z: { pinned: boolean; id: number }): TravelFrame => {
       const base = this.stamp();
-      const pinned: Axis[] = base.pinned.filter((a) => a !== 'Z');
+      const pinned: Axis[] = base.pinned.filter(
+        (a) => a !== 'Z' && !(rotated && (a === 'X' || a === 'Y')),
+      );
       if (z.pinned) pinned.push('Z');
-      return {
-        ...base,
-        pinned: AXES.filter((a) => pinned.includes(a)),
-        ids: { ...base.ids, Z: z.id },
-      };
+      const ids = { ...base.ids, Z: z.id };
+      if (rotated) {
+        ids.X = this.nextFrameId++;
+        ids.Y = this.nextFrameId++;
+      }
+      return { ...base, pinned: AXES.filter((a) => pinned.includes(a)), ids };
     };
     let lastZ = { pinned: this.isPinned('Z'), id: this.pointIds[2] };
 
@@ -2210,6 +2216,13 @@ class Interpreter {
     } else if (i >= 5221) {
       const k = (i - 5221) % 20;
       const cs = Math.floor((i - 5221) / 20) + 1;
+      // The tenth slot is the system's rotation (#5230 for G54, #5250 for G55, and so on;
+      // LinuxCNC's parameter table). Written directly, it rotates the system as G10 ... R
+      // does: sticky, whatever the value.
+      if (k === 9) {
+        this.rotated(cs);
+        return;
+      }
       if (k >= AXES.length) return;
       const a = AXES[k] as Axis;
       // X and Y under a rotated system stay unknown, whatever is written.

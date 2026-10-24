@@ -300,6 +300,28 @@ describe('checkTravel: the review of #71, round two', () => {
   });
 });
 
+// Round three of the review of #71.
+describe('checkTravel: the review of #71, round three', () => {
+  it('a rotated canned cycle with repeats: no X/Y claim across its holes', () => {
+    // Under R90 the holes walk along machine Y; X never moves.
+    expect(check('G10 L2 P1 R90\nG91 G81 X100 Y0 R-1 Z-2 L12 F100\n')).toEqual([]);
+  });
+
+  it('a rotation written to its parameter rotates the system, for good', () => {
+    // #5250 is G55's rotation (LinuxCNC's parameter table: R is each block's tenth).
+    expect(check('#5250=90\nG55\nG0 X0 Y0\nG0 X1100 Y0\n')).toEqual([]);
+    expect(check('#5230=30\nG55\nG54\nG0 X0 Y0\nG0 X1100 Y0\n')).toEqual([]);
+    // Another system's rotation leaves this one alone.
+    expect(codes(check('#5250=90\nG0 X0 Y0\nG0 X1100 Y0\n'))).toEqual(['TRAVEL_EXTENT 3']);
+  });
+
+  it("the initial level keeps its own frame, apart from the cycle's", () => {
+    // The initial level (100 above the start, in the start's frame) is where G98
+    // returns: lumped with the work levels it would span 160.
+    expect(check('G91 G0 Z100\nG90 G99 G81 X0 Y0 R-10 Z-60 F100\nG98 X10\n')).toEqual([]);
+  });
+});
+
 describe('checkTravel: canned cycles', () => {
   it('keeps the initial level as known as it was, and the hole in work terms', () => {
     // Z starts pinned at machine 0; the holes go 50 below a work R plane.
@@ -376,14 +398,22 @@ function arcPoints(s: Extract<Step, { kind: 'arc' }>): Record<'X' | 'Y' | 'Z', n
 }
 
 describe('checkTravel: every warning holds, whatever the unknowns', () => {
-  const axis = fc.constantFrom('X', 'Y', 'Z');
-  // Values near the travel's own size, so a truth often fits and a false claim shows.
-  const v = fc.integer({ min: -900, max: 900 });
+  // Values sized per axis, a little past the travel's own extent, so many sampled truths
+  // fit entirely and a false claim shows (a Z of +-900 against 150 mm of travel would
+  // leave every truth, and hide a false Z claim).
+  const vx = fc.integer({ min: -300, max: 1300 });
+  const vy = fc.integer({ min: -200, max: 1000 });
+  const vz = fc.integer({ min: -200, max: 100 });
+  const av = fc.oneof(
+    vx.map((x) => ['X', x] as const),
+    vy.map((y) => ['Y', y] as const),
+    vz.map((z) => ['Z', z] as const),
+  );
   const small = fc.integer({ min: 1, max: 600 });
   const common = [
-    fc.tuple(fc.constantFrom('G0', 'G1'), axis, v).map(([g, a, x]) => `${g} ${a}${x}`),
-    fc.tuple(v, v, v).map(([x, y, z]) => `G1 X${x} Y${y} Z${z}`),
-    fc.tuple(axis, v).map(([a, x]) => `G53 G0 ${a}${x}`),
+    fc.tuple(fc.constantFrom('G0', 'G1'), av).map(([g, [a, x]]) => `${g} ${a}${x}`),
+    fc.tuple(vx, vy, vz).map(([x, y, z]) => `G1 X${x} Y${y} Z${z}`),
+    av.map(([a, x]) => `G53 G0 ${a}${x}`),
     fc.constantFrom(
       'G90',
       'G91',
@@ -399,12 +429,18 @@ describe('checkTravel: every warning holds, whatever the unknowns', () => {
     ),
     fc.constantFrom('G28', 'G28 Z0', 'G30', 'G80', 'G98', 'G99', 'G90.1', 'G91.1'),
     // Absolute helices (R-form), and arcs with a centre that G90.1 makes absolute.
-    fc.tuple(v, v, v).map(([x, y, z]) => `G17 G2 X${x} Y${y} Z${z} R2000`),
-    fc.tuple(small, v, v).map(([rad, x, y]) => `G17 G3 X${x} Y${y} I${x - rad} J${y}`),
-    fc.tuple(fc.integer({ min: 0, max: 3 }), axis, v).map(([p, a, x]) => `G10 L2 P${p} ${a}${x}`),
+    fc.tuple(vx, vy, vz).map(([x, y, z]) => `G17 G2 X${x} Y${y} Z${z} R2000`),
+    fc.tuple(small, vx, vy).map(([rad, x, y]) => `G17 G3 X${x} Y${y} I${x - rad} J${y}`),
+    fc.tuple(fc.integer({ min: 0, max: 3 }), av).map(([p, [a, x]]) => `G10 L2 P${p} ${a}${x}`),
     // Canned cycles (R above Z), with pecks.
     fc
-      .tuple(fc.constantFrom('G81', 'G83', 'G73'), v, v, fc.integer({ min: -300, max: 300 }), small)
+      .tuple(
+        fc.constantFrom('G81', 'G83', 'G73'),
+        vx,
+        vy,
+        fc.integer({ min: -300, max: 300 }),
+        small,
+      )
       .map(([g, x, y, r, d]) => `${g} X${x} Y${y} R${r} Z${r - d}${g === 'G81' ? '' : ' Q5'}`),
     // Arcs: incremental half circles in any plane, R-form, and a helix.
     fc
@@ -416,7 +452,7 @@ describe('checkTravel: every warning holds, whatever the unknowns', () => {
         return `${plane} G91 ${g} ${a1}${2 * rad} ${a2}0 ${off(a1)}${rad} ${off(a2)}0`;
       }),
     fc
-      .tuple(fc.constantFrom('G2', 'G3'), v, v)
+      .tuple(fc.constantFrom('G2', 'G3'), vx, vy)
       .map(([g, x, y]) => `G17 ${g} X${x} Y${y} R${g === 'G2' ? 2000 : -2000}`),
     fc
       .tuple(small, fc.integer({ min: -100, max: 100 }))
@@ -425,18 +461,20 @@ describe('checkTravel: every warning holds, whatever the unknowns', () => {
   const linuxcnc = fc.oneof(
     ...common,
     fc.constantFrom('G92.1', 'G92.2', 'G92.3', 'G28.1', 'G30.1'),
-    fc.tuple(axis, v).map(([a, x]) => `G92 ${a}${x}`),
-    fc.tuple(axis, v).map(([a, x]) => `G52 ${a}${x}`),
-    fc.tuple(fc.integer({ min: 0, max: 3 }), axis, v).map(([p, a, x]) => `G10 L20 P${p} ${a}${x}`),
-    fc.tuple(fc.integer({ min: 0, max: 2 }), v).map(([k, x]) => `#${5221 + k}=[#${5221 + k}+${x}]`),
+    av.map(([a, x]) => `G92 ${a}${x}`),
+    av.map(([a, x]) => `G52 ${a}${x}`),
+    fc.tuple(fc.integer({ min: 0, max: 3 }), av).map(([p, [a, x]]) => `G10 L20 P${p} ${a}${x}`),
+    fc
+      .tuple(fc.integer({ min: 0, max: 2 }), vz)
+      .map(([k, x]) => `#${5221 + k}=[#${5221 + k}+${x}]`),
     fc.constantFrom('G10 L2 P1 X0 R30'),
   );
   const masso = fc.oneof(
     ...common,
     fc.tuple(fc.integer({ min: 1, max: 3 })).map(([k]) => `G54.1 P${k}`),
     fc
-      .tuple(fc.constantFrom('2.1', '20', '20.1'), fc.integer({ min: 0, max: 3 }), axis, v)
-      .map(([l, p, a, x]) => `G10 L${l} P${p} ${a}${x}`),
+      .tuple(fc.constantFrom('2.1', '20', '20.1'), fc.integer({ min: 0, max: 3 }), av)
+      .map(([l, p, [a, x]]) => `G10 L${l} P${p} ${a}${x}`),
   );
   const inside = fc.record({
     X: fc.integer({ min: 0, max: 1000 }),
@@ -448,7 +486,38 @@ describe('checkTravel: every warning holds, whatever the unknowns', () => {
     Y: fc.integer({ min: -400, max: 800 }),
     Z: fc.integer({ min: -150, max: 150 }),
   });
+  // Fragments aimed at the classes found in review: a helix, an absolute-centre arc or a
+  // canned cycle just after something that moves a frame (an offset change, G43, an
+  // incremental move from the start). Mixed into programs with random lines around.
+  const shifter = fc.oneof(
+    fc.constantFrom('G55', 'G56', 'G43 H1', 'G49', 'G92.1', 'T1 M6'),
+    av.map(([a, x]) => `G91 G0 ${a}${x}\nG90`),
+    av.map(([a, x]) => `G53 G0 ${a}${x}`),
+  );
+  const target = fc.oneof(
+    fc.tuple(vx, vy, small, vz).map(([x, y, i, z]) => `G90 G17 G2 X${x} Y${y} I${i} J0 Z${z}`),
+    fc.tuple(vx, vy, small).map(([x, y, i]) => `G90.1\nG2 X${x} Y${y} I${i} J0\nG91.1`),
+    fc
+      .tuple(fc.constantFrom('G98', 'G99'), vx, vy, fc.integer({ min: -140, max: 100 }), small)
+      .map(
+        ([ret, x, y, r, d]) =>
+          `G90 ${ret} G81 X${x} Y${y} R${r} Z${r - Math.min(d, 140)}\nG98 X${x}`,
+      ),
+  );
+  const fragment = fc.tuple(target, shifter, target).map((parts) => parts.join('\n'));
   const scenario = fc.oneof(
+    // Short programs of fragments alone: with nothing else to leave the travel, a truth
+    // that fits is likely, so a false claim is caught.
+    fc.record({
+      dialect: fc.constant('linuxcnc' as const),
+      lines: fc.array(fragment, { minLength: 1, maxLength: 2 }),
+    }),
+    fc.record({
+      dialect: fc.constant('linuxcnc' as const),
+      lines: fc
+        .tuple(fc.array(linuxcnc, { maxLength: 6 }), fragment, fc.array(linuxcnc, { maxLength: 6 }))
+        .map(([a, f, b]) => [...a, f, ...b]),
+    }),
     fc.record({
       dialect: fc.constant('linuxcnc' as const),
       lines: fc.array(linuxcnc, { minLength: 1, maxLength: 25 }),
@@ -458,6 +527,12 @@ describe('checkTravel: every warning holds, whatever the unknowns', () => {
       lines: fc.array(masso, { minLength: 1, maxLength: 25 }),
     }),
   );
+
+  const seed = (): { seed?: number } => {
+    const env = process.env['TRAVEL_SEED'];
+    if (env === 'random') return {};
+    return { seed: env !== undefined ? Number(env) : 20261024 };
+  };
 
   // One possible truth: the unknowns a program doesn't set.
   const truth = fc.record({
@@ -559,7 +634,9 @@ describe('checkTravel: every warning holds, whatever the unknowns', () => {
           }
         },
       ),
-      { numRuns: runs },
+      // A fixed seed by default, so CI is reproducible and a real bug can't surface as a
+      // red run on an unrelated PR. TRAVEL_SEED=random (or a number) for wider runs.
+      { numRuns: runs, ...seed() },
     );
     // Not vacuous: warnings to test, each against many truths.
     expect(warned).toBeGreaterThan(runs / 10);

@@ -2649,8 +2649,8 @@ as an optional field in a new revision, or as version 2.
 ## ADR-0042: The travel check: certain or silent
 
 **Status:** Accepted, 2026-10-22. The reviewer's GO on the outline, with its three
-decisions and five additions. Revised after two rounds of review (2026-10-22 and
-10-23): eleven classes of program got a false "certain" result, and each is now a
+decisions and five additions. Revised after three rounds of review (2026-10-22 to
+10-24): thirteen classes of program got a false "certain" result, and each is now a
 regression test. Implements ADR-0041's "the
 travel check uses what is knowable".
 
@@ -2697,8 +2697,11 @@ machine terms.
     caller passes `toolLengthOffsetAtStart: 'off'`. A tool change makes it unknown
     again.
   - **Rotation** (G10 L2 ... R) isn't simulated. Once a system is rotated it stays so:
-    LinuxCNC keeps the rotation when a later G10 omits R. Under it, any X or Y move other
-    than G53 (absolute, incremental, a cycle, an arc) leaves both axes somewhere unknown,
+    LinuxCNC keeps the rotation when a later G10 omits R. A write to the system's rotation
+    parameter (#5230 for G54, #5250 for G55: each block's tenth) rotates it too, whatever
+    the value. Under it, any X or Y move other than G53 (absolute, incremental, a cycle,
+    an arc) leaves both axes somewhere unknown; each step of a rotated canned cycle gets
+    X and Y frames of its own, since its holes walk along the rotated axes,
     with no pin and no shared frame. A later G10 can't make its X/Y offsets known again,
     and nor can a G92 taken under it.
   - **A rotation already in force at the start** is the same class of unknown as a
@@ -2744,28 +2747,34 @@ machine terms.
     program in either dialect is run as the check sees it. Then, for each of 40 sampled
     truths, it's run again: random supplied offsets, a random start inside the travel,
     sometimes a G92 left on the controller, random stored G28/G30 positions and a Masso
-    park position, with values near the travel's own size so a truth often fits. Every
-    warning must hold in EVERY truth, up to the first line where that truth's errors
-    differ from the seen run's (the start can decide whether an arc's line runs at all).
-    The programs mix moves, G53, G90/G91, coordinate systems (G54.1 too), G92 and its
-    cancels, G52, G10 L2/L20/L2.1/L20.1 (with R), parameter writes, G43/G49/M6, G28/G30,
-    canned cycles with pecks, and arcs in every plane: incremental, R-form, G90 helices,
-    and G90.1 centres. On its first run it found a twelfth class, a cycle starting where
-    another cycle left the tool in another frame, now fixed and a unit test.
-  - **What it can't model.** The interpreter doesn't apply tool lengths, cutter radii or
-    rotation, so their truth there is the identity. Unit tests pin those rules.
-  - **Runs.** CI runs 300 programs x 40 truths (about 14,000 checks). Locally, 1,500 x 40
-    passed five times (about 78,000 checks each). The test asserts it isn't vacuous:
-    warnings to test, each checked against many truths.
-  - **Mutants.** The oracle is stochastic: which mutants it catches can vary from run
-    to run. The whole suite catches all fourteen at CI size. Across two runs of 1,500 x 40:
-    - the oracle catches both times: no new offset frames, G92 assumed off at the start,
-      arc interiors whatever the plane axes, cycle levels always the cycle's own, G92
-      always known, G10 L20 always known, and rotation not losing X/Y;
-    - the oracle catches in one of the two runs: Masso G30 keeping its axes;
-    - unit tests only: the tool length assumed off, refused lines forgetting nothing, a
-      stale stamp under compensation, a helix's axis given interior points, an absolute
-      centre ignored, and rotation not sticky.
+    park position. Every warning must hold in EVERY truth, up to the first line where
+    that truth's errors differ from the seen run's.
+    - Values are sized per axis, a little past the travel, so many truths fit.
+    - Fragments aim at the classes review found: a helix, an absolute-centre arc or a
+      canned cycle just after something that moves a frame. Some programs are only those
+      fragments, where a fitting truth is likely.
+    - On its first run it found a twelfth class (a cycle starting where another cycle
+      left the tool, in another frame), now fixed and a unit test.
+  - **What the oracle does NOT cover:**
+    - Its truths run through the same interpreter, which doesn't simulate tool lengths,
+      cutter radii or rotation, so it can't see any rule about them.
+    - It's weak on geometry-specific classes. Run against the round-two code, it caught
+      the helix, G90.1 and cycle-start bugs on one seed of four at CI size.
+    - Those rules rest on unit tests, one per class, each failing on the code before its
+      fix.
+  - **Runs.** CI runs 300 programs x 40 truths with a fixed seed (`TRAVEL_SEED`, default
+    20261024), so a run is reproducible and a real bug can't surface as a red run on an
+    unrelated PR. `TRAVEL_SEED=random` and `TRAVEL_RUNS` are for wider runs. The test
+    asserts it isn't vacuous: warnings to test, each against many truths.
+  - **Mutants.** All seventeen frame-rule mutants fail the whole suite at CI size.
+    - The oracle alone, at CI size and the fixed seed, catches six: no new offset frames,
+      G92 assumed off at the start, cycle levels always the cycle's own, G92 always known,
+      the initial level not its own, and rotation not losing X/Y.
+    - Unit tests catch the rest: arc interiors whatever the plane axes, G10 L20 always
+      known, the tool length assumed off, Masso G30 keeping its axes, refused lines
+      forgetting nothing, a stale stamp under compensation, a helix's axis given
+      interior points, an absolute centre ignored, rotation not sticky, the rotation
+      parameter ignored, and a rotated cycle sharing X/Y.
 
 **Consequences.** Silence never means "fits". The check finds less than a check that
 assumed zero offsets would, and everything it finds is true. With the operator's offsets
