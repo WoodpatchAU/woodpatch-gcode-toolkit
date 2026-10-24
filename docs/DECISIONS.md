@@ -2245,8 +2245,21 @@ Operator decisions on an external review's findings.
 - pnpm's `minimumReleaseAge` still applies when Dependabot regenerates the lockfile.
   So a security fix younger than 7 days may fail to resolve. If it does, list the
   package in `minimumReleaseAgeExclude` for that update, and record why.
-- Unverified until the first run: whether Dependabot runs on this fork and copes with
-  pnpm 12 (lockfile v9 is supported). Check its log after the first scheduled run.
+- **Found on the first run (2026-10-21): Dependabot runs here, but can't update a
+  pnpm 12 lockfile.** Its first PR, a security update for vite, changed
+  `package.json` only, so CI's frozen-lockfile install refused it. Until Dependabot
+  handles pnpm 12, its PRs are alerts, not merges: the maintainer opens a replacement
+  PR with the same bump and a regenerated lockfile (`pnpm install`, which applies the
+  7-day release-age gate), and closes Dependabot's PR, pointing to it. Version updates
+  are handled the same way. Security updates are acted on within days.
+  The first such pair: Dependabot's #67 (vite 8.3.3) is closed in favour of #70.
+- **Transitive security floors** go in `overrides` in `pnpm-workspace.yaml`, each with
+  the advisory it answers, and come out once nothing resolves below them. The first:
+  launch-editor ^2.14.2 (reached through @changesets/cli), alongside the vite update.
+- That first PR also tripped the private-references check: Dependabot's release notes
+  link upstream issues as `<a href="https://redirect.github.com/o/r/issues/N">#N</a>`.
+  The check now reads the whole URL (any path depth, and the redirect host), and lets
+  a number through when it is the text of another owner's link to that same number.
 
 ## ADR-0040: The estimate server's security boundary
 
