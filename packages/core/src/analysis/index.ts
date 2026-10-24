@@ -9,6 +9,7 @@ export {
   type Range,
   type SpindleSummary,
 } from './summary.js';
+export { checkTravel, type AxisTravel, type TravelLimits } from './travel.js';
 export {
   estimateTime,
   junctionSpeed,
