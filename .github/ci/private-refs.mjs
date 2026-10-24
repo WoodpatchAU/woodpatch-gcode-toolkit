@@ -21,7 +21,10 @@
 // - a system parameter (the 5000s) in backticks or quotes, or on a line about G-code.
 // Known gaps, accepted in review (so they're deliberate): a private number in the 5000s
 // on a line about G-code; glued forms (issue#NNNN, PR#NNNN, a private repo's name glued
-// to #NNNN); a fullwidth or zero-width "#", or &#35;; another owner's x/y#NNNN; and a
+// to #NNNN); a fullwidth or zero-width "#", or &#35; or &#x23;; another owner's x/y#NNNN;
+// a private repository's NAME (no number) behind an unusual host spelling
+// (github.com:443/, github.com./, github.com//, a backslash, %57 or an entity in the
+// owner); and a
 // private number smuggled into an outside list ("LinuxCNC #1528/#NNNN"); and shapes that
 // are valid G-code too: "#NNNN = 3 open items", "#NNNN = [WIP]", "#NNNN = ...",
 // "#NNNN=1 of 3", "[#NNNN and #44]", "[#NNNN - 2 follow-ups]".
@@ -31,8 +34,28 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 const NUMBER = /(^|[^0-9A-Za-z&])#([0-9]{4,5})(?![0-9A-Za-z])/g;
-const NUMBERED_LINK = /([a-z0-9.-]*\/[^\s/]*\/[^\s/]*)?\/(issues|pull)\/[0-9]{4,}/gi;
-const GITHUB_ISSUE = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([a-z0-9-]+)\//i;
+const NUMBERED_LINK = /\/(issues|pull)\/[0-9]{4,}/gi;
+// What ends a URL in prose and markup, reading back from a match: whitespace, a quote,
+// a backtick, a bracket or angle bracket (href="…", Markdown (…), <…>), a comma, "=".
+const URL_SEPARATOR = /[\s"'`()<>[\],=]/;
+// Longer than this, a URL isn't read at all (refused): keeps the scan linear.
+const MAX_URL = 2048;
+// A URL that could reach the organisation whatever its owner segment says: a
+// dot-segment, raw or percent-encoded; the organisation's name anywhere in it (a query
+// or a fragment, say); or "&", since HTML and Markdown decode character references
+// (&#46;, &#x2e;, &period;) before a browser resolves the URL, and a Dependabot link
+// never has one. Such a URL never exempts anything.
+const SUSPECT_URL = /\.\.|%2e|woodpatchau|&/i;
+// redirect.github.com is the host Dependabot writes its release-note links with.
+const GITHUB_ISSUE = /^(?:https?:\/\/)?(?:www\.|redirect\.)?github\.com\/([a-z0-9-]+)\//i;
+// A number that is the text of a link to that same-numbered issue or PR, as Dependabot's
+// release notes write it: <a href="https://redirect.github.com/o/r/issues/N">#N</a>,
+// or in Markdown, [#N](https://github.com/o/r/pull/N). The link says whose it is.
+// Bounded (at MAX_URL), so text that keeps almost matching can't make a scan quadratic.
+const LINKED_NUMBER = [
+  /<a\s+href="([^"\s]{1,2048})"[^>]{0,2048}>#([0-9]{4,5})<\/a>/gi,
+  /\[#([0-9]{4,5})\]\(([^)\s]{1,2048})\)/g,
+];
 const ORG_LINK = /github\.com[/:]woodpatchau\/([a-z0-9._-]+)/gi;
 const ORG_RAW = /raw\.githubusercontent\.com\/woodpatchau\/([a-z0-9._-]+)/gi;
 const OWN_REPO = 'woodpatch-gcode-toolkit';
@@ -42,26 +65,57 @@ const OWN_REPO = 'woodpatch-gcode-toolkit';
 // Only projects whose public trackers reach four digits: after any other name, such a
 // number can only be ours. A line merely naming the project exempts nothing else on it.
 const OUTSIDE_REF = /\b(linuxcnc|grbl)\b(\s+(issues?|prs?|bugs?))?\s+#[0-9]{4,5}(\/#[0-9]{4,5})*/gi;
-// The owner/repo#NNNN form.
-const REPO_REF = /\b([A-Za-z0-9-]+)\/[A-Za-z0-9._-]+#[0-9]{4,5}/g;
+// The owner/repo#NNNN form, bounded by GitHub's own limits (owner 39, repository 100),
+// so a long run of name characters can't make the scan quadratic.
+const REPO_REF = /\b([A-Za-z0-9-]{1,39})\/[A-Za-z0-9._-]{1,100}#[0-9]{4,5}/g;
 // What may follow a parameter inside an expression: a sign or a comparison.
 // ...and an operand after it: a number, a parameter, a bracket or a function (SIN[…]).
 const EXPR_NEXT =
   /^\s*([-+*/]|\*\*|(EQ|NE|GT|GE|LT|LE|AND|OR|XOR|MOD)\b)\s*([-+]?[0-9.]|#|\[|[A-Z]+\[)/i;
 const ABOUT_GCODE = /\b[GM][0-9]|param|coordinate|offset|\bhome\b|\baxis\b|position/i;
 
+/** The owner of a GitHub URL if it's another owner's, unambiguously; else undefined. */
+function outsideOwner(url) {
+  if (SUSPECT_URL.test(url)) return undefined;
+  // A scheme part-way in ("see:https://…") starts the URL there, and what's before it
+  // is ignored: "evil.example/https://github.com/o/r/issues/N" counts as o's link. The
+  // number it carries is then o's to have published, and an org link is still refused
+  // (SUSPECT_URL looks at the whole candidate).
+  const k = url.search(/https?:\/\//i);
+  const owner = GITHUB_ISSUE.exec(k > 0 ? url.slice(k) : url)?.[1]?.toLowerCase();
+  return owner === 'woodpatchau' ? undefined : owner;
+}
+
 /** Whether one line of text refers to private work. */
 export function leaks(text) {
   for (const m of text.matchAll(ORG_LINK))
     if ((m[1] ?? '').toLowerCase().replace(/\.git$/, '') !== OWN_REPO) return true;
   for (const m of text.matchAll(ORG_RAW)) if ((m[1] ?? '').toLowerCase() !== OWN_REPO) return true;
+  // The whole URL before each match, however deep its path (Dependabot links
+  // github.com/o/r/tree/HEAD/packages/p/issues/N). One pass over the line finds where
+  // each URL starts, so a long line costs linear time.
+  let sep = -1;
+  let scanned = 0;
   for (const m of text.matchAll(NUMBERED_LINK)) {
-    const owner = GITHUB_ISSUE.exec(m[1] ?? '')?.[1]?.toLowerCase();
-    if (owner === undefined || owner === 'woodpatchau') return true;
+    for (; scanned < m.index; scanned++) if (URL_SEPARATOR.test(text[scanned])) sep = scanned;
+    if (m.index - (sep + 1) > MAX_URL) return true;
+    if (outsideOwner(text.slice(sep + 1, m.index)) === undefined) return true;
   }
   // Spans of text that are an outside project's own references.
   const outside = [];
   for (const m of text.matchAll(OUTSIDE_REF)) outside.push([m.index, m.index + m[0].length]);
+  for (const [i, pattern] of LINKED_NUMBER.entries()) {
+    for (const m of text.matchAll(pattern)) {
+      const [url, n] = i === 0 ? [m[1] ?? '', m[2] ?? ''] : [m[2] ?? '', m[1] ?? ''];
+      // The issue or PR the link points at (a fixed pattern; nothing built at run time).
+      const same = /\/(?:issues|pull)\/([0-9]+)(?![0-9])/.exec(url)?.[1] === n;
+      if (outsideOwner(url) !== undefined && same) {
+        // Only the link's own text, "#N": nothing else inside the match is exempt.
+        const at = m.index + (i === 0 ? m[0].lastIndexOf(`>#${n}<`) + 1 : 1);
+        outside.push([at, at + 1 + n.length]);
+      }
+    }
+  }
   for (const m of text.matchAll(REPO_REF)) {
     // The organisation's own owner/repo#NNNN is private work (this repo's numbers are
     // two-digit); any other owner's is an outside project's.

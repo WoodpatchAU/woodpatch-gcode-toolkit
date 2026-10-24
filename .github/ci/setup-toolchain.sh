@@ -14,8 +14,8 @@
 # cannot substitute a binary. Bumping a version means bumping its hash here too.
 set -euo pipefail
 
-NODE_VERSION=22.23.2
-NODE_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307 # node-v22.23.2-linux-x64.tar.xz
+NODE_VERSION=22.23.4
+NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce # node-v22.23.4-linux-x64.tar.xz
 
 PNPM_VERSION=12.4.2 # must match "packageManager" in package.json
 PNPM_SHA512=CK3GYTGAJ1x8ntraOdzwjJxhrU5+rzMKTzRh8QKw+QdCNFTRF/mOctR/7wYWBwZE17/8lzpqV/UJCm18NosHyQ==

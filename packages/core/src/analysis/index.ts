@@ -10,3 +10,14 @@ export {
   type SpindleSummary,
 } from './summary.js';
 export { checkTravel, type AxisTravel, type TravelLimits } from './travel.js';
+export {
+  estimateTime,
+  junctionSpeed,
+  segmentTime,
+  type EstimateAxis,
+  type EstimateMachine,
+  type EstimateOptions,
+  type EstimateResult,
+  type EstimateUnknown,
+  type UnknownReason,
+} from './estimate.js';

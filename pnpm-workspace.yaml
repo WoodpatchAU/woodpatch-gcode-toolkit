@@ -15,3 +15,12 @@ allowBuilds:
   # binary to save startup time. The binary arrives anyway via the optional
   # @esbuild/<platform> package, and esbuild works without the script.
   esbuild: false
+
+# Security floors for transitive dependencies the direct ones haven't caught up with.
+# Each names the advisory it answers; drop it once nothing resolves below it.
+overrides:
+  # GHSA-r825-w8mm-5pxw, GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv (fixed in 2.14.2),
+  # reached through @changesets/cli.
+  launch-editor: ^2.14.2
+  # GHSA-xjj6 (High DoS, fixed in 8.12.2): reached through jsdom. Dev and CI only.
+  undici: ^8.12.2

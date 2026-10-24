@@ -1,0 +1,740 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/WoodpatchAU/woodpatch-gcode-toolkit/packages/db-schema/schema/machine-record-v1.schema.json",
+  "title": "Woodpatch G-code machine record, version 1",
+  "description": "ADR-0041. A SUBSET of validateMachine() in @woodpatch/gcode-db, which is authoritative: this schema cannot express min < max, minRpm <= maxRpm, meanAbsPercent <= maxAbsPercent, a real calendar date, the 16,384-byte cap, the name's character rules, or that a calibrated record holds no seed value.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "version",
+    "revision",
+    "id",
+    "name",
+    "dialect",
+    "axes",
+    "planner",
+    "spindle",
+    "calibration"
+  ],
+  "properties": {
+    "format": {
+      "const": "woodpatch-gcode-machine"
+    },
+    "version": {
+      "const": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "description": "The revision of version 1 the record was written for. This schema describes revision 1."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,64}$",
+      "description": "The storing application's id, opaque to the toolkit."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "1–200 code points; no control, format or separator characters (checked by validateMachine)."
+    },
+    "dialect": {
+      "enum": ["generic", "linuxcnc-2.9", "masso-g3-5.13"],
+      "description": "A built-in dialect profile, with its firmware line."
+    },
+    "axes": {
+      "description": "X, Y and Z are linear, in mm; A, B and C are rotary, in degrees.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["X", "Y", "Z"],
+      "properties": {
+        "X": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max", "maxVelocity", "acceleration"],
+          "properties": {
+            "min": {
+              "description": "Travel minimum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In mm."
+                }
+              }
+            },
+            "max": {
+              "description": "Travel maximum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In mm."
+                }
+              }
+            },
+            "maxVelocity": {
+              "description": "Maximum velocity.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 200000,
+                  "description": "In mm/min."
+                }
+              }
+            },
+            "acceleration": {
+              "description": "Acceleration.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 50000,
+                  "description": "In mm/s²."
+                }
+              }
+            },
+            "jerk": {
+              "description": "Reserved for an S-curve planner.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "description": "In mm/s³."
+                }
+              }
+            }
+          }
+        },
+        "Y": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max", "maxVelocity", "acceleration"],
+          "properties": {
+            "min": {
+              "description": "Travel minimum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In mm."
+                }
+              }
+            },
+            "max": {
+              "description": "Travel maximum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In mm."
+                }
+              }
+            },
+            "maxVelocity": {
+              "description": "Maximum velocity.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 200000,
+                  "description": "In mm/min."
+                }
+              }
+            },
+            "acceleration": {
+              "description": "Acceleration.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 50000,
+                  "description": "In mm/s²."
+                }
+              }
+            },
+            "jerk": {
+              "description": "Reserved for an S-curve planner.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "description": "In mm/s³."
+                }
+              }
+            }
+          }
+        },
+        "Z": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max", "maxVelocity", "acceleration"],
+          "properties": {
+            "min": {
+              "description": "Travel minimum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In mm."
+                }
+              }
+            },
+            "max": {
+              "description": "Travel maximum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In mm."
+                }
+              }
+            },
+            "maxVelocity": {
+              "description": "Maximum velocity.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 200000,
+                  "description": "In mm/min."
+                }
+              }
+            },
+            "acceleration": {
+              "description": "Acceleration.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 50000,
+                  "description": "In mm/s²."
+                }
+              }
+            },
+            "jerk": {
+              "description": "Reserved for an S-curve planner.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "description": "In mm/s³."
+                }
+              }
+            }
+          }
+        },
+        "A": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxVelocity", "acceleration"],
+          "properties": {
+            "min": {
+              "description": "Travel minimum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In degrees."
+                }
+              }
+            },
+            "max": {
+              "description": "Travel maximum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In degrees."
+                }
+              }
+            },
+            "maxVelocity": {
+              "description": "Maximum velocity.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1000000,
+                  "description": "In degrees/min."
+                }
+              }
+            },
+            "acceleration": {
+              "description": "Acceleration.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 50000,
+                  "description": "In degrees/s²."
+                }
+              }
+            },
+            "jerk": {
+              "description": "Reserved for an S-curve planner.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "description": "In degrees/s³."
+                }
+              }
+            }
+          },
+          "description": "A rotary axis. min and max are both present or both absent (continuous rotation).",
+          "dependentRequired": {
+            "min": ["max"],
+            "max": ["min"]
+          }
+        },
+        "B": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxVelocity", "acceleration"],
+          "properties": {
+            "min": {
+              "description": "Travel minimum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In degrees."
+                }
+              }
+            },
+            "max": {
+              "description": "Travel maximum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In degrees."
+                }
+              }
+            },
+            "maxVelocity": {
+              "description": "Maximum velocity.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1000000,
+                  "description": "In degrees/min."
+                }
+              }
+            },
+            "acceleration": {
+              "description": "Acceleration.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 50000,
+                  "description": "In degrees/s²."
+                }
+              }
+            },
+            "jerk": {
+              "description": "Reserved for an S-curve planner.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "description": "In degrees/s³."
+                }
+              }
+            }
+          },
+          "description": "A rotary axis. min and max are both present or both absent (continuous rotation).",
+          "dependentRequired": {
+            "min": ["max"],
+            "max": ["min"]
+          }
+        },
+        "C": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxVelocity", "acceleration"],
+          "properties": {
+            "min": {
+              "description": "Travel minimum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In degrees."
+                }
+              }
+            },
+            "max": {
+              "description": "Travel maximum, machine coordinates.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100000,
+                  "maximum": 100000,
+                  "description": "In degrees."
+                }
+              }
+            },
+            "maxVelocity": {
+              "description": "Maximum velocity.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1000000,
+                  "description": "In degrees/min."
+                }
+              }
+            },
+            "acceleration": {
+              "description": "Acceleration.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 50000,
+                  "description": "In degrees/s²."
+                }
+              }
+            },
+            "jerk": {
+              "description": "Reserved for an S-curve planner.",
+              "type": "object",
+              "$ref": "#/$defs/P",
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "description": "In degrees/s³."
+                }
+              }
+            }
+          },
+          "description": "A rotary axis. min and max are both present or both absent (continuous rotation).",
+          "dependentRequired": {
+            "min": ["max"],
+            "max": ["min"]
+          }
+        }
+      }
+    },
+    "rapidRate": {
+      "description": "Rapid rate for the linear axes. Absent: each axis's maxVelocity.",
+      "type": "object",
+      "$ref": "#/$defs/P",
+      "properties": {
+        "value": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 200000,
+          "description": "In mm/min."
+        }
+      }
+    },
+    "planner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["junctionDeviation"],
+      "properties": {
+        "junctionDeviation": {
+          "description": "GRBL's cornering model.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 10,
+              "description": "In mm."
+            }
+          }
+        },
+        "blockRate": {
+          "description": "Blocks per second the controller can process.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 100000,
+              "description": "In blocks/s."
+            }
+          }
+        },
+        "lookahead": {
+          "description": "Planner look-ahead.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 10000,
+              "description": "In blocks."
+            }
+          }
+        }
+      }
+    },
+    "spindle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxRpm", "spinUpSeconds", "spinDownSeconds"],
+      "properties": {
+        "minRpm": {
+          "description": "Minimum speed. Absent: 0.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100000,
+              "description": "In rpm."
+            }
+          }
+        },
+        "maxRpm": {
+          "description": "Maximum speed.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 100000,
+              "description": "In rpm."
+            }
+          }
+        },
+        "spinUpSeconds": {
+          "description": "The controller's wait on M3/M4.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 600,
+              "description": "In s."
+            }
+          }
+        },
+        "spinDownSeconds": {
+          "description": "The controller's wait on M5.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 600,
+              "description": "In s."
+            }
+          }
+        }
+      }
+    },
+    "overheads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "toolChangeSeconds": {
+          "description": "Per tool change. Absent: 0.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 86400,
+              "description": "In s."
+            }
+          }
+        },
+        "programStartSeconds": {
+          "description": "Once per program. Absent: 0.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 86400,
+              "description": "In s."
+            }
+          }
+        },
+        "pauseSeconds": {
+          "description": "Per M0/M1, an assumed operator response. Absent: 0.",
+          "type": "object",
+          "$ref": "#/$defs/P",
+          "properties": {
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 86400,
+              "description": "In s."
+            }
+          }
+        }
+      }
+    },
+    "calibration": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "uncalibrated"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "fittedOn", "timeFactor", "accelFactor", "residuals"],
+          "properties": {
+            "status": {
+              "const": "calibrated"
+            },
+            "fittedOn": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+              "description": "YYYY-MM-DD."
+            },
+            "timeFactor": {
+              "type": "number",
+              "minimum": 0.5,
+              "maximum": 2
+            },
+            "accelFactor": {
+              "type": "number",
+              "minimum": 0.25,
+              "maximum": 4
+            },
+            "residuals": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["jobs", "meanAbsPercent", "maxAbsPercent"],
+              "properties": {
+                "jobs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "meanAbsPercent": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "In %."
+                },
+                "maxAbsPercent": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "In %."
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "P": {
+      "description": "A physical value with its provenance.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "source"],
+      "properties": {
+        "value": {
+          "type": "number"
+        },
+        "source": {
+          "enum": ["seed", "manual", "measured", "fitted"]
+        }
+      }
+    }
+  }
+}

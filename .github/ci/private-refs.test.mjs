@@ -6,6 +6,7 @@
 // parameters, upstream issue references and colours that are on main today).
 // Run: node --test .github/ci/
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import { test } from 'node:test';
 import { leaks } from './private-refs.mjs';
 
@@ -82,4 +83,90 @@ test('lets through G-code parameters, outside projects and colours', () => {
     '&#1234; is an entity',
   ])
     assert.equal(leaks(line), false, line);
+});
+
+// Dependabot's release notes link each upstream issue as <a href="…/issues/N">#N</a>,
+// on redirect.github.com. The link names the owner, so the number is theirs. Built at
+// run time like the cases above: the pre-push hook's copy of an older matcher reads
+// this file too.
+const ISSUES = '/iss' + 'ues/';
+const PULL = '/pu' + 'll/';
+test("lets through a number that is the text of another owner's link to it", () => {
+  const vite = 'https://redirect.github.com/vitejs/vite';
+  for (const line of [
+    `<li><strong>deps:</strong> update launch-editor (<a href="${vite}${ISSUES}23654">${H}23654</a>) (<a href="https://github.com/vitejs/vite/commit/22fd1d5">22fd1d5</a>)</li>`,
+    `<a href="https://github.com/vitejs/vite${PULL}23653">${H}23653</a>`,
+    `fixed upstream in [${H}23653](https://github.com/vitejs/vite${PULL}23653)`,
+    `${vite}${ISSUES}23654`,
+    `(<a href="https://github.com/vitejs/vite/tree/HEAD/packages/vite${ISSUES}23657">${H}23657</a>)</li>`,
+    // A URL in backticks, or after a comma, "=" or a colon.
+    `see \`https://github.com/vitejs/vite${ISSUES}23654\``,
+    `a,https://github.com/vitejs/vite${ISSUES}23654`,
+    `url=https://github.com/vitejs/vite${PULL}23653`,
+    `see:https://github.com/vitejs/vite${PULL}23653`,
+  ])
+    assert.equal(leaks(line), false, line);
+});
+
+test('still refuses a linked number that is ours, or not what the link says', () => {
+  const vite = `https://redirect.github.com/vitejs/vite${ISSUES}23654`;
+  const N = '999' + '01'; // built at run time, like H
+  for (const line of [
+    // The text's number isn't the link's.
+    `<a href="${vite}">${H}99901</a>`,
+    `[${H}99901](${vite})`,
+    // The organisation's own link, on either host.
+    `<a href="https://redirect.github.com/${ORG}/x/issues/${N}">${H}99901</a>`,
+    `https://redirect.github.com/${ORG.toLowerCase()}/x/pull/3`,
+    `<a href="https://github.com/${ORG}/x/tree/HEAD/y/issues/${N}">${H}99901</a>`,
+    `(see https://github.com/${ORG.toLowerCase()}/x/tree/main/issues/${N})`,
+    `"something/deeper/path/issues/${N}"`,
+    // A dot-segment or the organisation's name hidden in the URL (review of #70).
+    `https://github.com/vitejs/../${ORG}/x${ISSUES}${N}`,
+    `https://github.com/vitejs/%2e%2e/${ORG}/x${ISSUES}${N}`,
+    `https://github.com/vitejs/vite${ISSUES}1234?next=/${ORG}/x${ISSUES}${N}`,
+    // Character references, which HTML and Markdown decode before the browser resolves
+    // the URL (review of #70).
+    `https://github.com/vitejs/&#46;&#46;/&#87;oodpatchAU/x${ISSUES}${N}`,
+    `<a href="https://github.com/vitejs/&#x2e;&#x2e;/x/y${ISSUES}${N}">${H}${N}</a>`,
+    `[${H}${N}](https://github.com/vitejs/&period;&period;/x/y${ISSUES}${N})`,
+    `https://github.com/vitejs/&#37;2e&#37;2e/x/y${ISSUES}${N}`,
+    // Each SUSPECT_URL arm on its own: %2e with the name encoded, and the name in a
+    // fragment ("#" doesn't end a URL).
+    `https://github.com/vitejs/%2e%2e/%57oodpatchAU/x${ISSUES}${N}`,
+    `https://github.com/vitejs/vite${ISSUES}1234#/${ORG}/x${ISSUES}${N}`,
+    `https://github.com/vitejs/../%57oodpatchAU/x${ISSUES}${N}`,
+    // The exemption covers the link's own #N only, never the rest of the tag.
+    `<a href="https://github.com/vitejs/vite${ISSUES}12345" title="${H}99901">${H}12345</a>`,
+    `<a href="https://github.com/vitejs/vite${ISSUES}12345 ${H}99901">${H}12345</a>`,
+    `[${H}12345](https://github.com/vitejs/vite${ISSUES}12345?q=${H}99901)`,
+    // Not GitHub at all.
+    `<a href="https://example.com/issues/${N}">${H}99901</a>`,
+    // A private number beside a genuine Dependabot link.
+    `<a href="${vite}">${H}23654</a> and ${H}99902`,
+  ])
+    assert.equal(leaks(line), true, line);
+});
+
+test('reads lines that keep almost matching in linear time', () => {
+  const t0 = performance.now();
+  for (const line of [
+    '<a href="x"'.repeat(20_000),
+    `[${H}12345](`.repeat(20_000),
+    'a-'.repeat(100_000),
+    `a/b${H}`.repeat(50_000),
+  ])
+    leaks(line);
+  assert.ok(performance.now() - t0 < 2000, `took ${performance.now() - t0} ms`);
+});
+
+test('reads a long line in linear time', () => {
+  const link = `<a href="https://redirect.github.com/vitejs/vite${ISSUES}23654">${H}23654</a> `;
+  const line = link.repeat(2000) + 'x'.repeat(100_000);
+  const t0 = performance.now();
+  assert.equal(leaks(line), false);
+  // An unbroken 200k-character token with links in it: refused, quickly.
+  const token = `https://github.com/vitejs/vite${ISSUES}23654`.repeat(5000);
+  assert.equal(leaks(token), true);
+  assert.ok(performance.now() - t0 < 2000, `took ${performance.now() - t0} ms`);
 });
