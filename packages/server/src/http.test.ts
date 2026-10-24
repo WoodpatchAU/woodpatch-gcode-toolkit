@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request as httpRequest, type Server } from 'node:http';
+import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -9,7 +10,7 @@ import { DEFAULT_BUDGETS, type Budgets } from './budgets.js';
 import { ResponseCache } from './cache.js';
 import { MAX_REQUEST_BYTES, parseRequest } from './contract.js';
 import { handleEstimate } from './handle.js';
-import { createEstimateServer } from './http.js';
+import { createEstimateServer, inFlightCap } from './http.js';
 import { Logger } from './log.js';
 import { MAX_START_FAILURES, WorkerPool } from './pool.js';
 
@@ -368,7 +369,11 @@ describe('a worker that cannot start', () => {
     const pool = new WorkerPool(new URL(`file://${bad}`), { ...DEFAULT_BUDGETS, workers: 1 }, (n) =>
       events.push(n),
     );
+    // Sent before any worker could load: it waits in the queue, and must not wait forever.
+    const job = { scope: 's', gcode: '', machine: '{}', recordHash: '', build: 'b' };
+    const waiting = pool.submit(job);
     await pool.ready();
+    expect((await waiting).outcome).toEqual({ kind: 'error', code: 'INTERNAL' });
     expect(events.filter((e) => e === 'workers-failing')).toHaveLength(1);
     expect(events.filter((e) => e === 'worker-replaced').length).toBeLessThan(MAX_START_FAILURES);
     const done = await pool.submit({
@@ -381,5 +386,78 @@ describe('a worker that cannot start', () => {
     expect(done.outcome).toEqual({ kind: 'error', code: 'INTERNAL' });
     await pool.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/** Opens a raw connection and writes `text`; resolves with everything read until it closes. */
+function raw(path: string, text: string): { socket: Socket; reply: Promise<string> } {
+  const socket = connect(path);
+  const chunks: Buffer[] = [];
+  const reply = new Promise<string>((resolve) => {
+    socket.on('data', (c: Buffer) => chunks.push(c));
+    socket.on('close', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    socket.on('error', () => {});
+  });
+  socket.write(text);
+  return { socket, reply };
+}
+const HEADERS_ONLY =
+  'POST /estimate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n';
+
+describe('intake bounds (review of #76)', () => {
+  it('cuts off a body that stalls after its headers, at the request timeout', async () => {
+    const s = await start({ headersMs: 1_000, requestMs: 1_000, checkMs: 200 });
+    const t0 = Date.now();
+    const { reply } = raw(s.path, HEADERS_ONLY);
+    expect(await reply).toMatch(/^HTTP\/1\.1 408/);
+    // requestMs plus at most one check interval, and some slack: never Node's 30 s default.
+    expect(Date.now() - t0).toBeLessThan(1_000 + 200 + 1_000);
+  });
+
+  it('answers SERVER_BUSY past workers + queue in flight, before reading the body', async () => {
+    const s = await start({ workers: 1, queue: 1, jobMs: 5_000 });
+    expect(inFlightCap({ ...DEFAULT_BUDGETS, workers: 1, queue: 1 })).toBe(2);
+    const a = send(s.path, { body: body(SLOW, 'staff:a') });
+    await new Promise((r) => setTimeout(r, 100));
+    const b = send(s.path, { body: body(SLOW, 'staff:b') });
+    await new Promise((r) => setTimeout(r, 100));
+    // The third sends only its headers: it's answered, and closed, without its body.
+    const { reply } = raw(s.path, HEADERS_ONLY);
+    const third = await reply;
+    expect(third).toMatch(/^HTTP\/1\.1 503/);
+    expect(third).toMatch(/connection: close/i);
+    expect(third).toMatch(/"SERVER_BUSY"/);
+    expect((await a).status).toBe(200);
+    expect((await b).status).toBe(200);
+  });
+
+  it('caps connections a little above the in-flight cap, idle ones included', async () => {
+    const s = await start({ workers: 1, queue: 1 });
+    expect(s.server.maxConnections).toBe(
+      inFlightCap({ ...DEFAULT_BUDGETS, workers: 1, queue: 1 }) + 4,
+    );
+    const idle = Array.from({ length: s.server.maxConnections }, () => connect(s.path));
+    await Promise.all(idle.map((c) => new Promise((r) => c.on('connect', r))));
+    await new Promise((r) => setTimeout(r, 50));
+    // One more is dropped at once, with no answer.
+    const { reply } = raw(s.path, HEADERS_ONLY);
+    expect(await reply).toBe('');
+    for (const c of idle) c.destroy();
+  });
+
+  it('drops a queued job whose client has gone', async () => {
+    const s = await start({ workers: 1, queue: 1, jobMs: 5_000 });
+    const a = send(s.path, { body: body(SLOW, 'staff:a') });
+    await new Promise((r) => setTimeout(r, 100));
+    const req = body(JOB, 'staff:b');
+    const { socket } = raw(
+      s.path,
+      `POST /estimate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(req)}\r\n\r\n${req}`,
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    socket.destroy();
+    await a;
+    await new Promise((r) => setTimeout(r, 100));
+    expect(s.logs.map((l) => JSON.parse(l).event)).toContain('job-dropped');
   });
 });

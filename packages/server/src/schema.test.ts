@@ -130,7 +130,9 @@ describe('the JSON Schemas', () => {
     const strings = (o: unknown, path = ''): [string, Schema][] => {
       if (typeof o !== 'object' || o === null) return [];
       const node = o as Schema;
-      const here: [string, Schema][] = node.type === 'string' ? [[path, node]] : [];
+      // `type` may be a list ("string" among others) as well as one name.
+      const types = Array.isArray(node.type) ? node.type : [node.type];
+      const here: [string, Schema][] = types.includes('string') ? [[path, node]] : [];
       return here.concat(Object.entries(node).flatMap(([k, v]) => strings(v, `${path}/${k}`)));
     };
     for (const s of [RESPONSE, ERROR]) {

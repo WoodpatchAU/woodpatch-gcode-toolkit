@@ -29,6 +29,8 @@ export interface Budgets {
   /** Node's header and whole-request timeouts, ms: a slow sender can't hold a socket. */
   readonly headersMs: number;
   readonly requestMs: number;
+  /** How often Node checks the two above (`connectionsCheckingInterval`), ms. */
+  readonly checkMs: number;
   /** Cached responses: at most this many, and this many bytes in all. */
   readonly cacheEntries: number;
   readonly cacheBytes: number;
@@ -46,11 +48,12 @@ export const DEFAULT_BUDGETS: Budgets = Object.freeze({
   stackMb: 4,
   busyRetrySeconds: 5,
   scopeRetrySeconds: 10,
-  // Receiving the request (25 MB over a local socket takes well under a second). Then
-  // parsing, queueMs and jobMs: the whole answer within 10 + 5 + 20 s and the parse,
-  // inside the caller's 40 s.
+  // Receiving the request (25 MB over a local socket takes well under a second), with
+  // Node checking the timeouts every checkMs. Then parsing, queueMs and jobMs: the whole
+  // answer within 10 + 1 + 5 + 5 + 20 = 41 s, inside the caller's 45 s (ADR-0045).
   headersMs: 10_000,
   requestMs: 10_000,
+  checkMs: 1_000,
   cacheEntries: 1_000,
   cacheBytes: 64 * 1024 * 1024,
 });
@@ -63,9 +66,14 @@ export const DEFAULT_BUDGETS: Budgets = Object.freeze({
  */
 export const PARSE_ALLOWANCE_MS = 5_000;
 
-/** The longest the server takes to answer, from the first byte of the request. */
+/**
+ * The longest the server takes to answer one request, from its first byte: receiving it
+ * (Node notices a timeout up to checkMs late), parsing, waiting for a worker, running.
+ * Per request: big parses queued ahead of it on the main thread come on top, which the
+ * in-flight cap (workers + queue) bounds.
+ */
 export function serverWorstMs(b: Budgets): number {
-  return b.requestMs + PARSE_ALLOWANCE_MS + b.queueMs + b.jobMs;
+  return b.requestMs + b.checkMs + PARSE_ALLOWANCE_MS + b.queueMs + b.jobMs;
 }
 
 /**

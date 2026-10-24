@@ -127,6 +127,12 @@ export class WorkerPool {
       this.#event(oom ? 'worker-out-of-memory' : 'worker-error');
       this.#replace(slot, oom ? 'ESTIMATE_BUDGET_EXCEEDED' : 'INTERNAL');
     });
+    // A reply that can't be deserialised is a bug, not a budget: INTERNAL.
+    worker.on('messageerror', () => {
+      if (slot.worker !== worker || this.#closed) return;
+      this.#event('worker-message-error');
+      this.#replace(slot, 'INTERNAL');
+    });
     worker.on('exit', () => {
       // Exits we caused (a replacement, close) are from a worker no longer the slot's.
       if (slot.worker !== worker || this.#closed) return;
@@ -143,7 +149,8 @@ export class WorkerPool {
     if (!slot.ready && ++this.#startFailures >= MAX_START_FAILURES) {
       this.#broken = true;
       this.#event('workers-failing');
-      void this.close();
+      // ADR-0045: a pool that gave up answers INTERNAL, queued or running alike.
+      void this.close('INTERNAL');
       return;
     }
     slot.ready = false;
@@ -199,8 +206,12 @@ export class WorkerPool {
     }
   }
 
-  /** Runs one estimate, or says at once why it can't. Never rejects. */
-  submit(job: Omit<Job, 'id'>): Promise<Done> {
+  /**
+   * Runs one estimate, or says at once why it can't. Never rejects. If `gone` aborts
+   * while the job still waits for a worker (its client left), the job is dropped: it
+   * would only hold a worker for an answer nobody reads. A running job finishes.
+   */
+  submit(job: Omit<Job, 'id'>, gone?: AbortSignal): Promise<Done> {
     const now = Date.now();
     const busy = (code: 'SERVER_BUSY' | 'SCOPE_BUSY'): Promise<Done> =>
       Promise.resolve({ outcome: { kind: 'error', code }, queueMs: 0, runMs: 0 });
@@ -229,34 +240,41 @@ export class WorkerPool {
         this.#start(idle, p);
         return;
       }
-      p.timer = setTimeout(() => {
+      const unqueue = (): void => {
         const at = this.#queue.indexOf(p);
         if (at === -1) return;
         this.#queue.splice(at, 1);
+        clearTimeout(p.timer);
         this.#release(job.scope);
         resolve({
           outcome: { kind: 'error', code: 'SERVER_BUSY' },
           queueMs: Date.now() - now,
           runMs: 0,
         });
-      }, this.#b.queueMs);
+      };
+      p.timer = setTimeout(unqueue, this.#b.queueMs);
+      gone?.addEventListener('abort', () => {
+        if (this.#queue.includes(p)) this.#event('job-dropped');
+        unqueue();
+      });
       this.#queue.push(p);
     });
   }
 
   /**
    * Stops taking work and ends the workers. Anything queued or still running answers
-   * SERVER_BUSY, which the caller may retry: no request is left without an answer.
+   * `code`: SERVER_BUSY on a stop (the caller may retry), INTERNAL when the pool gave up.
+   * No request is left without an answer.
    */
-  async close(): Promise<void> {
+  async close(code: 'SERVER_BUSY' | 'INTERNAL' = 'SERVER_BUSY'): Promise<void> {
     this.#closed = true;
     for (const p of this.#queue.splice(0)) {
       clearTimeout(p.timer);
       this.#release(p.job.scope);
-      p.resolve({ outcome: { kind: 'error', code: 'SERVER_BUSY' }, queueMs: 0, runMs: 0 });
+      p.resolve({ outcome: { kind: 'error', code }, queueMs: 0, runMs: 0 });
     }
     for (const slot of this.#slots) {
-      if (slot.pending) this.#finish(slot, { kind: 'error', code: 'SERVER_BUSY' });
+      if (slot.pending) this.#finish(slot, { kind: 'error', code });
     }
     await Promise.all(this.#slots.map((s) => s.worker.terminate()));
   }

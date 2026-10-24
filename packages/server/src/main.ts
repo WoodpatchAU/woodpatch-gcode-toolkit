@@ -16,7 +16,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DEFAULT_BUDGETS } from './budgets.js';
+import { DEFAULT_BUDGETS, serverWorstMs } from './budgets.js';
 import { ResponseCache } from './cache.js';
 import { BUILD } from './contract.js';
 import { createEstimateServer } from './http.js';
@@ -77,9 +77,20 @@ server.on('error', () => {
   process.exit(1);
 });
 // Listen once the workers are up: systemd holds connections on the socket until then.
-void pool
-  .ready()
-  .then(() => server.listen({ fd: SD_LISTEN_FDS_START }, () => logger.event('start', { workers })));
+void pool.ready().then(() =>
+  server.listen({ fd: SD_LISTEN_FDS_START }, () => {
+    // Node listens as happily on a TCP socket, and PrivateNetwork= doesn't restrict a
+    // socket systemd passes in. Only a Unix socket is ADR-0040's boundary. Node reports
+    // an inet socket as { address, port }, and a Unix one as its path, or null when it
+    // was passed in by fd.
+    const address = server.address();
+    if (address !== null && typeof address !== 'string') {
+      logger.event('not-a-unix-socket');
+      process.exit(1);
+    }
+    logger.event('start', { workers });
+  }),
+);
 
 // A stop: no new connections; what's in flight finishes (or answers SERVER_BUSY), then
 // the workers end. The outer bound is every budget in turn, plus a margin.
@@ -88,7 +99,8 @@ const stop = (): void => {
   if (stopping) return;
   stopping = true;
   logger.event('stop');
-  const limit = budgets.requestMs + budgets.queueMs + budgets.jobMs + 5_000;
+  // The longest answer still owed, plus a margin. 5d-3's TimeoutStopSec= exceeds it.
+  const limit = serverWorstMs(budgets) + 5_000;
   setTimeout(() => process.exit(0), limit).unref();
   server.close(() => {
     void pool.close().then(() => process.exit(0));

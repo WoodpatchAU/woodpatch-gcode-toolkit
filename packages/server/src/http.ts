@@ -85,12 +85,22 @@ function readBody(req: IncomingMessage): Promise<Buffer | 'too-large'> {
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
+/** Requests in flight, from the moment one arrives: every worker busy, and a full queue. */
+export function inFlightCap(b: Budgets): number {
+  return b.workers + b.queue;
+}
+
 export function createEstimateServer(parts: ServerParts): Server {
   const { pool, logger, cache, budgets, build } = parts;
+  const cap = inFlightCap(budgets);
+  let inFlight = 0;
   const server = createServer(
     {
       headersTimeout: budgets.headersMs,
       requestTimeout: budgets.requestMs,
+      // Node checks both timeouts only this often (30 s by default): without it a slow
+      // sender could hold a request for 40 s, not 10, and break the budget chain.
+      connectionsCheckingInterval: budgets.checkMs,
     },
     (req, res) => {
       const log: RequestLog = { status: 0, bytes: 0 };
@@ -109,7 +119,22 @@ export function createEstimateServer(parts: ServerParts): Server {
         // A body past the cap is never read to its end: the connection goes.
         if (closeAfter) res.on('finish', () => req.destroy());
       };
-      handle(req, res, log, fail)
+      // Bounded across connections BEFORE any body is read: otherwise many 25 MB uploads
+      // at once would all be buffered and parsed on the main thread, which has no heap
+      // limit of its own, and its timers (the job budgets) would run late.
+      if (inFlight >= cap) {
+        fail('SERVER_BUSY', true);
+        logger.request(log);
+        return;
+      }
+      inFlight++;
+      // A client gone before its answer: a job still waiting for a worker is dropped.
+      const gone = new AbortController();
+      res.on('close', () => {
+        inFlight--;
+        if (!res.writableFinished) gone.abort();
+      });
+      handle(req, res, log, fail, gone.signal)
         .catch(() => {
           if (!res.headersSent) fail('INTERNAL');
           else res.destroy();
@@ -123,6 +148,7 @@ export function createEstimateServer(parts: ServerParts): Server {
     res: ServerResponse,
     log: RequestLog,
     fail: (code: ErrorCode, closeAfter?: boolean) => void,
+    gone: AbortSignal,
   ): Promise<void> {
     if (req.url !== '/estimate') return fail('NOT_FOUND');
     if (req.method !== 'POST') {
@@ -170,13 +196,10 @@ export function createEstimateServer(parts: ServerParts): Server {
 
     // The record goes as JSON text: its content hash is of the parsed values, so the
     // worker reads the same record and checks it gets the same hash.
-    const done = await pool.submit({
-      scope,
-      gcode,
-      machine: JSON.stringify(record),
-      recordHash,
-      build,
-    });
+    const done = await pool.submit(
+      { scope, gcode, machine: JSON.stringify(record), recordHash, build },
+      gone,
+    );
     log.queueMs = done.queueMs;
     log.runMs = done.runMs;
     if (done.outcome.kind === 'error') return fail(done.outcome.code);
@@ -186,5 +209,8 @@ export function createEstimateServer(parts: ServerParts): Server {
     log.cached = false;
   }
 
+  // A backstop below the in-flight cap's own answer: idle keep-alive connections count
+  // too, so a little room above it.
+  server.maxConnections = cap + 4;
   return server;
 }

@@ -48,8 +48,9 @@ export class Logger {
     this.#scopeKey = this.#derive('scope-id');
   }
 
-  // Each purpose gets its own key. A scope can't contain ":", so "gcode:<scope>" can
-  // never equal "scope-id".
+  // Each purpose gets its own key. Every per-scope info starts with the fixed "gcode:",
+  // and the pseudonyms' info is exactly "scope-id", which doesn't: so no scope's key can
+  // be the pseudonyms' key. (A scope may itself contain ":", as in "staff:1".)
   #derive(info: string): Buffer {
     return Buffer.from(hkdfSync('sha256', this.#secret, Buffer.alloc(0), info, 32));
   }

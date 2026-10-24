@@ -1,7 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
 // SPDX-License-Identifier: MIT
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { connect } from 'node:net';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,13 +39,17 @@ const GOOD_ENV = { WP_GCODE_BUILD: 'test-1', CREDENTIALS_DIRECTORY: creds };
  * Runs main.js with LISTEN_PID set to its own pid (a shell that execs it keeps the pid),
  * so the startup checks after it can be tested without a socket.
  */
-function runAsActivated(env: Record<string, string>): { status: number | null; stderr: string } {
+function runAsActivated(
+  env: Record<string, string>,
+  fd3: 'ignore' | 'pipe' | number = 'ignore',
+): { status: number | null; stdout: string; stderr: string } {
   const r = spawnSync('sh', ['-c', `LISTEN_PID=$$ exec "${process.execPath}" "${MAIN}"`], {
     env: { PATH: process.env['PATH'] ?? '', ...env },
     encoding: 'utf8',
     timeout: 10_000,
+    stdio: ['ignore', 'pipe', 'pipe', fd3],
   });
-  return { status: r.status, stderr: r.stderr };
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
 describe('main.js refuses to start', () => {
@@ -78,10 +91,20 @@ describe('main.js refuses to start', () => {
     }
   });
 
-  it('when fd 3 is no listening socket', () => {
-    const r = runAsActivated({ ...GOOD_ENV, LISTEN_FDS: '1' });
-    expect(r.status).toBe(1);
-    expect(r.stderr).not.toMatch(/at |Error/);
+  it('when fd 3 is no listening socket: closed, a regular file, or a pipe', () => {
+    const file = join(dir, 'not-a-socket');
+    writeFileSync(file, '');
+    const fd = openSync(file, 'r');
+    try {
+      for (const fd3 of ['ignore', fd, 'pipe'] as const) {
+        const r = runAsActivated({ ...GOOD_ENV, LISTEN_FDS: '1' }, fd3);
+        expect(r.status, String(fd3)).toBe(1);
+        expect(r.stderr).not.toMatch(/at |Error/);
+        expect(r.stdout).not.toMatch(/"start"/);
+      }
+    } finally {
+      closeSync(fd);
+    }
   });
 });
 
@@ -151,5 +174,32 @@ describe.skipIf(!hasActivate)('main.js under socket activation', () => {
       .split('\n')
       .map((l) => JSON.parse(l).event);
     expect(events).toEqual(['start', 'request', 'stop']);
+  });
+
+  it('refuses a TCP socket, which is no part of ADR-0040', async () => {
+    const port = 40_000 + Math.floor(Math.random() * 20_000);
+    const env = ['-E', 'WP_GCODE_BUILD=test-1', '-E', `CREDENTIALS_DIRECTORY=${creds}`];
+    const child = spawn(ACTIVATE, ['-l', `127.0.0.1:${port}`, ...env, process.execPath, MAIN], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const out: string[] = [];
+    child.stdout.on('data', (c: Buffer) => out.push(c.toString()));
+    const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
+    // systemd-socket-activate starts the service on the first connection.
+    for (let i = 0; i < 50; i++) {
+      const ok = await new Promise<boolean>((r) => {
+        const c = connect(port, '127.0.0.1', () => r(true)).on('error', () => r(false));
+        c.on('connect', () => c.destroy());
+      });
+      if (ok) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(await exited).toBe(1);
+    const events = out
+      .join('')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l).event);
+    expect(events).toEqual(['not-a-unix-socket']);
   });
 });
