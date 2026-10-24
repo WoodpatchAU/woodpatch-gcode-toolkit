@@ -2665,3 +2665,105 @@ user-defined controller (custom dialects) comes later, as an additive field.
 **Consequences.** The estimator reads only this record, and its numbers can always be
 traced to a source. The format is frozen once signed off; anything needed later arrives
 as an optional field in a new revision, or as version 2.
+
+## ADR-0043: The machining-time estimator
+
+**Status:** Accepted, 2026-10-23. The reviewer's GO on the outline (decisions a-f, with
+conditions), and the storing application owner's view on (f). Parcel 5b. Its inputs are ADR-0041's
+machine record and its output follows ADR-0041's contract.
+
+**Context.** The estimate feeds quotes (plan §4.3). Wrongness is expensive: a quietly low
+estimate prices every job at a loss. So the estimator is explicit about its model,
+says what it doesn't know, and is tuned by calibration (5c), not by hand.
+
+**Decision.**
+
+- **Where (a).** `estimateTime(result, machine, options)` in core, beside `checkTravel`,
+  dependency-free. `machine` is plain numbers (`EstimateMachine`); the server (5d) maps
+  the validated record onto it, with a test there that every field the estimator needs
+  has exactly one mapping. Pass the whole interpreter result: each line it refused is
+  listed as an unknown (`LINE_REFUSED`).
+- **The motion model: trapezoidal** (constant acceleration; Masso 5.13 has no S-curve,
+  so the record's `jerk` is unused).
+  - A move's top speed is its feed, capped by each axis's maximum velocity projected onto
+    it. Its acceleration is each axis's limit projected onto it, the tightest, times the
+    calibration's accelFactor.
+  - **Arcs are one segment each (c)**, at their true length, with the centripetal limit
+    sqrt(a * r) and their tangents at each end for the junctions. Controllers tessellate
+    arcs and slow at the chord junctions, so this is **optimistic on arc-dense programs**.
+    The calibration's timeFactor absorbs it, and 5c's residual report splits arc-heavy
+    from linear jobs, so a drift shows as evidence rather than as tuning.
+  - **Corners:** GRBL's junction deviation, `v = sqrt(a * delta * s / (1 - s))` with
+    `s = sin(theta/2) = sqrt((1 - cos)/2)` and `cos = -u1.u2` clamped to [-1, 1].
+    Straight on (s -> 1) is uncapped, tested before the division; a reversal is 0. Only
+    square roots, so it's bit-identical everywhere.
+  - **Planning:** a backward pass (each junction can still slow to the next), then a
+    forward pass (each is reachable from the last); each segment's time is closed-form
+    (trapezoid or triangle).
+  - **Look-ahead (b):** the machine must be able to stop by the end of the next L
+    segments, honouring every junction cap among them, as GRBL's planner does with a full
+    buffer. Unrolled, that limit is `v_j^2 <= min(P_end, min over k in the window of
+(cap_k^2 + P_k)) - P_j`, with P the prefix sums of 2 * a * length. The global backward
+    pass already supplies the minimum over all later junctions, and one beyond the window
+    can't beat `P_end`. So the window adds a single bound, `v_j^2 <= P_end - P_j`, and the
+    plan is **exact, in O(n)**, not an approximation.
+    - A differential test checks it against an O(n * L) backward pass per junction (L 1 to
+      32). It uses dense, nearly straight chains of 0.1-3 mm pieces at F60000, the only
+      shape where a window binds, and asserts that a fair share of runs are slowed by it,
+      so the test can't go vacuous. Switching look-ahead off, or moving the window's end
+      either way, fails it.
+  - **Block rate:** no segment takes less than 1/blockRate s (feed starvation on dense
+    files).
+  - **Stops (v = 0):** program start and end, a dwell, a pause, a wait, a tool change, a
+    spindle or coolant change, a feed the planner can't plan (below), and an unknown.
+- **Rapids (d):** coordinated at rapidRate (like a G1, blended with its neighbours) or
+  per-axis (each axis at its own speed, rest to rest). A machine field
+  (`rapidModel`), not an assumption. Until it's measured the estimate notes it as
+  unconfirmed. The record gains it in ADR-0041 revision 2, an additive optional field,
+  with 5d.
+- **Feeds it can't turn into a speed:** inverse time (G93) takes exactly 60/F s per move.
+  Per revolution (G95) needs the spindle speed, so an unknown or 0 rpm is unknown. A
+  Masso move before any F is unknown, as is a wait for an input (M66). Unknown time
+  is never guessed and never Infinity. A per-rev feed after the spindle stopped (M5) is
+  unknown too. A zero-length move takes 0 s even under G93, which is optimistic: a
+  controller may still spend 60/F s on it.
+- **Guards.** `EstimateMachine` is a public export, so the estimator refuses (with a
+  RangeError) numbers that would make the estimate meaningless:
+  - a non-positive or non-finite velocity, acceleration, rapid rate, block rate or
+    calibration factor;
+  - a negative junction deviation or event time;
+  - a look-ahead that isn't a whole number of blocks, 1 or more (absent means unlimited,
+    so 0 is refused rather than read as unlimited).
+
+  It never reports a non-finite time as known.
+
+- **Events:** spin-up on each start, spin-down on each stop, toolChangeSeconds per change,
+  programStartSeconds once, pauseSeconds per M0, dwells as written.
+- **(e):** M1 (optional stop) counts 0 s and a spindle-speed change while running 0 s by
+  default, both overridable. Each assumption is listed in the result's `notes`, so a
+  quote shows what was assumed.
+- **(f) Incomplete estimates.** Unknown time is listed (`unknowns`, line and reason),
+  `complete` is false, and the totals cover the known part only. **An incomplete
+  estimate is never priced automatically:** the storing application keeps it as
+  "partial" with its unknown lines, and a person supplies the rest (its owner,
+  2026-10-22). This binds 5d's
+  contract, as `calibrated: false` does.
+- **Output and determinism.** Integer milliseconds, rounded once (halves up), the total
+  from the unrounded sum, with timeFactor applied before rounding. **`totalMs` is null
+  when the estimate is incomplete**: the type enforces "never priced automatically".
+  `knownMs` always holds the known part. A pure function that
+  sums in program order (the moves between two stops are planned at the stop, so
+  per-tool time follows the program too). A golden value pins the numbers: changing it must be
+  deliberate.
+- **Proof:**
+  - closed-form tests: a trapezoid, a triangle, a right-angle corner, a reversal, a
+    circle at its centripetal limit, the block-rate floor, each event, each unknown;
+  - property tests (plan §6): more feed, acceleration, junction deviation, look-ahead or
+    block rate never makes it slower; collinear pieces take as long as one move;
+  - the look-ahead differential test, a golden value, and a linear-time test. The input
+    is bounded by `interpret`'s limits.
+
+**Consequences.** The estimator is a model, not a measurement. Its error before
+calibration is unknown, and 5c fits it on the router. The plan's target is ±5% on at
+least five real jobs. Upstream's R10 file (a customer job, in the private fixtures
+repository) is used there, not here.
