@@ -4,6 +4,10 @@
 /**
  * One estimate, from a parsed request to the response body (ADR-0044). Pure and
  * synchronous: the HTTP layer (5d-2) runs it in a worker, inside its budgets.
+ *
+ * It can throw: on a broken invariant (checked below), from `mapRecord`, or from core
+ * (a RangeError). The HTTP layer must answer ANY throw with INTERNAL and its fixed
+ * message, and never return or log the error's message or stack (ADR-0044).
  */
 
 import {
@@ -15,7 +19,7 @@ import {
   type EstimateUnknown,
   type Severity,
 } from '@woodpatch/gcode-core';
-import { MAX_LISTED, REQUEST_VERSION, type EstimateRequest } from './contract.js';
+import { BUILD, MAX_LISTED, REQUEST_VERSION, boundText, type EstimateRequest } from './contract.js';
 import { echoRecord, mapRecord, type RecordEcho } from './map.js';
 
 /** A list cut at MAX_LISTED entries, with how many there were. */
@@ -55,7 +59,7 @@ export interface EstimateResponse {
     calibrated: boolean;
     perTool: Listed<{ tool: number | null; ms: number }>;
     unknowns: Listed<EstimateUnknown>;
-    notes: string[];
+    notes: Listed<string>;
   };
   /** The travel check's warnings (ADR-0042): each one certain. None means only that. */
   travel: Listed<Finding>;
@@ -67,15 +71,18 @@ function listed<T, U>(all: readonly T[], map: (t: T) => U): Listed<U> {
   return { count: all.length, items: all.slice(0, MAX_LISTED).map(map) };
 }
 
+// A message may quote the G-code (a long comment, say): cut to MAX_TEXT, so a response
+// stays bounded whatever the input.
 const finding = (d: Diagnostic): Finding => ({
   severity: d.severity,
   code: d.code,
-  message: d.message,
+  message: boundText(d.message),
   line: d.line,
-  ...(d.file !== undefined ? { file: d.file } : {}),
+  ...(d.file !== undefined ? { file: boundText(d.file) } : {}),
 });
 
 export function handleEstimate(request: EstimateRequest, build: string): EstimateResponse {
+  if (!BUILD.test(build)) throw new Error(`build must be 1-128 printable ASCII characters`);
   const { machine, travel, dialect } = mapRecord(request.record);
   const program = parse(request.gcode);
   // No resolveProgram: a request is one file, so a call to another file is refused,
@@ -85,6 +92,11 @@ export function handleEstimate(request: EstimateRequest, build: string): Estimat
   // A run cut short always reports the error that cut it, so it's never complete.
   // Checked rather than assumed: an estimate priced from half a job is the costly bug.
   if (!result.completed && e.complete) throw new Error('a cut-short run gave a complete estimate');
+  // ADR-0044's two biconditionals, which the caller checks too: a total exactly when
+  // complete, and calibrated exactly when the record says so.
+  if (e.complete !== (e.totalMs !== null)) throw new Error('complete and totalMs disagree');
+  const recordCalibrated = request.record.calibration.status === 'calibrated';
+  if (e.calibrated !== recordCalibrated) throw new Error('calibrated and the record disagree');
 
   const diagnostics = [...program.diagnostics, ...result.diagnostics].sort(
     (a, b) => a.line - b.line,
@@ -104,7 +116,7 @@ export function handleEstimate(request: EstimateRequest, build: string): Estimat
       calibrated: e.calibrated,
       perTool: listed(e.perTool, (t) => ({ tool: t.tool, ms: t.ms })),
       unknowns: listed(e.unknowns, (u) => ({ ...u })),
-      notes: [...e.notes],
+      notes: listed(e.notes, boundText),
     },
     travel: listed(checkTravel(result.steps, travel), finding),
     diagnostics: listed(diagnostics, finding),

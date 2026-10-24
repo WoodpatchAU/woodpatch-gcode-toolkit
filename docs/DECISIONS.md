@@ -2944,13 +2944,20 @@ message; an integer, not a float; "unknown", not a partial figure that looks who
 
 **Decision.**
 
-- **Transport** (ADR-0040; built in 5d-2): `POST /estimate`, `Content-Type:
-application/json`, over the server's Unix socket.
+- **Transport** (ADR-0040; built in 5d-2): `POST /estimate` with a JSON body
+  (`Content-Type: application/json`), over the server's Unix socket. The socket's
+  owner, group and mode ARE the access control: it's `0660`, in a directory only root
+  and the caller's group can reach (ADR-0040's `/run/wp-gcode/`), never a
+  world-writable one such as `/tmp`.
+  Nothing else on the host can connect. The socket's path is the caller's deployment
+  configuration, not part of this contract.
 - **The request, version 1:** a JSON object with exactly four fields, all required:
   - `v`: `1`;
   - `scope`: an opaque token chosen by the caller, `^[A-Za-z0-9:_-]{1,64}$` (for example
     one per customer or staff account). The server never parses it and never logs it raw
-    (ADR-0040's per-scope HMAC). It keys the fair share and the cache;
+    (ADR-0040's per-scope HMAC). It keys the fair share and the cache. A client that
+    checks the pattern with PCRE (PHP's `preg_match`) must use `\z` or the `D` modifier:
+    there, `$` also matches before a final newline;
   - `gcode`: the program's text;
   - `machine`: the machine record's JSON text, as a string (ADR-0041's wire form).
 - **Every check, in a fixed order,** so one request always gets the same code:
@@ -2960,7 +2967,8 @@ application/json`, over the server's Unix socket.
   2. it's UTF-8 (a fatal decoder), and one strict JSON value (ADR-0041's parser: a
      repeated key, a lone surrogate or too deep a nesting is refused);
   3. it's an object with `v`, and `v` is 1. The version comes before every other check,
-     so a later version's request is judged by that version's rules;
+     so a later version's request is judged by that version's rules. (`1.0` and `1e0`
+     are JSON's number 1, so they're version 1 too);
   4. no field but the four. `toolId` and `materialId` are reserved, and refused until a
      later version adds them. So is any hash: the server hashes the record itself;
   5. `scope` matches its pattern; `gcode` and `machine` are strings;
@@ -2973,8 +2981,9 @@ application/json`, over the server's Unix socket.
   refused, and the estimate is incomplete. Any new field is a new version of the request.
 - **The response (200), version 1:**
   - `v: 1`;
-  - `build`: the deployed server and core build that computed it. It's opaque, and
-    changes whenever the deployed code does (5d-2 sets its form). The caller stores it
+  - `build`: the deployed server and core build that computed it: 1-128 printable ASCII
+    characters, no spaces. It's opaque, and changes whenever the deployed code does
+    (5d-2 sets its form). The caller stores it
     with the estimate, so a re-estimate after a deployment can be told apart;
   - `record`: ADR-0041's echo. That's `id`, `version`, `revision`, `calibration`
     (`"calibrated"` or `"uncalibrated"`) and `hash`. The hash is SHA-256 of the record's
@@ -2984,8 +2993,7 @@ application/json`, over the server's Unix socket.
     - `totalMs`: integer milliseconds, or null unless `complete`;
     - `knownMs`, `cutMs`, `rapidMs`, `eventMs` and `dwellMs`: integer milliseconds;
     - `complete` and `calibrated`;
-    - `perTool` and `unknowns`, as lists;
-    - `notes`, the assumptions a quote should show.
+    - `perTool`, `unknowns` and `notes` (the assumptions a quote should show), as lists.
 
     The times are ADR-0043's, rounded once;
 
@@ -2993,9 +3001,19 @@ application/json`, over the server's Unix socket.
     that nothing certain was found, never "fits";
   - `diagnostics`: the parser's and the interpreter's findings, in line order.
   - **Every list is `{ count, items }`,** with at most 100 items and `count` saying how
-    many there were. That bounds the response for any input. A finding carries
-    `severity`, `code`, `message`, `line` and `file` (for a subprogram), but no character
-    span.
+    many there were. **Every text is at most 500 code points:** a finding's message and
+    file, a note, an error's message, a problem's path and message. A longer one is cut,
+    by code point (never splitting a surrogate pair), and ends `...`. Together these
+    bound the response for any input. A finding carries `severity`, `code`, `message`,
+    `line` and `file` (for a subprogram), but no character span.
+  - **Two biconditionals hold in every response:**
+    - `estimate.complete` is true exactly when `estimate.totalMs` is an integer;
+    - `record.calibration` is `"calibrated"` exactly when `estimate.calibrated` is true.
+
+    The server checks both before it answers (a breach is INTERNAL), and the response
+    schema states both (`if`/`then`/`else`). The caller treats a response breaking either
+    as a contract breach, and fails the job.
+
   - **A finding's message may quote the G-code.** It goes back to the caller only, and is
     never logged (ADR-0040).
 - **What binds the caller** (restating ADR-0041 and ADR-0043):
@@ -3005,7 +3023,8 @@ application/json`, over the server's Unix socket.
   - **never price from `knownMs`.** It's an "at least", for a person who supplies the
     rest;
   - **an uncalibrated estimate needs a person,** whatever its completeness.
-- **Errors:** the body is `{ v: 1, error: { code, message, problems? } }`. The caller
+- **Errors:** the body is `{ v: 1, error: { code, message, problems? } }`. `problems`
+  (MACHINE_INVALID only) holds the first 100 of the record's problems. The caller
   branches on `code`, never on the message, whose text isn't part of the contract. Messages
   never quote the request's content. The one exception is an unknown field's name,
   escaped to printable ASCII and cut at 64 characters. **The codes are a closed list.** A
@@ -3029,7 +3048,13 @@ application/json`, over the server's Unix socket.
 
   The two retriable answers carry `Retry-After` (seconds). The caller retries them
   boundedly, with backoff (ADR-0040: never a retry storm). Anything else fails the job,
-  with the code on the quote.
+  with the code on the quote. A test holds `ERRORS` equal to a literal copy of this table,
+  and to the table as it stands in this file.
+
+- **Any throw is INTERNAL** (an acceptance check on 5d-2). `handleEstimate` can throw: on
+  a broken invariant, from the mapping, or from core (a RangeError). The HTTP layer
+  answers any throw with INTERNAL and a fixed message. It never returns or logs the
+  error's message or its stack, which could quote the input.
 
 - **The record's mapping** (`mapRecord`, in the server, so that core and the record's
   package stay independent of each other):

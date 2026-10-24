@@ -33,11 +33,12 @@
           ]
         },
         "message": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 500
         },
         "problems": {
           "type": "array",
-          "description": "MACHINE_INVALID only: why the record was refused (ADR-0041).",
+          "description": "MACHINE_INVALID only: the first 100 of the record's problems (ADR-0041).",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -47,13 +48,16 @@
                 "type": "string"
               },
               "path": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               "message": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               }
             }
-          }
+          },
+          "maxItems": 100
         }
       }
     }

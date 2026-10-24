@@ -8,15 +8,18 @@
  */
 
 export {
+  BUILD,
   ERRORS,
   MAX_GCODE_BYTES,
   MAX_GCODE_LINES,
   MAX_LISTED,
   MAX_REQUEST_BYTES,
+  MAX_TEXT,
   REQUEST_FIELDS,
   REQUEST_VERSION,
   RESERVED_FIELDS,
   SCOPE,
+  boundText,
   countLines,
   parseRequest,
   type ErrorBody,

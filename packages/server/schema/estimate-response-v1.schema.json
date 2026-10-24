@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/WoodpatchAU/woodpatch-gcode-toolkit/packages/server/schema/estimate-response-v1.schema.json",
   "title": "Woodpatch /estimate response (200), version 1",
-  "description": "ADR-0044. Every time is an integer number of milliseconds. Price only from estimate.totalMs, and only when estimate.complete and estimate.calibrated are both true; knownMs is an 'at least', never a price input.",
+  "description": "ADR-0044. Every time is an integer number of milliseconds. Price only from estimate.totalMs, and only when estimate.complete and estimate.calibrated are both true; knownMs is an 'at least', never a price input. Two rules hold in every response: estimate.complete is true exactly when estimate.totalMs is an integer, and record.calibration is \"calibrated\" exactly when estimate.calibrated is true. A response breaking either is a contract breach.",
   "type": "object",
   "additionalProperties": false,
   "required": ["v", "build", "record", "estimate", "travel", "diagnostics"],
@@ -12,7 +12,9 @@
     },
     "build": {
       "type": "string",
-      "description": "The deployed server and core build that computed this. Opaque: store it with the estimate."
+      "description": "The deployed server and core build that computed this: 1-128 printable ASCII characters, no spaces. Opaque: store it with the estimate.",
+      "maxLength": 128,
+      "pattern": "^[\\x21-\\x7e]{1,128}$"
     },
     "record": {
       "description": "What the estimate was computed for (ADR-0041's echo).",
@@ -185,11 +187,45 @@
           }
         },
         "notes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Assumptions a quote should show."
+          "description": "Assumptions a quote should show, each at most 500 characters.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count", "items"],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "items": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "string",
+                "maxLength": 500
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "complete": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "totalMs": {
+            "type": "integer"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "totalMs": {
+            "type": "null"
+          }
         }
       }
     },
@@ -218,14 +254,16 @@
                 "type": "string"
               },
               "message": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               "line": {
                 "type": "integer",
                 "minimum": 1
               },
               "file": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               }
             }
           }
@@ -257,16 +295,51 @@
                 "type": "string"
               },
               "message": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               "line": {
                 "type": "integer",
                 "minimum": 1
               },
               "file": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               }
             }
+          }
+        }
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "record": {
+        "properties": {
+          "calibration": {
+            "const": "calibrated"
+          }
+        }
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "estimate": {
+        "properties": {
+          "calibrated": {
+            "const": true
+          }
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "estimate": {
+        "properties": {
+          "calibrated": {
+            "const": false
           }
         }
       }

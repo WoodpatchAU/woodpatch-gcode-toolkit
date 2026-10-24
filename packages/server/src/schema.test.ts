@@ -29,6 +29,10 @@ const KNOWN = new Set([
   'minimum',
   'maximum',
   'pattern',
+  'maxLength',
+  'if',
+  'then',
+  'else',
 ]);
 
 /**
@@ -59,11 +63,20 @@ function check(s: Schema, v: unknown, path = ''): string[] {
   if (typeof v === 'string' && s.pattern && !new RegExp(s.pattern as string, 'u').test(v)) {
     out.push(`${path}: pattern`);
   }
+  // JSON Schema counts code points.
+  if (typeof v === 'string' && typeof s.maxLength === 'number') {
+    if (Array.from(v).length > s.maxLength) out.push(`${path}: too long`);
+  }
+  if (s.if) {
+    const branch = check(s.if as Schema, v, path).length === 0 ? s.then : s.else;
+    if (branch) out.push(...check(branch as Schema, v, path));
+  }
   if (Array.isArray(v)) {
     if (typeof s.maxItems === 'number' && v.length > s.maxItems) out.push(`${path}: too long`);
     if (s.items) v.forEach((x, i) => out.push(...check(s.items as Schema, x, `${path}[${i}]`)));
   }
-  if (t === 'object' && typeof v === 'object' && v !== null) {
+  // Applied to any object value, as JSON Schema does, with or without "type" (if/then).
+  if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
     const props = (s.properties ?? {}) as Record<string, Schema>;
     for (const r of (s.required ?? []) as string[]) {
       if (!Object.hasOwn(v, r)) out.push(`${path}.${r}: missing`);
@@ -141,6 +154,26 @@ describe('the JSON Schemas', () => {
       [],
     );
     expect(check(RESPONSE, { ...res, extra: 1 })).not.toEqual([]);
+    expect(check(RESPONSE, { ...res, build: 'has a space' })).not.toEqual([]);
+    expect(check(RESPONSE, { ...res, build: 'b'.repeat(129) })).not.toEqual([]);
+  });
+
+  it("express ADR-0044's two biconditionals", () => {
+    const r = parseRequest(body(PROGRAMS[0] as string));
+    if (!r.ok) throw new Error(r.error.error.code);
+    const res = JSON.parse(JSON.stringify(handleEstimate(r.request, 'b')));
+    expect(res.estimate.complete).toBe(true);
+    expect(check(RESPONSE, res)).toEqual([]);
+    const est = (o: object) => ({ ...res, estimate: { ...res.estimate, ...o } });
+    // A total exactly when complete.
+    expect(check(RESPONSE, est({ totalMs: null }))).not.toEqual([]);
+    expect(check(RESPONSE, est({ complete: false }))).not.toEqual([]);
+    expect(check(RESPONSE, est({ complete: false, totalMs: null }))).toEqual([]);
+    // Calibrated exactly when the record says so.
+    expect(check(RESPONSE, est({ calibrated: true }))).not.toEqual([]);
+    const rec = { ...res.record, calibration: 'calibrated' };
+    expect(check(RESPONSE, { ...res, record: rec })).not.toEqual([]);
+    expect(check(RESPONSE, { ...est({ calibrated: true }), record: rec })).toEqual([]);
   });
 
   it('list exactly the error codes, and describe the error bodies', () => {

@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ERRORS,
   MAX_GCODE_BYTES,
+  MAX_LISTED,
   MAX_GCODE_LINES,
   countLines,
   parseRequest,
@@ -96,6 +97,21 @@ describe('parseRequest', () => {
     );
   });
 
+  it("lists at most MAX_LISTED of a record's problems", () => {
+    // 300 unknown fields, each a problem of its own.
+    const extra = Array.from({ length: 300 }, (_, i) => `"x${i}":1`).join(',');
+    const r = parseRequest(body({ ...GOOD, machine: RECORD.replace(/}\s*$/, `,${extra}}`) }));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.error.code).toBe('MACHINE_INVALID');
+    expect(r.error.error.problems).toHaveLength(MAX_LISTED);
+  });
+
+  it('accepts 1.0 and 1e0 as version 1: JSON has one number 1', () => {
+    expect(codeOf(body(GOOD).replace('"v":1', '"v":1.0'))).toBe('ok');
+    expect(codeOf(body(GOOD).replace('"v":1', '"v":1e0'))).toBe('ok');
+  });
+
   it('refuses a bad record, listing why', () => {
     const r = parseRequest(body({ ...GOOD, machine: RECORD.replace('"generic"', '"grbl"') }));
     expect(r.ok).toBe(false);
@@ -138,6 +154,33 @@ describe('countLines', () => {
 });
 
 describe('ERRORS', () => {
+  it("is exactly ADR-0044's table: every code, status and retriable flag", () => {
+    // A literal copy of the ADR's table: the caller branches on these, so drift is red.
+    expect(ERRORS).toEqual({
+      REQUEST_TOO_LARGE: { status: 413, retriable: false },
+      REQUEST_MALFORMED: { status: 400, retriable: false },
+      REQUEST_INVALID: { status: 400, retriable: false },
+      REQUEST_VERSION: { status: 400, retriable: false },
+      MACHINE_INVALID: { status: 422, retriable: false },
+      PROGRAM_TOO_LARGE: { status: 413, retriable: false },
+      ESTIMATE_BUDGET_EXCEEDED: { status: 422, retriable: false },
+      SERVER_BUSY: { status: 503, retriable: true },
+      SCOPE_BUSY: { status: 429, retriable: true },
+      METHOD_NOT_ALLOWED: { status: 405, retriable: false },
+      NOT_FOUND: { status: 404, retriable: false },
+      UNSUPPORTED_MEDIA_TYPE: { status: 415, retriable: false },
+      INTERNAL: { status: 500, retriable: false },
+    });
+  });
+
+  it("matches the table in ADR-0044's text", () => {
+    const adr = readFileSync(new URL('../../../docs/DECISIONS.md', import.meta.url), 'utf8');
+    const section = adr.slice(adr.indexOf('## ADR-0044'));
+    const rows = [...section.matchAll(/^\s*\| ([A-Z_]+) +\| (\d{3}) +\| (yes|no) +\|/gm)];
+    const table = rows.map((m) => [m[1], { status: Number(m[2]), retriable: m[3] === 'yes' }]);
+    expect(Object.fromEntries(table)).toEqual(ERRORS);
+  });
+
   it('only busy answers are retriable, and every status is an HTTP error status', () => {
     const retriable = Object.entries(ERRORS)
       .filter(([, e]) => e.retriable)

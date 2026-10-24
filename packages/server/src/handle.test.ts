@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { MAX_LISTED, parseRequest, type EstimateRequest } from './contract.js';
+import { MAX_LISTED, MAX_TEXT, boundText, parseRequest, type EstimateRequest } from './contract.js';
 import { handleEstimate, type EstimateResponse } from './handle.js';
 
 const EXAMPLE = JSON.parse(
@@ -60,7 +60,7 @@ describe('handleEstimate', () => {
   it('is uncalibrated, and says the rapid model is assumed, for a v1 record', () => {
     const r = run(JOB);
     expect(r.estimate.calibrated).toBe(false);
-    expect(r.estimate.notes.join('\n')).toMatch(/rapid/i);
+    expect(r.estimate.notes.items.join('\n')).toMatch(/rapid/i);
   });
 
   it('applies a calibrated record, and says so', () => {
@@ -113,6 +113,41 @@ describe('handleEstimate', () => {
     const found = r.diagnostics.items.map((d) => `${d.line} ${d.code.split('_')[0]}`);
     expect(found[0]).toBe('1 SEMANTIC');
     expect(found).toContain('2 SYNTAX');
+  });
+
+  it('holds the two biconditionals on every program here', () => {
+    for (const [src, record] of [
+      [JOB, EXAMPLE],
+      [JOB, CALIBRATED],
+      ['G1 X1 Q1\n', EXAMPLE],
+      ['G1 X1 Q1\n', CALIBRATED],
+      ['', EXAMPLE],
+    ] as const) {
+      const r = run(src, record);
+      expect(r.estimate.complete).toBe(r.estimate.totalMs !== null);
+      expect(r.estimate.calibrated).toBe(r.record.calibration === 'calibrated');
+    }
+  });
+
+  it('cuts a long message, by code point, so a response stays bounded', () => {
+    // Core quotes the number it read: 1,201 digits here.
+    const r = run(`G0 X1${' 1'.repeat(1200)}\n`);
+    const long = r.diagnostics.items.find((d) => d.message.endsWith('...'));
+    expect(long).toBeDefined();
+    expect(Array.from(long?.message ?? '').length).toBe(MAX_TEXT);
+    // A surrogate pair at the cut stays whole.
+    const cut = boundText(`${'a'.repeat(MAX_TEXT - 4)}${'\u{1F600}'.repeat(10)}`);
+    expect(Array.from(cut).length).toBe(MAX_TEXT);
+    expect(/[\ud800-\udfff]/.test(cut.replace(/\u{1F600}/gu, ''))).toBe(false);
+    expect(boundText('short')).toBe('short');
+  });
+
+  it('refuses a build that is not 1-128 printable ASCII characters', () => {
+    const req = request(JOB);
+    for (const b of ['', 'a b', 'b'.repeat(129), 'é']) {
+      expect(() => handleEstimate(req, b), JSON.stringify(b)).toThrow(/build/);
+    }
+    expect(handleEstimate(req, 'b'.repeat(128)).build).toHaveLength(128);
   });
 
   it('is deterministic: the same request gives the same bytes', () => {

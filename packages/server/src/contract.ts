@@ -37,7 +37,26 @@ export const MAX_GCODE_LINES = 2_000_000;
 /** At most this many entries of any list in a response; each list says how many there were. */
 export const MAX_LISTED = 100;
 
-/** An opaque caller-chosen token: never parsed, never logged raw (ADR-0040's HMAC). */
+/** The longest text in a response, in code points: messages, notes, paths. */
+export const MAX_TEXT = 500;
+/** `build`: printable ASCII, no spaces, at most 128 characters. */
+export const BUILD = /^[\x21-\x7e]{1,128}$/;
+
+/**
+ * `text`, cut to MAX_TEXT code points with "..." at the end. Cut by code point, so a
+ * surrogate pair is never split into a lone surrogate (which has no UTF-8 form).
+ */
+export function boundText(text: string): string {
+  if (text.length <= MAX_TEXT) return text;
+  const points = Array.from(text);
+  return points.length <= MAX_TEXT ? text : `${points.slice(0, MAX_TEXT - 3).join('')}...`;
+}
+
+/**
+ * An opaque caller-chosen token: never parsed, never logged raw (ADR-0040's HMAC).
+ * JavaScript's `$` matches only at the end; a PCRE client copying this pattern must
+ * use `\z` or the `D` modifier, or its `$` also matches before a final newline.
+ */
 export const SCOPE = /^[A-Za-z0-9:_-]{1,64}$/;
 
 /** The request's fields: all required. Anything else is refused. */
@@ -86,7 +105,7 @@ export interface ErrorBody {
   error: {
     code: ErrorCode;
     message: string;
-    /** MACHINE_INVALID only. */
+    /** MACHINE_INVALID only: the first MAX_LISTED of the record's problems. */
     problems?: MachineProblem[];
   };
 }
@@ -102,10 +121,20 @@ export interface EstimateRequest {
 
 export type ParseResult = { ok: true; request: EstimateRequest } | { ok: false; error: ErrorBody };
 
-const fail = (code: ErrorCode, message: string, problems?: MachineProblem[]): ParseResult => ({
-  ok: false,
-  error: { v: REQUEST_VERSION, error: problems ? { code, message, problems } : { code, message } },
-});
+const fail = (code: ErrorCode, message: string, problems?: MachineProblem[]): ParseResult => {
+  // At most MAX_LISTED problems (a 16 KB record can hold hundreds of unknown fields),
+  // each with bounded text.
+  const listed = problems?.slice(0, MAX_LISTED).map((p) => ({
+    code: p.code,
+    path: boundText(p.path),
+    message: boundText(p.message),
+  }));
+  const error = { code, message: boundText(message) };
+  return {
+    ok: false,
+    error: { v: REQUEST_VERSION, error: listed ? { ...error, problems: listed } : error },
+  };
+};
 
 const JSON_MESSAGES: Record<JsonErrorCode, string> = {
   JSON_SYNTAX: 'is not valid JSON',
@@ -142,6 +171,7 @@ export function parseRequest(text: string): ParseResult {
   }
 
   // The version first: a request of another version is judged by that version's rules.
+  // (JSON's 1.0 and 1e0 are the number 1, so they're version 1 too.)
   if (!Object.hasOwn(body, 'v')) return fail('REQUEST_INVALID', 'The request needs "v"');
   if (body.v !== REQUEST_VERSION) {
     return fail('REQUEST_VERSION', `This server reads version ${REQUEST_VERSION} of the request`);
