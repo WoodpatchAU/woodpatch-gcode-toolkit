@@ -2671,8 +2671,8 @@ as an optional field in a new revision, or as version 2.
 **Status:** Accepted, 2026-10-22. The reviewer's GO on the outline, with its three
 decisions and five additions. Revised after three rounds of review (2026-10-22 to
 10-24): thirteen classes of program got a false "certain" result, and each is now a
-regression test. Implements ADR-0041's "the
-travel check uses what is knowable".
+regression test. The operator chose the rotation contract on 2026-10-24 (below).
+Implements ADR-0041's "the travel check uses what is knowable".
 
 **Context.** A preview doesn't know the operator's work offsets (G54 and the rest), any
 G92 offset left on the controller by an earlier program, a tool length offset left
@@ -2728,8 +2728,9 @@ machine terms.
     leftover G92. **By contract it's assumed absent** (`coordinateRotationAtStart`,
     default `'none'`). The caller passes `'unknown'` when it can't say, and then no X/Y
     claim is made. The alternative, X/Y claims that hold under any rotation (comparing
-    XY distance with the travel's diagonal), was weighed and would find far less. It's
-    put to the operator in the PR.
+    XY distance with the travel's diagonal), was weighed and would find far less.
+    **The operator ruled for the contract on 2026-10-24:** the shop treats "no coordinate
+    rotation left on at program start" as a rule.
   - **A refused line** (any error) may still run on a controller, an unsupported code
     for instance. Everything known before it is forgotten.
   - **A modal code in a refused line may stay in force on the controller,** so
