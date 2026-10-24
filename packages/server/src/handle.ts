@@ -115,7 +115,11 @@ export function handleEstimate(request: EstimateRequest, build: string): Estimat
       complete: e.complete,
       calibrated: e.calibrated,
       perTool: listed(e.perTool, (t) => ({ tool: t.tool, ms: t.ms })),
-      unknowns: listed(e.unknowns, (u) => ({ ...u })),
+      unknowns: listed(e.unknowns, (u) => ({
+        line: u.line,
+        reason: u.reason,
+        ...(u.file !== undefined ? { file: boundText(u.file) } : {}),
+      })),
       notes: listed(e.notes, boundText),
     },
     travel: listed(checkTravel(result.steps, travel), finding),

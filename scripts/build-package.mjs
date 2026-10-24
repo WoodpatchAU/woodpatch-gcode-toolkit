@@ -48,7 +48,9 @@ await build({
   external,
   bundle: true,
   format: 'esm',
-  platform: 'neutral',
+  // `woodpatch.platform: "node"` for a package that runs only in Node (the server):
+  // node: built-ins then stay imports. Everything else runs anywhere.
+  platform: pkg.woodpatch?.platform ?? 'neutral',
   target: 'es2022',
   sourcemap: true,
   banner: { js: licenceBanner(pkg.name) },

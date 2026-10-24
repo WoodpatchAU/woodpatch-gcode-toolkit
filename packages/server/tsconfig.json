@@ -3,9 +3,9 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    // No ambient Node types here yet: the contract and the mapping are pure, so they
-    // run anywhere. The HTTP layer (5d-2) adds Node. Tests use tsconfig.test.json.
-    "types": []
+    // The server runs only in Node. (The contract, the mapping and the handler use no
+    // Node API, and import none: keep it that way, so they run anywhere.)
+    "types": ["node"]
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts"]
