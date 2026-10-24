@@ -2682,10 +2682,16 @@ says what it doesn't know, and is tuned by calibration (5c), not by hand.
     (trapezoid or triangle).
   - **Look-ahead (b):** the machine must be able to stop by the end of the next L
     segments, honouring every junction cap among them, as GRBL's planner does with a full
-    buffer. Unrolled, that's a sliding-window minimum of `cap_k^2 + P_k` (P the prefix
-    sums of 2 * a * length), so a monotonic deque computes it **exactly in O(n)**, not as
-    an approximation. A differential test against an O(n * L) backward pass per junction
-    (L from 1 to 32, random programs) agrees to within the one millisecond rounding.
+    buffer. Unrolled, that limit is `v_j^2 <= min(P_end, min over k in the window of
+(cap_k^2 + P_k)) - P_j`, with P the prefix sums of 2 * a * length. The global backward
+    pass already supplies the minimum over all later junctions, and one beyond the window
+    can't beat `P_end`. So the window adds a single bound, `v_j^2 <= P_end - P_j`, and the
+    plan is **exact, in O(n)**, not an approximation.
+    - A differential test checks it against an O(n * L) backward pass per junction (L 1 to
+      32). It uses dense, nearly straight chains of 0.1-3 mm pieces at F60000, the only
+      shape where a window binds, and asserts that a fair share of runs are slowed by it,
+      so the test can't go vacuous. Switching look-ahead off, or moving the window's end
+      either way, fails it.
   - **Block rate:** no segment takes less than 1/blockRate s (feed starvation on dense
     files).
   - **Stops (v = 0):** program start and end, a dwell, a pause, a wait, a tool change, a
@@ -2698,7 +2704,19 @@ says what it doesn't know, and is tuned by calibration (5c), not by hand.
 - **Feeds it can't turn into a speed:** inverse time (G93) takes exactly 60/F s per move.
   Per revolution (G95) needs the spindle speed, so an unknown or 0 rpm is unknown. A
   Masso move before any F is unknown, as is a wait for an input (M66). Unknown time
-  is never guessed and never Infinity.
+  is never guessed and never Infinity. A per-rev feed after the spindle stopped (M5) is
+  unknown too. A zero-length move takes 0 s even under G93, which is optimistic: a
+  controller may still spend 60/F s on it.
+- **Guards.** `EstimateMachine` is a public export, so the estimator refuses (with a
+  RangeError) numbers that would make the estimate meaningless:
+  - a non-positive or non-finite velocity, acceleration, rapid rate, block rate or
+    calibration factor;
+  - a negative junction deviation or event time;
+  - a look-ahead that isn't a whole number of blocks, 1 or more (absent means unlimited,
+    so 0 is refused rather than read as unlimited).
+
+  It never reports a non-finite time as known.
+
 - **Events:** spin-up on each start, spin-down on each stop, toolChangeSeconds per change,
   programStartSeconds once, pauseSeconds per M0, dwells as written.
 - **(e):** M1 (optional stop) counts 0 s and a spindle-speed change while running 0 s by
@@ -2711,8 +2729,11 @@ says what it doesn't know, and is tuned by calibration (5c), not by hand.
   2026-10-22). This binds 5d's
   contract, as `calibrated: false` does.
 - **Output and determinism.** Integer milliseconds, rounded once (halves up), the total
-  from the unrounded sum, with timeFactor applied before rounding. A pure function that
-  sums in program order. A golden value pins the numbers: changing it must be
+  from the unrounded sum, with timeFactor applied before rounding. **`totalMs` is null
+  when the estimate is incomplete**: the type enforces "never priced automatically".
+  `knownMs` always holds the known part. A pure function that
+  sums in program order (the moves between two stops are planned at the stop, so
+  per-tool time follows the program too). A golden value pins the numbers: changing it must be
   deliberate.
 - **Proof:**
   - closed-form tests: a trapezoid, a triangle, a right-angle corner, a reversal, a

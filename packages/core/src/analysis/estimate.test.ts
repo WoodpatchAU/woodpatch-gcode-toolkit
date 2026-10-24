@@ -11,6 +11,7 @@ import {
   segmentTime,
   type EstimateMachine,
   type InterpretOptions,
+  type Step,
 } from '../index.js';
 
 /** A fictional machine: 10 m/min and 500 mm/s² on every axis, 0.02 mm deviation. */
@@ -76,12 +77,14 @@ describe('junctionSpeed', () => {
 
 describe('estimateTime: motion', () => {
   it('a long straight move', () => {
-    expect(est('G1 X1000 F6000\n').totalMs).toBe(10_200);
+    const r = est('G1 X1000 F6000\n');
+    expect(r.knownMs).toBe(10_200);
+    expect(r.totalMs).toBe(10_200); // complete: the total is the known time
   });
 
   it('collinear pieces take as long as one move', () => {
-    const one = est('G1 X1000 F6000\n').totalMs;
-    const pieces = est('G1 X100 F6000\nG1 X350\nG1 X700\nG1 X1000\n').totalMs;
+    const one = est('G1 X1000 F6000\n').knownMs;
+    const pieces = est('G1 X100 F6000\nG1 X350\nG1 X700\nG1 X1000\n').knownMs;
     expect(pieces).toBe(one);
   });
 
@@ -89,12 +92,12 @@ describe('estimateTime: motion', () => {
     const s = Math.SQRT1_2;
     const vj = Math.sqrt((500 * 0.02 * s) / (1 - s));
     const expected = segmentTime(100, 0, vj, 100, 500) + segmentTime(100, vj, 0, 100, 500);
-    expect(est('G1 X100 F6000\nG1 Y100\n').totalMs).toBe(Math.floor(expected * 1000 + 0.5));
+    expect(est('G1 X100 F6000\nG1 Y100\n').knownMs).toBe(Math.floor(expected * 1000 + 0.5));
   });
 
   it('a reversal stops', () => {
     const expected = 2 * segmentTime(100, 0, 0, 100, 500);
-    expect(est('G1 X100 F6000\nG1 X0\n').totalMs).toBe(Math.floor(expected * 1000 + 0.5));
+    expect(est('G1 X100 F6000\nG1 X0\n').knownMs).toBe(Math.floor(expected * 1000 + 0.5));
   });
 
   it('a circle runs at its centripetal limit', () => {
@@ -112,8 +115,8 @@ describe('estimateTime: motion', () => {
     const lines = ['G1 F6000'];
     for (let i = 1; i <= 1000; i++) lines.push(`G1 X${(i * 0.01).toFixed(2)}`);
     const src = lines.join('\n') + '\n';
-    expect(est(src).totalMs).toBeLessThan(1000);
-    expect(est(src, m({ blockRate: 100 })).totalMs).toBeGreaterThanOrEqual(10_000);
+    expect(est(src).knownMs).toBeLessThan(1000);
+    expect(est(src, m({ blockRate: 100 })).knownMs).toBeGreaterThanOrEqual(10_000);
   });
 
   it('rapids: coordinated at the rapid rate, or each axis on its own', () => {
@@ -151,7 +154,8 @@ describe('estimateTime: feeds it cannot turn into a speed', () => {
     const g93 = est('G93 G1 X10 F0\n');
     expect(g93.unknowns.map((x) => x.reason)).toEqual(['LINE_REFUSED']);
     expect(g93.complete).toBe(false);
-    expect(Number.isFinite(g93.totalMs)).toBe(true);
+    expect(Number.isFinite(g93.knownMs)).toBe(true);
+    expect(g93.totalMs).toBeNull();
     const g95 = est('S0 M3\nG95 G1 X100 F0.1\n');
     expect(g95.unknowns.map((x) => x.reason)).toEqual(['RPM_UNKNOWN']);
   });
@@ -182,7 +186,7 @@ describe('estimateTime: events', () => {
     const r = est('T1 M6\nS1000 M3\nG4 P2\nM0\nM5\nM30\n', ev);
     expect(r.eventMs).toBe((30 + 60 + 8 + 20 + 6) * 1000);
     expect(r.dwellMs).toBe(2000);
-    expect(r.totalMs).toBe(126_000);
+    expect(r.knownMs).toBe(126_000);
   });
 
   it('M1 and spindle-speed changes are 0 by default, overridable, and noted', () => {
@@ -208,22 +212,22 @@ describe('estimateTime: events', () => {
 
 describe('estimateTime: calibration and rounding', () => {
   it('the time factor scales everything', () => {
-    const base = est('G1 X1000 F6000\n').totalMs;
+    const base = est('G1 X1000 F6000\n').knownMs;
     const cal = est('G1 X1000 F6000\n', m({ calibration: { timeFactor: 1.1, accelFactor: 1 } }));
-    expect(cal.totalMs).toBe(Math.floor(base * 1.1 + 0.5));
+    expect(cal.knownMs).toBe(Math.floor(base * 1.1 + 0.5));
     expect(cal.calibrated).toBe(true);
   });
 
   it('the acceleration factor scales acceleration', () => {
     const slow = est('G1 X10 F6000\n', m({ calibration: { timeFactor: 1, accelFactor: 0.5 } }));
-    expect(slow.totalMs).toBeGreaterThan(est('G1 X10 F6000\n').totalMs);
+    expect(slow.knownMs).toBeGreaterThan(est('G1 X10 F6000\n').knownMs);
   });
 
   it('rounds once, halves up, and the total from the unrounded sum', () => {
     // Two dwells of 0.0005 s: each rounds to 1 ms alone, the total to 1 ms too.
     const r = est('G4 P0.0005\nG4 P0.0005\n');
     expect(r.dwellMs).toBe(1);
-    expect(r.totalMs).toBe(1);
+    expect(r.knownMs).toBe(1);
   });
 
   it('a golden value: the same total on every platform', () => {
@@ -249,12 +253,54 @@ describe('estimateTime: calibration and rounding', () => {
       spinDownSeconds: 8,
       calibration: { timeFactor: 1.05, accelFactor: 0.9 },
     });
-    expect(est(src, machine).totalMs).toMatchInlineSnapshot(`27287`);
+    expect(est(src, machine).knownMs).toMatchInlineSnapshot(`27287`);
   });
 
   it('is deterministic', () => {
     const src = 'G1 X10 Y3 F3000\nG2 X20 Y3 I5 J0\nG1 Z-5\nG0 Z5\n';
     expect(est(src)).toEqual(est(src));
+  });
+});
+
+describe('estimateTime: guards', () => {
+  const steps = interpret(parse('G1 X10 F100\n')).steps;
+  it.each([
+    [
+      'acceleration 0',
+      m({ axes: { X: { maxVelocity: 1000, acceleration: 0 }, Y: AXIS, Z: AXIS } }),
+    ],
+    ['maxVelocity 0', m({ axes: { X: { maxVelocity: 0, acceleration: 500 }, Y: AXIS, Z: AXIS } })],
+    ['accelFactor 0', m({ calibration: { timeFactor: 1, accelFactor: 0 } })],
+    ['timeFactor NaN', m({ calibration: { timeFactor: Number.NaN, accelFactor: 1 } })],
+    ['junctionDeviation below 0', m({ junctionDeviation: -1 })],
+    ['lookahead 2.5', m({ lookahead: 2.5 })],
+    ['lookahead 0 (say unlimited by leaving it out)', m({ lookahead: 0 })],
+    ['blockRate 0', m({ blockRate: 0 })],
+    ['a negative event time', m({ pauseSeconds: -1 })],
+  ])('refuses %s', (_, machine) => {
+    expect(() => estimateTime(steps, machine)).toThrow(RangeError);
+  });
+
+  it('an incomplete estimate has no total, only the known part', () => {
+    const r = est('G1 X100 F6000\nG95 G1 X200 F0.1\n');
+    expect(r.complete).toBe(false);
+    expect(r.totalMs).toBeNull();
+    expect(r.knownMs).toBeGreaterThan(0);
+  });
+
+  it('a per-rev feed after M5 is unknown: a stopped spindle has no speed', () => {
+    const r = est('S1000 M3\nM5\nG95 G1 X10 F0.1\n');
+    expect(r.unknowns.map((x) => x.reason)).toEqual(['RPM_UNKNOWN']);
+  });
+
+  it('a per-axis rapid on an axis the machine does not describe is unknown, not a crash', () => {
+    const r = est('G0 X100 A0.00000000001\n', m({ rapidModel: 'per-axis' }));
+    expect(r.unknowns.map((x) => x.reason)).toEqual(['AXIS_NOT_DESCRIBED']);
+  });
+
+  it('per-tool time follows program order', () => {
+    const r = est('T1 M6\nG1 X100 F6000\nG4 P1\nT2 M6\nG1 X0\n');
+    expect(r.perTool.map((x) => x.tool)).toEqual([1, 2]);
   });
 });
 
@@ -271,7 +317,7 @@ const program = fc
   )
   .map((pts) => `G1 F3000\n${pts.map(([x, y, z]) => `G1 X${x} Y${y} Z${z}`).join('\n')}\n`);
 
-const total = (src: string, machine: EstimateMachine) => est(src, machine).totalMs;
+const total = (src: string, machine: EstimateMachine) => est(src, machine).knownMs;
 
 describe('estimateTime: monotonic in every capability', () => {
   it.each([
@@ -371,66 +417,92 @@ function exactLookaheadTime(
 }
 
 describe('estimateTime: the look-ahead window', () => {
-  it('equals an exact windowed plan, O(n * L), for L from 1 to 32', () => {
-    let worst = 0;
-    fc.assert(
-      fc.property(
-        fc.array(
-          fc.tuple(fc.integer({ min: -200, max: 200 }), fc.integer({ min: -200, max: 200 })),
-          { minLength: 2, maxLength: 60 },
+  // Dense, nearly straight chains of short pieces at a high feed: the only shape where a
+  // window binds (with long segments and slow corners, stopping distances are tiny and
+  // the window never matters, which made an earlier version of this test vacuous).
+  const chain = fc
+    .tuple(
+      fc.array(
+        fc.tuple(
+          fc.double({ min: 0.1, max: 3, noNaN: true }),
+          fc.double({ min: -0.08, max: 0.08, noNaN: true }),
         ),
-        fc.integer({ min: 1, max: 32 }),
-        (pts, L) => {
-          const src = `G1 F6000\n${pts.map(([x, y]) => `G1 X${x} Y${y}`).join('\n')}\n`;
-          const steps = interpret(parse(src)).steps;
-          const approx =
-            estimateTime(
-              steps,
-              m({
-                lookahead: L,
-                axes: {
-                  X: { maxVelocity: 1e9, acceleration: 500 },
-                  Y: { maxVelocity: 1e9, acceleration: 500 },
-                  Z: AXIS,
-                },
-              }),
-            ).cutMs / 1000;
-          const exact = exactLookaheadTime(pts, 100, 500, 0.02, L);
-          // The deque gives the windowed plan exactly: equal to the reference's O(n * L)
-          // loop, up to the estimator's one rounding (to the millisecond).
-          expect(Math.abs(approx - exact)).toBeLessThanOrEqual(0.0005 + 1e-9);
-          worst = Math.max(worst, Math.abs(exact - approx) / exact);
-        },
+        { minLength: 2, maxLength: 80 },
       ),
-      { numRuns: 400 },
+      fc.double({ min: 0, max: Math.PI * 2, noNaN: true }),
+    )
+    .map(([pieces, heading]) => {
+      let x = 0;
+      let y = 0;
+      let h = heading;
+      return pieces.map(([len, turn]) => {
+        h += turn;
+        x += len * Math.cos(h);
+        y += len * Math.sin(h);
+        return [Number(x.toFixed(4)), Number(y.toFixed(4))] as const;
+      });
+    });
+  const fast = { maxVelocity: 1e9, acceleration: 500 };
+  const machineL = (L?: number) =>
+    m({ ...(L !== undefined ? { lookahead: L } : {}), axes: { X: fast, Y: fast, Z: AXIS } });
+
+  it('equals an exact windowed plan, O(n * L), for L from 1 to 32, and binds', () => {
+    let runs = 0;
+    let bound = 0;
+    fc.assert(
+      fc.property(chain, fc.integer({ min: 1, max: 32 }), (pts, L) => {
+        const src = `G1 F60000\n${pts.map(([x, y]) => `G1 X${x} Y${y}`).join('\n')}\n`;
+        const steps = interpret(parse(src)).steps;
+        const windowed = estimateTime(steps, machineL(L)).cutMs / 1000;
+        const unlimited = estimateTime(steps, machineL()).cutMs / 1000;
+        const exact = exactLookaheadTime(pts, 1000, 500, 0.02, L);
+        // Exact up to the estimator's one rounding (to the millisecond).
+        expect(Math.abs(windowed - exact)).toBeLessThanOrEqual(0.0005 + 1e-9);
+        runs++;
+        if (windowed > unlimited + 0.0005) bound++;
+      }),
+      { numRuns: 1000, seed: 20261024 },
     );
-    if (process.env['ESTIMATE_STATS'])
-      process.stderr.write(`look-ahead worst relative error: ${worst}\n`);
-    expect(worst).toBeLessThan(1e-3);
+    // Not vacuous: in a fair share of runs the window really slowed the plan.
+    expect(bound).toBeGreaterThan(runs * 0.05);
   });
 });
 
 describe('estimateTime: performance', () => {
+  // Steps built directly (parsing a 160k-line program would dominate the time), with
+  // its own timeout: this checks the shape (linear), not the speed of the runner.
+  const steps = (n: number): Step[] => {
+    const out: Step[] = [];
+    const zero = { X: 0, Y: 0, Z: 0, A: 0, B: 0, C: 0 };
+    let from = zero;
+    for (let i = 0; i < n; i++) {
+      const to = { ...zero, X: i % 500, Y: (i * 7) % 400 };
+      out.push({
+        kind: 'linear',
+        line: i + 1,
+        rapid: false,
+        from,
+        to,
+        feed: { mode: 'per-minute', mmPerMinute: 6000 },
+        offset: zero,
+      });
+      from = to;
+    }
+    return out;
+  };
   it('is linear in the number of moves', () => {
-    const prog = (n: number) => {
-      const lines = ['G1 F6000'];
-      for (let i = 0; i < n; i++) lines.push(`G1 X${i % 500} Y${(i * 7) % 400}`);
-      return interpret(parse(lines.join('\n')), { limits: { maxSteps: 1e7, maxBlocks: 1e7 } })
-        .steps;
-    };
-    const small = prog(20_000);
-    const big = prog(320_000);
-    const time = (steps: Parameters<typeof estimateTime>[0], machine: EstimateMachine) => {
+    const small = steps(10_000);
+    const big = steps(160_000);
+    const time = (input: Step[], machine: EstimateMachine) => {
       let best = Infinity;
       for (let k = 0; k < 3; k++) {
         const t = performance.now();
-        estimateTime(steps, machine);
+        estimateTime(input, machine);
         best = Math.min(best, performance.now() - t);
       }
       return best;
     };
     const machine = m({ lookahead: 200 });
-    const ratio = time(big, machine) / time(small, machine);
-    expect(ratio).toBeLessThan(16 * 4);
-  });
+    expect(time(big, machine) / time(small, machine)).toBeLessThan(16 * 4);
+  }, 60_000);
 });

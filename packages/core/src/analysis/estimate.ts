@@ -11,7 +11,7 @@
  *   onto the move, and for an arc by its centripetal limit sqrt(a * r);
  * - its acceleration is every axis's limit projected onto the move, the tightest;
  * - corners slow to GRBL's junction-deviation speed;
- * - a backward pass (every move can still stop where it must, and within the lookahead)
+ * - a backward pass (every move can still stop where it must, and within the look-ahead)
  *   and a forward pass (every move accelerates from its entry) fix each junction's
  *   speed; each move's time is then closed-form;
  * - a block-rate floor: no move takes less than 1/blockRate s.
@@ -58,7 +58,7 @@ export interface EstimateMachine {
   readonly junctionDeviation: number;
   /** Blocks per second the controller can process. Absent: no floor. */
   readonly blockRate?: number;
-  /** Blocks of look-ahead. Absent: unlimited. */
+  /** Blocks of look-ahead, a positive integer. Absent: unlimited. */
   readonly lookahead?: number;
   readonly spinUpSeconds: number;
   readonly spinDownSeconds: number;
@@ -93,8 +93,14 @@ export interface EstimateUnknown {
 }
 
 export interface EstimateResult {
-  /** Integer milliseconds, rounded once from the unrounded sum: the figure to price from. */
-  readonly totalMs: number;
+  /**
+   * Integer milliseconds, rounded once from the unrounded sum: the figure to price from.
+   * NULL when the estimate is incomplete, so a partial figure can't be priced by
+   * accident (ADR-0043: an incomplete estimate is never priced automatically).
+   */
+  readonly totalMs: number | null;
+  /** The time that IS known, complete or not (equal to totalMs when complete). */
+  readonly knownMs: number;
   /** Motion at a programmed feed, and rapids. */
   readonly cutMs: number;
   readonly rapidMs: number;
@@ -197,6 +203,45 @@ export function junctionSpeed(
 
 // ── The estimate ─────────────────────────────────────────────────────────
 
+/** Refuses machine numbers that would make the estimate meaningless (NaN, Infinity). */
+function checkMachine(machine: EstimateMachine, options: EstimateOptions): void {
+  const fail = (what: string): never => {
+    throw new RangeError(`EstimateMachine: ${what}`);
+  };
+  const positive = (v: number | undefined, what: string): void => {
+    if (v !== undefined && !(Number.isFinite(v) && v > 0))
+      fail(`${what} must be a finite number above 0`);
+  };
+  const nonNegative = (v: number | undefined, what: string): void => {
+    if (v !== undefined && !(Number.isFinite(v) && v >= 0))
+      fail(`${what} must be a finite number, 0 or more`);
+  };
+  for (const [a, lim] of Object.entries(machine.axes)) {
+    if (lim === undefined) continue;
+    positive(lim.maxVelocity, `${a}.maxVelocity`);
+    positive(lim.acceleration, `${a}.acceleration`);
+  }
+  positive(machine.rapidRate, 'rapidRate');
+  nonNegative(machine.junctionDeviation, 'junctionDeviation');
+  positive(machine.blockRate, 'blockRate');
+  if (
+    machine.lookahead !== undefined &&
+    !(Number.isSafeInteger(machine.lookahead) && machine.lookahead >= 1)
+  )
+    fail('lookahead must be a whole number of blocks, 1 or more (absent: unlimited)');
+  nonNegative(machine.spinUpSeconds, 'spinUpSeconds');
+  nonNegative(machine.spinDownSeconds, 'spinDownSeconds');
+  nonNegative(machine.toolChangeSeconds, 'toolChangeSeconds');
+  nonNegative(machine.programStartSeconds, 'programStartSeconds');
+  nonNegative(machine.pauseSeconds, 'pauseSeconds');
+  if (machine.calibration !== null) {
+    positive(machine.calibration.timeFactor, 'calibration.timeFactor');
+    positive(machine.calibration.accelFactor, 'calibration.accelFactor');
+  }
+  nonNegative(options.optionalStopSeconds, 'optionalStopSeconds');
+  nonNegative(options.speedChangeSeconds, 'speedChangeSeconds');
+}
+
 /**
  * Estimates how long the machine takes to run a program. Pass the whole result of
  * `interpret`: a line it refused (an error) is time this estimate can't account for, so
@@ -209,6 +254,8 @@ export function estimateTime(
   options: EstimateOptions = {},
 ): EstimateResult {
   const steps = 'steps' in input ? input.steps : input;
+  // Validated here too: this is a public export, whatever the caller's mapping did.
+  checkMachine(machine, options);
   const accelFactor = machine.calibration?.accelFactor ?? 1;
   const timeFactor = machine.calibration?.timeFactor ?? 1;
   const optionalStop = options.optionalStopSeconds ?? 0;
@@ -266,16 +313,23 @@ export function estimateTime(
     }
     segments = [];
   };
-  /** A stop: the planner is at rest before the next move. */
+  /**
+   * A stop: the planner is at rest before the next move, so the moves so far are
+   * planned now (a stop is a hard zero anyway). Their time is then added in program
+   * order, before whatever the stop adds.
+   */
   const stop = (): void => {
     stopPending = true;
+    flush();
   };
 
   for (const step of steps) {
     switch (step.kind) {
       case 'linear':
       case 'arc': {
-        const seg = segmentOf(step, machine, axisLimit, accelFactor, rpm, tool, unknown);
+        // A per-rev feed needs a turning spindle: stopped, its last speed doesn't count.
+        const rpmNow = spindleOn ? rpm : null;
+        const seg = segmentOf(step, machine, axisLimit, accelFactor, rpmNow, tool, unknown);
         if (seg === null) {
           stop();
           continue;
@@ -348,15 +402,20 @@ export function estimateTime(
     notes.push(`${pausesM0} pause(s) (M0) counted as ${machine.pauseSeconds} s each`);
 
   const ms = (s: number): number => Math.floor(s * timeFactor * 1000 + 0.5);
+  const known = ms(cut + rapid + event + dwell);
+  // Validated inputs give finite times; never report a non-finite one as known.
+  if (!Number.isFinite(known)) throw new RangeError('estimateTime: the estimate is not finite');
+  const complete = unknowns.length === 0;
   return {
-    totalMs: ms(cut + rapid + event + dwell),
+    totalMs: complete ? known : null,
+    knownMs: known,
     cutMs: ms(cut),
     rapidMs: ms(rapid),
     eventMs: ms(event),
     dwellMs: ms(dwell),
     perTool: [...perTool].map(([t, s]) => ({ tool: t, ms: ms(s) })),
     unknowns,
-    complete: unknowns.length === 0,
+    complete,
     calibrated: machine.calibration !== null,
     notes,
   };
@@ -452,7 +511,11 @@ function segmentOf(
       for (let i = 0; i < DIM; i++) {
         const dist = Math.abs(d[i] as number);
         if (dist < EPS) continue;
-        const lim = axisLimit(AXES[i] as Axis) as EstimateAxis;
+        const lim = axisLimit(AXES[i] as Axis);
+        if (!lim) {
+          unknown(step, 'AXIS_NOT_DESCRIBED');
+          return null;
+        }
         t = Math.max(
           t,
           segmentTime(dist, 0, 0, lim.maxVelocity / 60, lim.acceleration * accelFactor),
@@ -526,36 +589,23 @@ function planChain(list: readonly Segment[], machine: EstimateMachine): [Segment
 
   // Look-ahead: the machine must be able to stop by the end of the next L segments,
   // honouring every junction cap among them. Unrolled, that backward pass from rest is
-  //   v_j^2 <= min over k in (j, end] of (cap_k^2 + P_k) - P_j,
-  // with P the prefix sums of 2*a*length and cap = 0 at the window's end. So it's a
-  // sliding-window minimum: a monotonic deque gives it exactly, in O(n).
+  //   v_j^2 <= min( P_end, min over k in (j, end) of (cap_k^2 + P_k) ) - P_j,
+  // with P the prefix sums of 2*a*length and end = j + L (at rest there). The global
+  // backward pass below already gives min over ALL k > j of (cap_k^2 + P_k) - P_j, and a
+  // junction beyond the window can't beat P_end (cap_k^2 + P_k >= P_k >= P_end). So the
+  // window adds just one bound, v_j^2 <= P_end - P_j, and the plan is exact, in O(n).
+  // (A differential test checks this against an O(n * L) backward pass per junction.)
   const L = machine.lookahead;
-  if (L !== undefined && L > 0 && Number.isFinite(L)) {
+  if (L !== undefined) {
     const P = new Float64Array(n + 1);
     for (let i = 0; i < n; i++) {
       const s = list[i] as Segment;
       P[i + 1] = (P[i] as number) + (s.fixed === null ? 2 * s.accel * s.length : 0);
     }
-    const energy = (k: number): number => {
-      const c = cap[k] as number;
-      return c === Infinity ? Infinity : c * c + (P[k] as number);
-    };
-    // Junctions j from the last down to 1; the window (j, j+L) slides left.
-    const deque: number[] = []; // junction indices, energies increasing from the front
-    let head = 0;
-    for (let j = n - 1; j >= 1; j--) {
-      const k = j + 1;
-      if (k < n) {
-        const e = energy(k);
-        while (deque.length > head && energy(deque[deque.length - 1] as number) >= e) deque.pop();
-        deque.push(k);
-      }
-      // Drop junctions at or past the window's end (j + L); their place is the end itself.
-      while (deque.length > head && (deque[head] as number) >= j + L) head++;
+    for (let j = 1; j < n; j++) {
       const end = Math.min(n, j + L);
-      let best = P[end] as number; // at rest at the window's end
-      if (deque.length > head) best = Math.min(best, energy(deque[head] as number));
-      cap[j] = Math.min(cap[j] as number, Math.sqrt(Math.max(0, best - (P[j] as number))));
+      const stopWithin = Math.sqrt(Math.max(0, (P[end] as number) - (P[j] as number)));
+      cap[j] = Math.min(cap[j] as number, stopWithin);
     }
   }
 
