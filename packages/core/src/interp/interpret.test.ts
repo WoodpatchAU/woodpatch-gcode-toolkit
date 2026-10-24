@@ -3,7 +3,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   LINUXCNC_INTERPRETER_RULES,
   GENERIC,
@@ -13,6 +13,11 @@ import {
   type InterpretOptions,
   type Step,
 } from '../index.js';
+
+// Some tests here run whole corpus files or thousands of property cases: about 1-2 s
+// alone, but past vitest's 5 s default when every package's suite runs at once. This
+// file checks results, not the runner's speed.
+vi.setConfig({ testTimeout: 30_000 });
 
 const run = (src: string, options?: InterpretOptions) => interpret(parse(src), options);
 const moves = (steps: readonly Step[]) =>
