@@ -23,6 +23,11 @@ export interface ServerParts {
   budgets: Budgets;
   /** ADR-0044's `build`, already checked against its pattern. */
   build: string;
+  /**
+   * True once the server is stopping: every answer from then on closes its connection,
+   * so keep-alive sockets don't hold `server.close()` open until they time out.
+   */
+  draining?: () => boolean;
 }
 
 /** The fixed message for each code the HTTP layer gives itself (the parser words its own). */
@@ -99,7 +104,13 @@ export function inFlightCap(b: Budgets): number {
 }
 
 export function createEstimateServer(parts: ServerParts): Server {
-  const { pool, logger, cache, budgets, build } = parts;
+  const { pool, logger, cache, budgets, build, draining = () => false } = parts;
+  const reply = (
+    res: ServerResponse,
+    status: number,
+    body: string,
+    extra: Record<string, string> = {},
+  ): void => send(res, status, body, draining() ? { ...extra, connection: 'close' } : extra);
   const cap = inFlightCap(budgets);
   let inFlight = 0;
   // Large bodies (over LARGE_BODY_BYTES) between arriving and their parse finishing: at
@@ -125,7 +136,7 @@ export function createEstimateServer(parts: ServerParts): Server {
           extra['retry-after'] = String(seconds);
         }
         if (closeAfter) extra['connection'] = 'close';
-        send(res, status, JSON.stringify(errorBody(code, MESSAGES[code] ?? 'Error')), extra);
+        reply(res, status, JSON.stringify(errorBody(code, MESSAGES[code] ?? 'Error')), extra);
         log.status = status;
         log.code = code;
         // A body past the cap is never read to its end: the connection goes.
@@ -212,14 +223,20 @@ export function createEstimateServer(parts: ServerParts): Server {
       return fail('SERVER_BUSY', true);
     }
 
+    // From here, every way out that won't parse frees the large slot AT ONCE: its answer
+    // may wait behind a pipelined request, and the slot would be held until then.
     const body = await readBody(req, admitLarge);
-    if (body === 'too-large') return fail('REQUEST_TOO_LARGE', true);
+    if (body === 'too-large') {
+      releaseLarge();
+      return fail('REQUEST_TOO_LARGE', true);
+    }
     if (body === 'busy') return fail('SERVER_BUSY', true);
     log.bytes = body.length;
     let text: string;
     try {
       text = decoder.decode(body);
     } catch {
+      releaseLarge();
       return fail('REQUEST_MALFORMED');
     }
 
@@ -230,7 +247,7 @@ export function createEstimateServer(parts: ServerParts): Server {
     releaseLarge();
     if (!parsed.ok) {
       const { status } = ERRORS[parsed.error.error.code];
-      send(res, status, JSON.stringify(parsed.error));
+      reply(res, status, JSON.stringify(parsed.error));
       log.status = status;
       log.code = parsed.error.error.code;
       return;
@@ -242,7 +259,7 @@ export function createEstimateServer(parts: ServerParts): Server {
     const key = cache.key({ scope, gcode, recordHash, build });
     const hit = cache.get(key);
     if (hit !== undefined) {
-      send(res, 200, hit);
+      reply(res, 200, hit);
       log.status = 200;
       log.cached = true;
       return;
@@ -258,7 +275,7 @@ export function createEstimateServer(parts: ServerParts): Server {
     log.runMs = done.runMs;
     if (done.outcome.kind === 'error') return fail(done.outcome.code);
     cache.set(key, done.outcome.body);
-    send(res, 200, done.outcome.body);
+    reply(res, 200, done.outcome.body);
     log.status = 200;
     log.cached = false;
   }

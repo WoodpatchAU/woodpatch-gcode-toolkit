@@ -19,7 +19,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DEFAULT_BUDGETS, serverWorstMs } from './budgets.js';
+import { DEFAULT_BUDGETS, serverContendedWorstMs } from './budgets.js';
 import { ResponseCache } from './cache.js';
 import { BUILD } from './contract.js';
 import { createEstimateServer } from './http.js';
@@ -61,7 +61,8 @@ if (secret.length < MIN_SECRET_BYTES)
 /** An optional whole-number setting, within its bounds, or its default. */
 function whole(name: string, min: number, max: number, fallback: number): number {
   const text = env[name];
-  const v = text === undefined ? fallback : Number(text);
+  // Digits only: Number() would also take "0x40", " 64 " and "6.4e1".
+  const v = text === undefined ? fallback : /^[0-9]{1,6}$/.test(text) ? Number(text) : NaN;
   if (!Number.isInteger(v) || v < min || v > max) {
     refuse(`${name} must be a whole number from ${min} to ${max}`);
   }
@@ -72,6 +73,8 @@ const heapMb = whole('WP_GCODE_HEAP_MB', 64, 16384, DEFAULT_BUDGETS.heapMb);
 const youngMb = whole('WP_GCODE_YOUNG_MB', 8, 1024, DEFAULT_BUDGETS.youngMb);
 const budgets = { ...DEFAULT_BUDGETS, workers, heapMb, youngMb };
 
+// Set once stopping, for either reason: every answer then closes its connection.
+let stopping = false;
 const logger = new Logger(secret, (line) => process.stdout.write(`${line}\n`));
 secret.fill(0);
 const pool = new WorkerPool(new URL('./worker.js', import.meta.url), budgets, (name, fields) => {
@@ -80,13 +83,21 @@ const pool = new WorkerPool(new URL('./worker.js', import.meta.url), budgets, (n
   // answers go out (the server stops accepting, and closes once they have), then exit,
   // so systemd restarts us under its start limits.
   if (name === 'workers-failing') {
+    stopping = true;
     setTimeout(() => process.exit(1), 2_000).unref();
     server.close(() => process.exit(1));
     server.closeIdleConnections();
   }
 });
 const cache = new ResponseCache(budgets.cacheEntries, budgets.cacheBytes);
-const server = createEstimateServer({ pool, logger, cache, budgets, build });
+const server = createEstimateServer({
+  pool,
+  logger,
+  cache,
+  budgets,
+  build,
+  draining: () => stopping,
+});
 
 server.on('error', () => {
   logger.event('server-error');
@@ -110,13 +121,13 @@ void pool.ready().then(() =>
 
 // A stop: no new connections; what's in flight finishes (or answers SERVER_BUSY), then
 // the workers end. The outer bound is every budget in turn, plus a margin.
-let stopping = false;
 const stop = (): void => {
   if (stopping) return;
   stopping = true;
   logger.event('stop');
-  // The longest answer still owed, plus a margin. 5d-3's TimeoutStopSec= exceeds it.
-  const limit = serverWorstMs(budgets) + 5_000;
+  // The longest answer still owed, contended, plus a margin: 48 + 5 = 53 s at the
+  // defaults, 56.5 s at 16 workers. The unit's TimeoutStopSec=60 exceeds it.
+  const limit = serverContendedWorstMs(budgets) + 5_000;
   setTimeout(() => process.exit(0), limit).unref();
   server.close(() => {
     void pool.close().then(() => process.exit(0));
