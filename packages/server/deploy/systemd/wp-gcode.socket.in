@@ -20,8 +20,8 @@ SocketMode=0660
 RemoveOnStop=yes
 # The group, the directory and the identity rules, before the socket exists; the socket
 # itself once it's bound. A failure fails the socket unit, which then doesn't listen.
-ExecStartPre=@PREFIX@/bundle/tripwire.sh socket-pre --group @GROUP@ --gid @GID@ --caller @CALLER_USER@ --dir /run/wp-gcode
-ExecStartPost=@PREFIX@/bundle/tripwire.sh socket-post --group @GROUP@ --gid @GID@ --caller @CALLER_USER@ --dir /run/wp-gcode --socket /run/wp-gcode/gcode.sock --unit wp-gcode.socket
+ExecStartPre=@TRIPWIRE@ socket-pre --group @GROUP@ --gid @GID@ --caller @CALLER_USER@ --dir /run/wp-gcode
+ExecStartPost=@TRIPWIRE@ socket-post --group @GROUP@ --gid @GID@ --caller @CALLER_USER@ --dir /run/wp-gcode --socket /run/wp-gcode/gcode.sock --unit wp-gcode.socket
 
 [Install]
 WantedBy=sockets.target

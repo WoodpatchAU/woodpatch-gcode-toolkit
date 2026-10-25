@@ -9,6 +9,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,7 +27,10 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** A fake bundle (BUILD, tripwire, main.js) under a prefix, and an empty --out dir. */
+/**
+ * A fake bundle (BUILD, tripwire, main.js) under a prefix, the tripwire installed apart
+ * from it, and an empty --out dir.
+ */
 function workspace(build = 'gcode-server-1.2.3+0123456789ab', track = true) {
   const base = mkdtempSync(join(tmpdir(), 'render-'));
   if (track) dirs.push(base);
@@ -38,7 +42,11 @@ function workspace(build = 'gcode-server-1.2.3+0123456789ab', track = true) {
   writeFileSync(join(bundle, 'main.js'), '');
   copyFileSync(join(DEPLOY, 'tripwire.sh'), join(bundle, 'tripwire.sh'));
   chmodSync(join(bundle, 'tripwire.sh'), 0o755);
-  return { base, bundle, out, prefix: join(base, 'prefix') };
+  const tripwire = join(base, 'libexec', 'wp-gcode-tripwire');
+  mkdirSync(join(base, 'libexec'));
+  copyFileSync(join(DEPLOY, 'tripwire.sh'), tripwire);
+  chmodSync(tripwire, 0o755);
+  return { base, bundle, out, prefix: join(base, 'prefix'), tripwire };
 }
 
 const unit = (out: string, name: string) => readFileSync(join(out, name), 'utf8');
@@ -56,6 +64,7 @@ describe('the values file', () => {
       ioWeight: 20,
       nice: 10,
       oomScoreAdjust: 900,
+      tripwire: '/usr/local/libexec/wp-gcode-tripwire',
     });
   });
 
@@ -75,6 +84,13 @@ describe('the values file', () => {
     ['no inaccessible paths', { inaccessible: [] }],
     ['17 workers', { workers: 17 }],
     ['a heap of 32 MB', { heapMb: 32 }],
+    ["nobody's gid", { gid: 65534 }],
+    ['an overflow gid', { gid: 4294967294 }],
+    ['the tripwire in the bundle', { tripwire: '/opt/wp-gcode/bundle/tripwire.sh' }],
+    ['the tripwire as the prefix', { tripwire: '/opt/wp-gcode' }],
+    // The service's /var/lib is an empty tmpfs: these don't exist there.
+    ['/var/lib as inaccessible', { inaccessible: ['/var/lib'] }],
+    ['a path under /var/lib as inaccessible', { inaccessible: ['/srv/x', '/var/lib/mysql'] }],
   ];
   it.each(bad)('refuses %s', (_, change) => {
     expect(() => readValues({ ...EXAMPLE, ...change })).toThrow(RenderError);
@@ -138,6 +154,17 @@ describe('rendering', () => {
     expect(() => render({ values, bundle: w.bundle, out: w.out, force: true })).not.toThrow();
   });
 
+  it('never writes through a symlink, dangling or not, even with --force', () => {
+    const w = workspace();
+    const values = { ...EXAMPLE, prefix: w.prefix };
+    const outside = join(w.base, 'outside');
+    symlinkSync(outside, join(w.out, 'wp-gcode.service'));
+    for (const force of [false, true]) {
+      expect(() => render({ values, bundle: w.bundle, out: w.out, force })).toThrow(/symlink/);
+    }
+    expect(spawnSync('ls', [w.base], { encoding: 'utf8' }).stdout).not.toMatch(/outside/);
+  });
+
   it("refuses a bundle whose BUILD isn't a build string", () => {
     const w = workspace('not a build');
     expect(() =>
@@ -171,11 +198,21 @@ describe('the rendered units (ADR-0040)', () => {
   // Shared by the tests below, so removed only after them all.
   const w = workspace(undefined, false);
   afterAll(() => rmSync(w.base, { recursive: true, force: true }));
-  const values = { ...EXAMPLE, prefix: w.prefix, node: process.execPath };
+  const values = { ...EXAMPLE, prefix: w.prefix, node: process.execPath, tripwire: w.tripwire };
   render({ values, bundle: w.bundle, out: w.out });
   const service = unit(w.out, 'wp-gcode.service');
   const socket = unit(w.out, 'wp-gcode.socket');
-  const lines = (text: string) => new Set(text.split('\n').map((l) => l.trim()));
+  /** Each wanted line's key appears exactly once, with exactly that value. */
+  const exactlyOnce = (text: string, want: string[]) => {
+    const all = text.split('\n').map((l) => l.trim());
+    for (const l of want) {
+      const key = l.slice(0, l.indexOf('=') + 1);
+      expect(
+        all.filter((a) => a.startsWith(key)),
+        key,
+      ).toEqual([l]);
+    }
+  };
 
   it('hold every line of the sandbox, so a later edit cannot drop one', () => {
     const want = [
@@ -215,31 +252,34 @@ describe('the rendered units (ADR-0040)', () => {
       'TasksMax=64',
       'LimitCORE=0',
     ];
-    const have = lines(service);
-    for (const l of want) expect(have.has(l), l).toBe(true);
+    exactlyOnce(service, want);
     // Deliberately absent: V8's JIT needs writable executable memory.
     expect(service).not.toMatch(/^MemoryDenyWriteExecute=/m);
-    // The tripwire runs outside the sandbox (+), as root.
-    expect(service).toMatch(/^ExecStartPre=\+\S+\/bundle\/tripwire\.sh service /m);
+    // The tripwire runs outside the sandbox (+), as root, from its own path: not the bundle.
+    const pre = service.match(/^ExecStartPre=.*$/gm) ?? [];
+    expect(pre).toHaveLength(1);
+    expect(pre[0]).toMatch(new RegExp(`^ExecStartPre=\\+${w.tripwire} service `));
+    expect(service).not.toMatch(/bundle\/tripwire/);
   });
 
   it('give the socket to root and the group only, on one Unix path', () => {
-    const have = lines(socket);
-    for (const l of [
+    exactlyOnce(socket, [
       'ListenStream=/run/wp-gcode/gcode.sock',
       'Accept=no',
       'SocketUser=root',
       'SocketGroup=wpgcode',
       'SocketMode=0660',
       'RemoveOnStop=yes',
-    ]) {
-      expect(have.has(l), l).toBe(true);
-    }
+    ]);
     expect(socket.match(/^Listen/gm)).toHaveLength(1);
-    expect(socket).toMatch(/^ExecStartPre=\S+ socket-pre /m);
+    expect(socket).toMatch(new RegExp(`^ExecStartPre=${w.tripwire} socket-pre `, 'm'));
     expect(socket).toMatch(
-      /^ExecStartPost=\S+ socket-post .*--socket \/run\/wp-gcode\/gcode\.sock/m,
+      new RegExp(
+        `^ExecStartPost=${w.tripwire} socket-post .*--socket /run/wp-gcode/gcode\\.sock`,
+        'm',
+      ),
     );
+    expect(socket).not.toMatch(/bundle\/tripwire/);
   });
 
   // systemd's own check, which CI's runners have. It warns (exit 0) on a misspelt key,

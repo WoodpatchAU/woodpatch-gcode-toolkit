@@ -3,13 +3,13 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 // The tripwire (deploy/tripwire.sh) against fixture /etc trees. The metadata it reads
-// (owners, modes, ACLs, NSS, the socket unit's listeners) comes from small shims put
-// first on PATH, since a test can't make files root-owned.
+// (owners, modes, ACLs, NSS, real paths, the socket unit's listeners) comes from small
+// shims put first on PATH, since a test can't make files root-owned.
 const TRIPWIRE = fileURLToPath(new URL('../deploy/tripwire.sh', import.meta.url));
 
 const SHIMS: Record<string, string> = {
@@ -29,7 +29,21 @@ case "$1" in
 esac`,
   systemctl: `#!/bin/sh
 cat "$TW_FIX/listen"`,
+  // A path is its own real path unless the fixture says otherwise.
+  realpath: `#!/bin/sh
+for p; do :; done
+line=$(grep -F -- "$p|" "$TW_FIX/realpath" 2>/dev/null | head -n1)
+if [ -n "$line" ]; then printf '%s\n' "\${line#*|}"; else printf '%s\n' "$p"; fi`,
 };
+
+/** Every directory above a path, up to /. */
+function ancestors(path: string): string[] {
+  const out: string[] = [];
+  for (let p = dirname(path); ; p = dirname(p)) {
+    out.push(p);
+    if (p === '/') return out;
+  }
+}
 
 interface Fixture {
   group: string;
@@ -38,8 +52,10 @@ interface Fixture {
   nssGroup: string;
   nssPasswd: string;
   sssd: string | null;
-  /** path → "uid gid mode size type" */
+  /** path → "uid gid mode size type"; every directory above a checked path, unless set, is root's 0755 */
   stat: Record<string, string>;
+  /** path → its real path, where that differs */
+  realpath: Record<string, string>;
   acl: Record<string, string>;
   listen: string;
   build: string;
@@ -88,12 +104,17 @@ function setup(change: (f: Fixture, p: Record<string, string>) => void = () => {
       [join(bundle, 'main.js')]: '0 0 644 10 regular file',
       [join(bundle, 'lib', 'worker.js')]: '0 0 644 10 regular file',
       [join(bundle, 'BUILD')]: '0 0 644 24 regular file',
+      [TRIPWIRE]: '0 0 755 9000 regular file',
     },
+    realpath: {},
     acl: {},
     listen: '/run/wp-gcode/gcode.sock (Stream)',
     build: 'gcode-server-1.0.0+abc',
   };
   change(f, p);
+  for (const path of [p.dir, p.socket, p.cred, p.node, p.bundle, TRIPWIRE]) {
+    for (const a of ancestors(path)) f.stat[a] ??= '0 0 755 4096 directory';
+  }
 
   writeFileSync(join(root, 'etc', 'group'), f.group);
   writeFileSync(join(root, 'etc', 'gshadow'), f.gshadow);
@@ -114,6 +135,12 @@ function setup(change: (f: Fixture, p: Record<string, string>) => void = () => {
       .join(''),
   );
   writeFileSync(join(fix, 'listen'), `${f.listen}\n`);
+  writeFileSync(
+    join(fix, 'realpath'),
+    Object.entries(f.realpath)
+      .map(([k, v]) => `${k}|${v}\n`)
+      .join(''),
+  );
   for (const [name, body] of Object.entries(SHIMS)) {
     writeFileSync(join(bin, name), `${body}\n`);
     chmodSync(join(bin, name), 0o755);
@@ -393,6 +420,123 @@ describe('the tripwire', () => {
       ['service'],
       /writable/,
     ],
+    // Modes stat prints with fewer than three digits (0002 as "2"): read as numbers.
+    ...(['2', '20', '23', '3', '22'] as const).map(
+      (
+        mode,
+      ): [string, (f: Fixture, p: Record<string, string>) => void, readonly string[], RegExp] => [
+        `node with mode ${mode}`,
+        (f, p) => {
+          f.stat[p.node as string] = `0 0 ${mode} 1000 regular file`;
+        },
+        ['service'],
+        /writable/,
+      ],
+    ),
+    [
+      'a setuid node',
+      (f, p) => {
+        f.stat[p.node as string] = '0 0 4755 1000 regular file';
+      },
+      ['service'],
+      /setuid/,
+    ],
+    [
+      'a bundle that holds a symlink',
+      (f, p) => {
+        f.stat[join(p.bundle as string, 'main.js')] = '0 0 644 10 symbolic link';
+      },
+      ['service'],
+      /regular file or a directory/,
+    ],
+    [
+      "a world-writable directory above the bundle (/tmp's 1777)",
+      (f, p) => {
+        f.stat[dirname(p.bundle as string)] = '0 0 1777 4096 directory';
+      },
+      ['service'],
+      /must not be writable/,
+    ],
+    [
+      'a group-writable directory above node',
+      (f) => {
+        f.stat['/opt/node/bin'] = '0 50 775 4096 directory';
+      },
+      ['service'],
+      /\/opt\/node\/bin must not be writable/,
+    ],
+    [
+      "a user's directory above node",
+      (f) => {
+        f.stat['/opt/node'] = '1500 0 755 4096 directory';
+      },
+      ['service'],
+      /\/opt\/node must be owned by root/,
+    ],
+    [
+      'a symlink on the way to node',
+      (f, p) => {
+        f.realpath[p.node as string] = '/opt/node-22/bin/node';
+      },
+      ['service'],
+      /real path/,
+    ],
+    [
+      'a writable directory above the log key',
+      (f) => {
+        f.stat['/etc/wp-gcode'] = '0 0 777 4096 directory';
+      },
+      ['service'],
+      /\/etc\/wp-gcode must not be writable/,
+    ],
+    [
+      "a writable directory above the socket's directory",
+      (f) => {
+        f.stat['/run'] = '0 0 777 4096 directory';
+      },
+      ALL,
+      /\/run must not be writable/,
+    ],
+    [
+      'the tripwire writable by others',
+      (f) => {
+        f.stat[TRIPWIRE] = '0 0 757 9000 regular file';
+      },
+      ALL,
+      /must not be writable/,
+    ],
+    [
+      "a user's directory above the tripwire",
+      (f) => {
+        f.stat[dirname(TRIPWIRE)] = '1500 1500 755 4096 directory';
+      },
+      ALL,
+      /must be owned by root/,
+    ],
+    [
+      'the directory setgid',
+      (f, p) => {
+        f.stat[p.dir as string] = '0 960 2750 60 directory';
+      },
+      ALL,
+      /mode 750/,
+    ],
+    [
+      'an sssd range in hex',
+      (f) => {
+        f.sssd = '[domain/corp]\nmin_id = 0x1\nmax_id = 2000\n';
+      },
+      ALL,
+      /isn't plain numbers/,
+    ],
+    [
+      'an sssd range with a trailing comment',
+      (f) => {
+        f.sssd = '[domain/corp]\nmin_id = 1\nmax_id = 2000 # corp\n';
+      },
+      ALL,
+      /isn't plain numbers/,
+    ],
     [
       "a build the units weren't rendered for",
       (f) => {
@@ -417,9 +561,18 @@ describe('the tripwire', () => {
     }
   });
 
-  it("refuses a gid in systemd's DynamicUser or homed ranges", () => {
+  it("refuses a gid in systemd's ranges, root's, nobody's or an overflow id", () => {
     // Checked first, before any file is read.
-    for (const gid of ['61184', '65519', '60001', '60513']) {
+    for (const gid of [
+      '61184',
+      '65519',
+      '60001',
+      '60513',
+      '0',
+      '65534',
+      '4294967294',
+      '4294967295',
+    ]) {
       const r = spawnSync(
         'sh',
         [
@@ -440,7 +593,7 @@ describe('the tripwire', () => {
         },
       );
       expect(r.status, gid).toBe(1);
-      expect(r.stderr).toMatch(/DynamicUser|homed/);
+      expect(r.stderr).toMatch(/DynamicUser|homed|nobody/);
     }
   });
 

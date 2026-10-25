@@ -8,10 +8,17 @@
 // The values file is the host's, and stays private: user and group names, the reserved
 // gid, paths. This public repository holds only the templates. Every value is checked
 // against a strict pattern, every placeholder must be filled, and nothing is written
-// outside --out or over an existing file without --force. The build string comes from the
+// outside --out, through a symlink, or over an existing file without --force. The build string comes from the
 // bundle's own BUILD file, so the units always name the bundle they were rendered for.
 
-import { existsSync, readFileSync, writeFileSync, chmodSync, realpathSync } from 'node:fs';
+import {
+  chmodSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, posix, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,7 +42,8 @@ const FIELDS = {
     check: (v) =>
       Number.isSafeInteger(v) &&
       v >= 1 &&
-      v < 4294967295 &&
+      v < 4294967294 && // and not the overflow ids
+      v !== 65534 && // nobody
       !(v >= 61184 && v <= 65519) && // systemd's DynamicUser range
       !(v >= 60001 && v <= 60513), // systemd-homed's
   },
@@ -43,8 +51,22 @@ const FIELDS = {
   prefix: { check: isPath },
   credFile: { check: isPath },
   node: { check: isPath },
-  /** The calling application's code, config and data: the service can't see them. */
-  inaccessible: { check: (v) => Array.isArray(v) && v.length > 0 && v.every(isPath) },
+  /**
+   * Where the tripwire is installed: root-only, and never in the bundle it checks (it
+   * runs as root, so whoever could replace it would get root).
+   */
+  tripwire: { check: isPath, default: '/usr/local/libexec/wp-gcode-tripwire' },
+  /**
+   * The calling application's code, config and data: the service can't see them. Not
+   * /var/lib or below: the service's /var/lib is an empty tmpfs, where such a path
+   * doesn't exist and would fail the start.
+   */
+  inaccessible: {
+    check: (v) =>
+      Array.isArray(v) &&
+      v.length > 0 &&
+      v.every((p) => isPath(p) && p !== '/var/lib' && !p.startsWith('/var/lib/')),
+  },
   workers: { check: (v) => Number.isInteger(v) && v >= 1 && v <= 16, default: 2 },
   heapMb: { check: (v) => Number.isInteger(v) && v >= 64 && v <= 16384, default: 1536 },
   youngMb: { check: (v) => Number.isInteger(v) && v >= 8 && v <= 1024, default: 64 },
@@ -86,6 +108,9 @@ export function readValues(raw) {
     if (!f.check(v)) throw new RenderError(`"${k}" in the values file isn't valid`);
     out[k] = v;
   }
+  if (out.tripwire === out.prefix || out.tripwire.startsWith(`${out.prefix}/`)) {
+    throw new RenderError('"tripwire" must be outside "prefix": never run from the bundle');
+  }
   return out;
 }
 
@@ -101,6 +126,7 @@ export function placeholders(v, build) {
     PREFIX: v.prefix,
     CRED_FILE: v.credFile,
     NODE: v.node,
+    TRIPWIRE: v.tripwire,
     INACCESSIBLE: v.inaccessible.join(' '),
     WORKERS: String(v.workers),
     HEAP_MB: String(v.heapMb),
@@ -137,11 +163,16 @@ export function render({ values, bundle, out, force = false }) {
     const target = resolve(dir, name);
     // Fixed names, but checked anyway: nothing is ever written outside --out.
     if (!target.startsWith(dir + sep)) throw new RenderError(`${name} would land outside --out`);
-    if (existsSync(target) && !force)
-      throw new RenderError(`${target} exists (pass --force to replace it)`);
+    // lstat, not exists: a symlink (even a dangling one) would be written through.
+    const there = lstatSync(target, { throwIfNoEntry: false });
+    if (there?.isSymbolicLink()) throw new RenderError(`${target} is a symlink: refused`);
+    if (there && !force) throw new RenderError(`${target} exists (pass --force to replace it)`);
+    if (there && !there.isFile()) throw new RenderError(`${target} isn't a regular file`);
     const text = fill(readFileSync(join(HERE, template), 'utf8'), map);
     if (/@[A-Z_]+@/.test(text)) throw new RenderError(`${name} still has a placeholder`);
-    writeFileSync(target, text, { mode: 0o644 });
+    if (there) unlinkSync(target);
+    // 'wx': created here, or not at all, so nothing put in its place since is followed.
+    writeFileSync(target, text, { mode: 0o644, flag: 'wx' });
     chmodSync(target, 0o644);
     written.push(target);
   }

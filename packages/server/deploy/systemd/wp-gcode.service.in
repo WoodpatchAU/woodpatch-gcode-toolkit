@@ -16,8 +16,9 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-# Outside the sandbox, as root: the group rules, the log key, the bundle (ADR-0040).
-ExecStartPre=+@PREFIX@/bundle/tripwire.sh service --group @GROUP@ --gid @GID@ --caller @CALLER_USER@ --dir /run/wp-gcode --cred @CRED_FILE@ --bundle @PREFIX@/bundle --build @BUILD@ --node @NODE@
+# Outside the sandbox, as root: the group rules, the log key, the bundle (ADR-0040). Run
+# from a root-only system path, never from the bundle it checks (ADR-0046).
+ExecStartPre=+@TRIPWIRE@ service --group @GROUP@ --gid @GID@ --caller @CALLER_USER@ --dir /run/wp-gcode --cred @CRED_FILE@ --bundle @PREFIX@/bundle --build @BUILD@ --node @NODE@
 ExecStart=@NODE@ @PREFIX@/bundle/main.js
 Environment=WP_GCODE_BUILD=@BUILD@
 Environment=WP_GCODE_WORKERS=@WORKERS@
@@ -26,7 +27,8 @@ Environment=WP_GCODE_YOUNG_MB=@YOUNG_MB@
 LoadCredential=log-key:@CRED_FILE@
 Restart=on-failure
 RestartSec=2
-# The longest answer still owed (serverWorstMs + 5 s = 46 s, ADR-0045), with room.
+# The longest answer still owed, contended, plus 5 s (48 + 5 = 53 s; 56.5 s at 16
+# workers; ADR-0045), with room.
 TimeoutStopSec=60
 
 # The sandbox (ADR-0040).
