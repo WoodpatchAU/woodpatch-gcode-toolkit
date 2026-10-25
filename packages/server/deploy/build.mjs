@@ -42,9 +42,14 @@ export async function buildBundle(out, { dev = false } = {}) {
   if (existsSync(out))
     throw new Error(`${out} already exists: the bundle is built into a new directory`);
   const git = (...a) => execFileSync('git', a, { cwd: REPO, encoding: 'utf8' }).trim();
-  const dirty = git('status', '--porcelain') !== '';
-  if (dirty && !dev)
-    throw new Error('the working tree has uncommitted changes (pass --dev for a local build)');
+  const status = git('status', '--porcelain');
+  const dirty = status !== '';
+  if (dirty && !dev) {
+    // Named, so a CI step that leaves files behind is found at once.
+    throw new Error(
+      `the working tree has uncommitted changes (pass --dev for a local build):\n${status}`,
+    );
+  }
   const pkg = JSON.parse(readFileSync(join(PKG, 'package.json'), 'utf8'));
   const id = `gcode-server-${pkg.version}+${git('rev-parse', '--short=12', 'HEAD')}${dev ? '-dev' : ''}`;
 

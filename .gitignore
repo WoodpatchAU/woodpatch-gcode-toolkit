@@ -10,3 +10,6 @@ packages/*/NOTICE
 !packages/svelte/LICENSE
 !packages/svelte/NOTICE
 legacy/.idea/workspace.xml
+# Playwright's output (the playground's browser tests).
+apps/playground/test-results/
+apps/playground/playwright-report/
