@@ -37,9 +37,13 @@
 #
 # Modes are tested as numbers (stat's %a prints 0002 as "2"), never as text.
 #
-# POSIX sh and the base system's tools only. TRIPWIRE_ROOT (tests only) is prefixed to
-# the files it reads under /etc.
+# POSIX sh and the base system's tools only, from the base system's own directories: it
+# runs as root, and systemd's default PATH puts /usr/local/bin first. Tests only:
+# TRIPWIRE_ROOT is prefixed to the files it reads under /etc, and TRIPWIRE_TEST_PATH
+# replaces the PATH (for its shims). Whoever sets a unit's environment is root anyway.
 set -eu
+PATH="${TRIPWIRE_TEST_PATH:-/usr/sbin:/usr/bin:/sbin:/bin}"
+export PATH
 
 ROOT="${TRIPWIRE_ROOT:-}"
 
@@ -277,7 +281,10 @@ if [ "$mode" = service ]; then
   { no_bits "$3" 07177 && [ $((0$3)) -eq $((0600)) ]; } || die "the log key must have mode 0600"
   size=$4
   shift 4
-  [ "$*" = "regular file" ] || die "the log key must be a regular file (not a link, not empty)"
+  case "$*" in
+    'regular file' | 'regular empty file') ;;
+    *) die "the log key must be a regular file (not a link)" ;;
+  esac
   [ "$size" -ge 32 ] || die "the log key must be at least 32 bytes"
   root_chain "$cred"
 
@@ -293,7 +300,8 @@ if [ "$mode" = service ]; then
     set -- $m
     shift 4
     case "$*" in
-      'regular file' | directory) ;;
+      # GNU stat calls an empty file "regular empty file".
+      'regular file' | 'regular empty file' | directory) ;;
       *) die "$f must be a regular file or a directory (it is a $*)" ;;
     esac
   done <<FILES

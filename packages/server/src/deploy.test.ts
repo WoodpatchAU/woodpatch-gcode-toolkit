@@ -91,6 +91,10 @@ describe('the values file', () => {
     // The service's /var/lib is an empty tmpfs: these don't exist there.
     ['/var/lib as inaccessible', { inaccessible: ['/var/lib'] }],
     ['a path under /var/lib as inaccessible', { inaccessible: ['/srv/x', '/var/lib/mysql'] }],
+    ['the prefix under /var/lib', { prefix: '/var/lib/wp-gcode' }],
+    ['node under an inaccessible path', { node: '/srv/example-app/node' }],
+    ['the log key under an inaccessible path', { credFile: '/etc/example-app/log-key' }],
+    ['the prefix as an inaccessible path', { prefix: '/srv/example-app' }],
   ];
   it.each(bad)('refuses %s', (_, change) => {
     expect(() => readValues({ ...EXAMPLE, ...change })).toThrow(RenderError);

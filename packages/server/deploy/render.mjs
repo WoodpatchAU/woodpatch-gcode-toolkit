@@ -111,6 +111,16 @@ export function readValues(raw) {
   if (out.tripwire === out.prefix || out.tripwire.startsWith(`${out.prefix}/`)) {
     throw new RenderError('"tripwire" must be outside "prefix": never run from the bundle');
   }
+  // What the units run or read must be visible to them: not under the service's empty
+  // /var/lib, nor under a path it can't see. Said here, not as a start-time failure.
+  const under = (p, dir) => p === dir || p.startsWith(`${dir}/`);
+  for (const k of ['prefix', 'node', 'credFile', 'tripwire']) {
+    if (under(out[k], '/var/lib')) {
+      throw new RenderError(`"${k}" is under /var/lib, which the service sees as empty`);
+    }
+    const hidden = out.inaccessible.find((dir) => under(out[k], dir));
+    if (hidden) throw new RenderError(`"${k}" is under the inaccessible path ${hidden}`);
+  }
   return out;
 }
 
