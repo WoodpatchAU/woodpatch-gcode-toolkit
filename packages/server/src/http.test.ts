@@ -41,7 +41,7 @@ const running: Running[] = [];
 async function start(
   over: Partial<Budgets> = {},
   build = BUILD,
-  draining?: () => boolean,
+  draining: () => boolean = () => false,
 ): Promise<Running> {
   const budgets = { ...DEFAULT_BUDGETS, workers: 1, heapMb: 256, ...over };
   const dir = mkdtempSync(join(tmpdir(), 'gcode-server-'));
