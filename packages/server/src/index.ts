@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * @woodpatch/gcode-server: the machining-time estimate service. This part is its wire
- * contract (ADR-0044) and the mapping from a machine record to core; the HTTP layer
- * and its deployment follow (5d-2, 5d-3).
+ * @woodpatch/gcode-server: the machining-time estimate service. Its wire contract
+ * (ADR-0044), the mapping from a machine record to core, and the HTTP layer with its
+ * worker pool (ADR-0045). `dist/main.js` is the entry point systemd runs; its
+ * deployment files follow (5d-3).
  */
 
 export {
@@ -21,6 +22,7 @@ export {
   SCOPE,
   boundText,
   countLines,
+  errorBody,
   parseRequest,
   type ErrorBody,
   type ErrorCode,
@@ -29,3 +31,8 @@ export {
 } from './contract.js';
 export { echoRecord, mapRecord, type Mapped, type RecordEcho } from './map.js';
 export { handleEstimate, type EstimateResponse, type Finding, type Listed } from './handle.js';
+export { DEFAULT_BUDGETS, type Budgets } from './budgets.js';
+export { ResponseCache, type CacheInput } from './cache.js';
+export { createEstimateServer, type ServerParts } from './http.js';
+export { Logger, MIN_SECRET_BYTES, type RequestLog } from './log.js';
+export { WorkerPool, type Done, type Outcome } from './pool.js';

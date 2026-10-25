@@ -23,7 +23,8 @@
       "required": ["id", "version", "revision", "calibration", "hash"],
       "properties": {
         "id": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 64
         },
         "version": {
           "const": 1
@@ -38,7 +39,8 @@
         "hash": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "SHA-256 of the record's RFC 8785 canonical form, as received (ADR-0041)."
+          "description": "SHA-256 of the record's RFC 8785 canonical form, as received (ADR-0041).",
+          "maxLength": 64
         }
       }
     },
@@ -169,7 +171,8 @@
                     "minimum": 1
                   },
                   "file": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 500
                   },
                   "reason": {
                     "enum": [
@@ -251,7 +254,8 @@
                 "enum": ["error", "warning", "info"]
               },
               "code": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               "message": {
                 "type": "string",
@@ -292,7 +296,8 @@
                 "enum": ["error", "warning", "info"]
               },
               "code": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 64
               },
               "message": {
                 "type": "string",

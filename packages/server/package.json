@@ -40,5 +40,13 @@
     "fast-check": "^4.10.1",
     "typescript": "~6.0.3",
     "vitest": "^5.0.5"
+  },
+  "woodpatch": {
+    "entries": [
+      "index",
+      "worker",
+      "main"
+    ],
+    "platform": "node"
   }
 }
