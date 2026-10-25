@@ -8,8 +8,10 @@
 
 export {
   MAX_DEPTH,
+  MAX_QUOTED_KEY,
   hasLoneSurrogate,
   parseStrictJson,
+  quoteKey,
   type JsonError,
   type JsonErrorCode,
   type JsonObject,

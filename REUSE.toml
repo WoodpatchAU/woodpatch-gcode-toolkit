@@ -26,6 +26,7 @@ path = [
   "tools/data/*.json",
   "packages/db-schema/schema/*.json",
   "packages/db-schema/examples/*.json",
+  "packages/server/schema/*.json",
   "NOTICE",
   "packages/*/NOTICE",
 ]

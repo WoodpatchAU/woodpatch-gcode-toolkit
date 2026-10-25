@@ -2,6 +2,43 @@
   "name": "@woodpatch/gcode-server",
   "version": "0.0.0",
   "private": true,
-  "description": "An HTTP service for server-side analysis, transforms and machining-time estimates.",
-  "license": "MIT"
+  "description": "The machining-time estimate service: its wire contract (ADR-0044), and the mapping from a machine record to the estimator and the travel check. No third-party runtime dependencies.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema/estimate-request-v1.schema.json": "./schema/estimate-request-v1.schema.json",
+    "./schema/estimate-response-v1.schema.json": "./schema/estimate-response-v1.schema.json",
+    "./schema/estimate-error-v1.schema.json": "./schema/estimate-error-v1.schema.json"
+  },
+  "files": [
+    "dist",
+    "schema",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WoodpatchAU/woodpatch-gcode-toolkit.git",
+    "directory": "packages/server"
+  },
+  "scripts": {
+    "build": "node ../../scripts/build-package.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@woodpatch/gcode-core": "workspace:*",
+    "@woodpatch/gcode-db": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "fast-check": "^4.10.1",
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.5"
+  }
 }

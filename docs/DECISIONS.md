@@ -2929,3 +2929,171 @@ says what it doesn't know, and is tuned by calibration (5c), not by hand.
 calibration is unknown, and 5c fits it on the router. The plan's target is ±5% on at
 least five real jobs. Upstream's R10 file (a customer job, in the private fixtures
 repository) is used there, not here.
+
+## ADR-0044: The `/estimate` wire contract, version 1
+
+**Status:** Proposed, 2026-10-24 (parcel 5d-1). The reviewer's GO on the outline, with
+conditions, which this records. The calling application's owner agreed the shape and
+builds its client only against this ADR once merged. Binds `@woodpatch/gcode-server` and
+that client. It builds on ADR-0040 (the server's security boundary), ADR-0041 (the
+machine record), ADR-0042 (the travel check) and ADR-0043 (the estimator).
+
+**Context.** The estimate feeds quotes. The client branches on what the server says,
+automatically, so every part of the answer it acts on has to be exact: a code, not a
+message; an integer, not a float; "unknown", not a partial figure that looks whole.
+
+**Decision.**
+
+- **Transport** (ADR-0040; built in 5d-2): `POST /estimate` with a JSON body
+  (`Content-Type: application/json`), over the server's Unix socket. The socket's
+  owner, group and mode ARE the access control: it's `0660`, in a directory only root
+  and the caller's group can reach (ADR-0040's `/run/wp-gcode/`), never a
+  world-writable one such as `/tmp`.
+  Nothing else on the host can connect. The socket's path is the caller's deployment
+  configuration, not part of this contract.
+- **The request, version 1:** a JSON object with exactly four fields, all required:
+  - `v`: `1`;
+  - `scope`: an opaque token chosen by the caller, `^[A-Za-z0-9:_-]{1,64}$` (for example
+    one per customer or staff account). The server never parses it and never logs it raw
+    (ADR-0040's per-scope HMAC). It keys the fair share and the cache. A client that
+    checks the pattern with PCRE (PHP's `preg_match`) must use `\z` or the `D` modifier:
+    there, `$` also matches before a final newline;
+  - `gcode`: the program's text;
+  - `machine`: the machine record's JSON text, as a string (ADR-0041's wire form).
+- **Every check, in a fixed order,** so one request always gets the same code:
+  1. the body is at most 25,000,000 bytes. A declared length over that is refused before
+     anything is read, and a body that grows past it is refused without buffering more
+     (5d-2, at the socket);
+  2. it's UTF-8 (a fatal decoder), and one strict JSON value (ADR-0041's parser: a
+     repeated key, a lone surrogate or too deep a nesting is refused);
+  3. it's an object with `v`, and `v` is 1. The version comes before every other check,
+     so a later version's request is judged by that version's rules. (`1.0` and `1e0`
+     are JSON's number 1, so they're version 1 too);
+  4. no field but the four. `toolId` and `materialId` are reserved, and refused until a
+     later version adds them. So is any hash: the server hashes the record itself;
+  5. `scope` matches its pattern; `gcode` and `machine` are strings;
+  6. the G-code is at most 20,000,000 bytes of UTF-8 and 2,000,000 lines, counted as
+     core's parser counts them (one more than the CR LF, CR and LF breaks);
+  7. the record passes `readMachine` (ADR-0041: 16,384 bytes, then every rule).
+- **No options in version 1.** The dialect is the record's. No work offsets are supplied,
+  so the travel check makes only certain claims, under ADR-0042's defaults for rotation
+  and tool length offsets at the start. A request is one file: a call to another file is
+  refused, and the estimate is incomplete. Any new field is a new version of the request.
+- **The response (200), version 1:**
+  - `v: 1`;
+  - `build`: the deployed server and core build that computed it: 1-128 printable ASCII
+    characters, no spaces. It's opaque, and changes whenever the deployed code does
+    (5d-2 sets its form). The caller stores it
+    with the estimate, so a re-estimate after a deployment can be told apart;
+  - `record`: ADR-0041's echo. That's `id`, `version`, `revision`, `calibration`
+    (`"calibrated"` or `"uncalibrated"`) and `hash`. The hash is SHA-256 of the record's
+    RFC 8785 canonical form, as received, in lowercase hex. The caller stores it with an
+    immutable snapshot of the record, and never recomputes it;
+  - `estimate`:
+    - `totalMs`: integer milliseconds, or null unless `complete`;
+    - `knownMs`, `cutMs`, `rapidMs`, `eventMs` and `dwellMs`: integer milliseconds;
+    - `complete` and `calibrated`;
+    - `perTool`, `unknowns` and `notes` (the assumptions a quote should show), as lists.
+
+    The times are ADR-0043's, rounded once;
+
+  - `travel`: the travel check's warnings, each one certain (ADR-0042). None means only
+    that nothing certain was found, never "fits";
+  - `diagnostics`: the parser's and the interpreter's findings, in line order.
+  - **Every list is `{ count, items }`,** with at most 100 items and `count` saying how
+    many there were. **Every text is at most 500 code points:** a finding's message and
+    file, a note, an error's message, a problem's path and message. A longer one is cut,
+    by code point (never splitting a surrogate pair), and ends `...`. Together these
+    bound the response for any input. A finding carries `severity`, `code`, `message`,
+    `line` and `file` (for a subprogram), but no character span.
+  - **Two biconditionals hold in every response:**
+    - `estimate.complete` is true exactly when `estimate.totalMs` is an integer;
+    - `record.calibration` is `"calibrated"` exactly when `estimate.calibrated` is true.
+
+    The server checks both before it answers (a breach is INTERNAL), and the response
+    schema states both (`if`/`then`/`else`). The caller treats a response breaking either
+    as a contract breach, and fails the job.
+
+  - **A finding's message may quote the G-code.** It goes back to the caller only, and is
+    never logged (ADR-0040).
+- **What binds the caller** (restating ADR-0041 and ADR-0043):
+  - **price only from `totalMs`,** and automatically only when `complete` is true,
+    `totalMs` isn't null, and `calibrated` is true. The caller reads the calibration
+    status from its own stored record, too;
+  - **never price from `knownMs`.** It's an "at least", for a person who supplies the
+    rest;
+  - **an uncalibrated estimate needs a person,** whatever its completeness.
+- **Errors:** the body is `{ v: 1, error: { code, message, problems? } }`. `problems`
+  (MACHINE_INVALID only) holds the first 100 of the record's problems. The caller
+  branches on `code`, never on the message, whose text isn't part of the contract. Messages
+  never quote the request's content. The one exception is an unknown field's name,
+  escaped to printable ASCII and cut at 64 characters. **The codes are a closed list.** A
+  new code is a new version:
+
+  | code                     | status | retriable | when                                                 |
+  | ------------------------ | ------ | --------- | ---------------------------------------------------- |
+  | REQUEST_TOO_LARGE        | 413    | no        | the body, or its declared length, is over the cap    |
+  | REQUEST_MALFORMED        | 400    | no        | not UTF-8, or not one strict JSON value              |
+  | REQUEST_INVALID          | 400    | no        | a missing, unknown or reserved field; a bad scope    |
+  | REQUEST_VERSION          | 400    | no        | `v` isn't a version this server reads                |
+  | MACHINE_INVALID          | 422    | no        | the record was refused; `problems` says why          |
+  | PROGRAM_TOO_LARGE        | 413    | no        | the G-code is over its byte or line cap              |
+  | ESTIMATE_BUDGET_EXCEEDED | 422    | no        | the work ran out of time or memory, and would again  |
+  | SERVER_BUSY              | 503    | yes       | every worker is busy and the queue is full           |
+  | SCOPE_BUSY               | 429    | yes       | this scope already has its share of the workers      |
+  | METHOD_NOT_ALLOWED       | 405    | no        | not POST                                             |
+  | NOT_FOUND                | 404    | no        | not `/estimate`                                      |
+  | UNSUPPORTED_MEDIA_TYPE   | 415    | no        | not `application/json`                               |
+  | INTERNAL                 | 500    | no        | a bug: deterministic, so a retry would meet it again |
+
+  The two retriable answers carry `Retry-After` (seconds). The caller retries them
+  boundedly, with backoff (ADR-0040: never a retry storm). Anything else fails the job,
+  with the code on the quote. A test holds `ERRORS` equal to a literal copy of this table,
+  and to the table as it stands in this file.
+
+- **Any throw is INTERNAL** (an acceptance check on 5d-2). `handleEstimate` can throw: on
+  a broken invariant, from the mapping, or from core (a RangeError). The HTTP layer
+  answers any throw with INTERNAL and a fixed message. It never returns or logs the
+  error's message or its stack, which could quote the input.
+
+- **The record's mapping** (`mapRecord`, in the server, so that core and the record's
+  package stay independent of each other):
+  - the axes' `maxVelocity` and `acceleration` go to the estimator; `min` and `max` go to
+    the travel check (a rotary axis without them isn't checked);
+  - `rapidRate` and the planner's fields go to the estimator, absent where absent;
+  - the spindle's spin times and the overheads go to the estimator (an absent overhead
+    is 0). The record's `pauseSeconds` is per M0; M1 stays ADR-0043's 0 s, noted;
+  - the calibration factors go to the estimator; an uncalibrated record has none;
+  - the dialect is core's profile of that id.
+
+  **Deliberately unused, each for a stated reason:**
+  - `name`: display only;
+  - every `source`: provenance is the caller's, and `calibrated: false` covers
+    unconfirmed values;
+  - `jerk`: reserved for an S-curve planner;
+  - `minRpm` and `maxRpm`: no time in the model depends on them yet;
+  - `fittedOn` and `residuals`: the caller's pricing rules read them.
+
+  **The every-field-once test** changes each field of a full record alone, keeping it
+  valid. It requires the mapping to change, unless the field is on that list. A listed
+  field must leave the mapping unchanged, and every entry must match a field, so the
+  list can neither grow silently nor go stale.
+
+- **The rapid model.** Record version 1 revision 1 has no field for how rapids move, so
+  the mapping assumes `coordinated`, unconfirmed, and every estimate says so in its
+  notes. The operator has confirmed coordinated rapids on their router: the axes move
+  together and finish together. Revision 2 (an optional field, under ADR-0041's
+  versioning) adds it with the calibration in 5c, where it is measured, along with
+  whether rapids blend at their corners.
+- **JSON Schemas** (`packages/server/schema/`): the request, the response and the error
+  body, draft 2020-12, every object closed. Times are `integer`. Each is a SUBSET of the
+  code, which is authoritative: the byte and line caps, repeated keys and the record's
+  own rules can't be expressed in a schema. A test validates real requests, responses and
+  error bodies against them, with a small validator that fails on any keyword it doesn't
+  implement. It also checks that the lists of fields, the scope pattern and the error
+  codes are exactly the code's.
+
+**Consequences.** The client can be built and tested against the schemas and this table
+before the HTTP layer exists. Changing any field, code or rule above is a new version of
+the request or the response, which the client must be able to tell. 5d-2 adds the HTTP
+layer, the workers and the budgets; 5d-3 adds the deployment files.
