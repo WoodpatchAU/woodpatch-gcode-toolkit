@@ -3312,7 +3312,8 @@ gid, and paths. This repository is public, and must not hold them.
     `MemoryDenyWriteExecute=` (V8's JIT).
     - `LoadCredential=` holds the log key, and `WP_GCODE_BUILD` the bundle's build.
     - `MemoryMax=` = (workers + 1) × (heap + young) + main, from the values (a replaced
-      worker briefly overlaps its successor).
+      worker briefly overlaps its successor). The service is given the same heap
+      numbers (`WP_GCODE_HEAP_MB`, `WP_GCODE_YOUNG_MB`), so they can't disagree.
     - `TimeoutStopSec=60` exceeds the stop's own bound, ADR-0045's 41 s + 5 s.
     - `StartLimitBurst=5` in 60 s, so repeated failures fail the start for good.
   - `systemd-analyze verify` runs on units rendered from fictional values in the
@@ -3368,10 +3369,25 @@ gid, and paths. This repository is public, and must not hold them.
     stages the log key from its credential store, and installs and proves it by the
     checklist;
   - the caller configures its socket path and ADR-0045's four timeouts.
-- **The host** is the operator's decision, still pending. The reviewer and the host's
-  operators lean
-  to the calling application's host, beside its caller, which keeps the transport a Unix
-  socket; another host reopens ADR-0040.
+- **The host: the calling application's own** (the operator, 2026-10-25), beside its
+  caller. That keeps ADR-0040's transport a Unix socket; a separate host would reopen it.
+  It's a production host, so the units let its own services always win, with the
+  operator's limits:
+  - `MemoryMax=` from the same heap numbers the server is given, `MemoryHigh=` at 90%,
+    no swap;
+  - `OOMScoreAdjust=900` and `OOMPolicy=stop`, so under pressure the kernel kills the
+    estimator, never the database or the web tier;
+  - `CPUQuota=`, `CPUWeight=20`, `IOWeight=20`, `Nice=10`, a small `TasksMax=`, no core
+    dumps;
+  - an empty `/var/lib` (`TemporaryFileSystem=`);
+  - the host's values starting with one worker, raised only on measured queue waits and
+    a fresh look at headroom.
+
+  `inaccessible` must list every Unix socket directory on the host, since `AF_UNIX` is
+  the sandbox's one address family. The tripwire and the sandbox-line test are what make
+  a production host acceptable, so both are hard gates at go-live. Monitoring the unit's
+  state, memory and CPU against these caps, and alarming on a repeated OOM kill, belongs
+  to the host's monitoring, not this repository.
 
 **Consequences.** Installing is a checklist with no step taken on trust: the bundle's
 origin, its contents, the group, the key and the units are each checked, and the

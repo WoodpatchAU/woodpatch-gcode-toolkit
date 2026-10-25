@@ -83,6 +83,9 @@ describe('main.js refuses to start', () => {
       [{ ...GOOD_ENV, CREDENTIALS_DIRECTORY: shortCreds }, /at least 32 bytes/],
       [{ ...GOOD_ENV, WP_GCODE_WORKERS: '0' }, /WP_GCODE_WORKERS/],
       [{ ...GOOD_ENV, WP_GCODE_WORKERS: '1.5' }, /WP_GCODE_WORKERS/],
+      [{ ...GOOD_ENV, WP_GCODE_HEAP_MB: '32' }, /WP_GCODE_HEAP_MB/],
+      [{ ...GOOD_ENV, WP_GCODE_HEAP_MB: 'lots' }, /WP_GCODE_HEAP_MB/],
+      [{ ...GOOD_ENV, WP_GCODE_YOUNG_MB: '2048' }, /WP_GCODE_YOUNG_MB/],
     ];
     for (const [env, message] of cases) {
       const r = runAsActivated({ ...env, LISTEN_FDS: '1' });
@@ -174,6 +177,56 @@ describe.skipIf(!hasActivate)('main.js under socket activation', () => {
       .split('\n')
       .map((l) => JSON.parse(l).event);
     expect(events).toEqual(['start', 'request', 'stop']);
+  });
+
+  it('runs its workers with the heap the units set', async () => {
+    // A 64 MB heap (the least allowed) can't hold this program: if the setting reached the
+    // workers, the estimate runs out of heap; at the default 1.5 GB it would succeed.
+    const sock = join(dir, 'heap.sock');
+    const env = ['-E', 'WP_GCODE_BUILD=test-1', '-E', `CREDENTIALS_DIRECTORY=${creds}`];
+    const heap = ['-E', 'WP_GCODE_HEAP_MB=64', '-E', 'WP_GCODE_YOUNG_MB=8'];
+    const child = spawn(ACTIVATE, ['-l', sock, ...env, ...heap, process.execPath, MAIN], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const out: string[] = [];
+    child.stdout.on('data', (c: Buffer) => out.push(c.toString()));
+    const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
+    for (let i = 0; i < 100 && !existsSync(sock); i++) await new Promise((r) => setTimeout(r, 50));
+    const record = readFileSync(
+      new URL('../../db-schema/examples/example-router.json', import.meta.url),
+      'utf8',
+    );
+    const gcode = 'G1 X1 Y1 F1000\nG1 X2 Y2\n'.repeat(600_000);
+    const body = JSON.stringify({ v: 1, scope: 'staff:1', gcode, machine: record });
+    const status = await new Promise<string>((resolve, reject) => {
+      const req = request(
+        {
+          socketPath: sock,
+          method: 'POST',
+          path: '/estimate',
+          headers: { 'content-type': 'application/json' },
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () =>
+            resolve(JSON.parse(Buffer.concat(chunks).toString()).error?.code ?? 'ok'),
+          );
+        },
+      );
+      req.on('error', reject);
+      req.end(body);
+    });
+    expect(status).toBe('ESTIMATE_BUDGET_EXCEEDED');
+    child.kill('SIGTERM');
+    expect(await exited).toBe(0);
+    const start = out
+      .join('')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .find((l) => l.event === 'start');
+    expect(start).toMatchObject({ workers: 2, heapMb: 64, youngMb: 8 });
   });
 
   it('refuses a TCP socket, which is no part of ADR-0040', async () => {

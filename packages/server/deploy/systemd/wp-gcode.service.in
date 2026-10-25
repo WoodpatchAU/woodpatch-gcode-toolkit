@@ -21,6 +21,8 @@ ExecStartPre=+@PREFIX@/bundle/tripwire.sh service --group @GROUP@ --gid @GID@ --
 ExecStart=@NODE@ @PREFIX@/bundle/main.js
 Environment=WP_GCODE_BUILD=@BUILD@
 Environment=WP_GCODE_WORKERS=@WORKERS@
+Environment=WP_GCODE_HEAP_MB=@HEAP_MB@
+Environment=WP_GCODE_YOUNG_MB=@YOUNG_MB@
 LoadCredential=log-key:@CRED_FILE@
 Restart=on-failure
 RestartSec=2
@@ -34,6 +36,8 @@ ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
 InaccessiblePaths=@INACCESSIBLE@
+# No other service's state: the caller passes every input, so nothing here is needed.
+TemporaryFileSystem=/var/lib
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 SystemCallFilter=@system-service
@@ -53,7 +57,17 @@ ProtectProc=invisible
 UMask=0077
 # Not MemoryDenyWriteExecute=: V8's JIT needs writable executable memory (ADR-0040).
 
-# (workers + 1) x (heap + young) + main: a replaced worker briefly overlaps its successor.
+# It shares its host with the caller, whose services must always win (ADR-0046):
+# (workers + 1) x (heap + young) + main, since a replaced worker briefly overlaps its
+# successor; throttled from 90% of that; no swap; the kernel's first choice to kill.
 MemoryMax=@MEMORY_MAX_MB@M
+MemoryHigh=@MEMORY_HIGH_MB@M
+MemorySwapMax=0
+OOMScoreAdjust=@OOM_SCORE_ADJUST@
+OOMPolicy=stop
 CPUQuota=@CPU_QUOTA@%
+CPUWeight=@CPU_WEIGHT@
+IOWeight=@IO_WEIGHT@
+Nice=@NICE@
 TasksMax=@TASKS_MAX@
+LimitCORE=0

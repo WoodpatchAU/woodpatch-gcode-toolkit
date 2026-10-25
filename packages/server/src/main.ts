@@ -11,7 +11,10 @@
  * - WP_GCODE_BUILD: ADR-0044's `build` (1-128 printable ASCII);
  * - $CREDENTIALS_DIRECTORY/log-key: the log's HMAC secret, at least 32 bytes
  *   (systemd's LoadCredential=, from a root-only file).
- * Optional: WP_GCODE_WORKERS, 1 to 16 (default 2).
+ * Optional: WP_GCODE_WORKERS, 1 to 16 (default 2); WP_GCODE_HEAP_MB, 64 to 16384, and
+ * WP_GCODE_YOUNG_MB, 8 to 1024 (each worker's heap, defaults 1536 and 64). The units set
+ * all three from the host's values, so MemoryMax= is worked out from the same numbers
+ * the server uses (ADR-0046).
  */
 
 import { readFileSync } from 'node:fs';
@@ -55,12 +58,19 @@ try {
 if (secret.length < MIN_SECRET_BYTES)
   refuse(`the log key must be at least ${MIN_SECRET_BYTES} bytes`);
 
-const workersText = env['WP_GCODE_WORKERS'];
-const workers = workersText === undefined ? DEFAULT_BUDGETS.workers : Number(workersText);
-if (!Number.isInteger(workers) || workers < 1 || workers > 16) {
-  refuse('WP_GCODE_WORKERS must be a whole number from 1 to 16');
+/** An optional whole-number setting, within its bounds, or its default. */
+function whole(name: string, min: number, max: number, fallback: number): number {
+  const text = env[name];
+  const v = text === undefined ? fallback : Number(text);
+  if (!Number.isInteger(v) || v < min || v > max) {
+    refuse(`${name} must be a whole number from ${min} to ${max}`);
+  }
+  return v;
 }
-const budgets = { ...DEFAULT_BUDGETS, workers };
+const workers = whole('WP_GCODE_WORKERS', 1, 16, DEFAULT_BUDGETS.workers);
+const heapMb = whole('WP_GCODE_HEAP_MB', 64, 16384, DEFAULT_BUDGETS.heapMb);
+const youngMb = whole('WP_GCODE_YOUNG_MB', 8, 1024, DEFAULT_BUDGETS.youngMb);
+const budgets = { ...DEFAULT_BUDGETS, workers, heapMb, youngMb };
 
 const logger = new Logger(secret, (line) => process.stdout.write(`${line}\n`));
 secret.fill(0);
@@ -94,7 +104,7 @@ void pool.ready().then(() =>
       logger.event('not-a-unix-socket');
       process.exit(1);
     }
-    logger.event('start', { workers });
+    logger.event('start', { workers, heapMb, youngMb });
   }),
 );
 

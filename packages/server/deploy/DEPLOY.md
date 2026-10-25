@@ -32,11 +32,22 @@ outside its pattern.
 | `youngMb`         | each worker's young generation, MB                                          | 64      |
 | `mainMb`          | the main thread's allowance, MB                                             | 512     |
 | `cpuQuotaPercent` | `CPUQuota=`                                                                 | 200     |
-| `tasksMax`        | `TasksMax=`                                                                 | 256     |
+| `tasksMax`        | `TasksMax=`                                                                 | 64      |
+| `cpuWeight`       | `CPUWeight=`: the host's own services win                                   | 20      |
+| `ioWeight`        | `IOWeight=`                                                                 | 20      |
+| `nice`            | `Nice=`                                                                     | 10      |
+| `oomScoreAdjust`  | `OOMScoreAdjust=`: the kernel kills this first                              | 900     |
 
-`MemoryMax=` is rendered as (workers + 1) × (heap + young) + main: a replaced worker
-briefly overlaps its successor. Check the host has that much to spare (5,312 MB at the
-defaults).
+`MemoryMax=` is rendered as (workers + 1) × (heap + young) + main, since a replaced worker
+briefly overlaps its successor. That's 5,312 MB at the defaults; one worker with a 1,280 MB
+heap is 3,200 MB. `MemoryHigh=` is 90% of it, and there's no swap. The server is told the
+same heap numbers (`WP_GCODE_HEAP_MB`, `WP_GCODE_YOUNG_MB`), so the two can't disagree.
+Check the host has that much to spare.
+
+`inaccessible` should list the calling application's code, config and data, its
+backups, other users' homes, and **every Unix socket directory on the host** (the
+database's and the cache's, say). The sandbox allows only `AF_UNIX`, so a reachable
+socket is the one way out. The service also gets an empty `/var/lib`.
 
 ## 2. The group and its gid
 

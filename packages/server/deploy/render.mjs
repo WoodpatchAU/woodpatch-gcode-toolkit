@@ -50,7 +50,12 @@ const FIELDS = {
   youngMb: { check: (v) => Number.isInteger(v) && v >= 8 && v <= 1024, default: 64 },
   mainMb: { check: (v) => Number.isInteger(v) && v >= 128 && v <= 8192, default: 512 },
   cpuQuotaPercent: { check: (v) => Number.isInteger(v) && v >= 10 && v <= 1600, default: 200 },
-  tasksMax: { check: (v) => Number.isInteger(v) && v >= 32 && v <= 4096, default: 256 },
+  tasksMax: { check: (v) => Number.isInteger(v) && v >= 32 && v <= 4096, default: 64 },
+  /** Its host's own services win: the defaults are for a shared host (ADR-0046). */
+  cpuWeight: { check: (v) => Number.isInteger(v) && v >= 1 && v <= 10000, default: 20 },
+  ioWeight: { check: (v) => Number.isInteger(v) && v >= 1 && v <= 10000, default: 20 },
+  nice: { check: (v) => Number.isInteger(v) && v >= 0 && v <= 19, default: 10 },
+  oomScoreAdjust: { check: (v) => Number.isInteger(v) && v >= 0 && v <= 1000, default: 900 },
 };
 
 function isPath(v) {
@@ -87,6 +92,8 @@ export function readValues(raw) {
 /** Every placeholder and its text, from checked values and the bundle's build. */
 export function placeholders(v, build) {
   if (!BUILD.test(build)) throw new RenderError("the bundle's BUILD isn't a valid build string");
+  // The server runs with these same heap numbers (WP_GCODE_HEAP_MB, WP_GCODE_YOUNG_MB).
+  const memoryMax = (v.workers + 1) * (v.heapMb + v.youngMb) + v.mainMb;
   return {
     GROUP: v.group,
     GID: String(v.gid),
@@ -96,9 +103,16 @@ export function placeholders(v, build) {
     NODE: v.node,
     INACCESSIBLE: v.inaccessible.join(' '),
     WORKERS: String(v.workers),
+    HEAP_MB: String(v.heapMb),
+    YOUNG_MB: String(v.youngMb),
     BUILD: build,
-    MEMORY_MAX_MB: String((v.workers + 1) * (v.heapMb + v.youngMb) + v.mainMb),
+    MEMORY_MAX_MB: String(memoryMax),
+    MEMORY_HIGH_MB: String(Math.floor(memoryMax * 0.9)),
     CPU_QUOTA: String(v.cpuQuotaPercent),
+    CPU_WEIGHT: String(v.cpuWeight),
+    IO_WEIGHT: String(v.ioWeight),
+    NICE: String(v.nice),
+    OOM_SCORE_ADJUST: String(v.oomScoreAdjust),
     TASKS_MAX: String(v.tasksMax),
   };
 }

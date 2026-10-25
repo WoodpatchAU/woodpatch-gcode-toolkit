@@ -46,7 +46,17 @@ const unit = (out: string, name: string) => readFileSync(join(out, name), 'utf8'
 describe('the values file', () => {
   it('takes the example, with defaults for what it leaves out', () => {
     const v = readValues(EXAMPLE);
-    expect(v).toMatchObject({ workers: 2, heapMb: 1536, youngMb: 64, mainMb: 512, tasksMax: 256 });
+    expect(v).toMatchObject({
+      workers: 2,
+      heapMb: 1536,
+      youngMb: 64,
+      mainMb: 512,
+      tasksMax: 64,
+      cpuWeight: 20,
+      ioWeight: 20,
+      nice: 10,
+      oomScoreAdjust: 900,
+    });
   });
 
   const bad: [string, Record<string, unknown>][] = [
@@ -68,6 +78,12 @@ describe('the values file', () => {
   ];
   it.each(bad)('refuses %s', (_, change) => {
     expect(() => readValues({ ...EXAMPLE, ...change })).toThrow(RenderError);
+  });
+
+  it('works out a one-worker host as its operators sized it', () => {
+    // 1 worker, a 1,280 MB heap: 2 x (1280 + 64) + 512 = 3,200 MB.
+    const map = placeholders(readValues({ ...EXAMPLE, workers: 1, heapMb: 1280 }), 'b1');
+    expect([map.MEMORY_MAX_MB, map.MEMORY_HIGH_MB, map.HEAP_MB]).toEqual(['3200', '2880', '1280']);
   });
 
   it('needs every required field', () => {
@@ -105,8 +121,12 @@ describe('rendering', () => {
     const service = unit(w.out, 'wp-gcode.service');
     expect(service).toContain('Environment=WP_GCODE_BUILD=gcode-server-1.2.3+0123456789ab');
     expect(service).toContain('--build gcode-server-1.2.3+0123456789ab');
-    // (workers + 1) x (heap + young) + main = 3 x 1600 + 512.
+    // (workers + 1) x (heap + young) + main = 3 x 1600 + 512, and 90% of it.
     expect(service).toContain('MemoryMax=5312M');
+    expect(service).toContain('MemoryHigh=4780M');
+    // The server is told the heap MemoryMax was worked out from.
+    expect(service).toContain('Environment=WP_GCODE_HEAP_MB=1536');
+    expect(service).toContain('Environment=WP_GCODE_YOUNG_MB=64');
     expect(unit(w.out, 'wp-gcode-tmpfiles.conf')).toContain('d /run/wp-gcode 0750 root wpgcode -');
   });
 
@@ -184,6 +204,16 @@ describe('the rendered units (ADR-0040)', () => {
       'UMask=0077',
       'LoadCredential=log-key:/etc/wp-gcode/log-key',
       'TimeoutStopSec=60',
+      // Sharing a host with the caller (ADR-0046).
+      'TemporaryFileSystem=/var/lib',
+      'MemorySwapMax=0',
+      'OOMScoreAdjust=900',
+      'OOMPolicy=stop',
+      'CPUWeight=20',
+      'IOWeight=20',
+      'Nice=10',
+      'TasksMax=64',
+      'LimitCORE=0',
     ];
     const have = lines(service);
     for (const l of want) expect(have.has(l), l).toBe(true);
