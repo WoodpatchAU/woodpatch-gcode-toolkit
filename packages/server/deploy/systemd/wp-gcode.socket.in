@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
+# SPDX-License-Identifier: MIT
+#
+# The estimate server's socket (ADR-0040, ADR-0046). Rendered by deploy/render.mjs from a
+# host's private values file; never edit a rendered copy by hand.
+
+[Unit]
+Description=Woodpatch G-code estimate server (socket)
+Documentation=https://github.com/WoodpatchAU/woodpatch-gcode-toolkit/blob/main/packages/server/deploy/DEPLOY.md
+# The directory comes from tmpfiles (and is checked before the socket is made).
+After=systemd-tmpfiles-setup.service
+
+[Socket]
+ListenStream=/run/wp-gcode/gcode.sock
+# One server for every connection: the pool, the fair share and the cache (ADR-0040).
+Accept=no
+SocketUser=root
+SocketGroup=@GROUP@
+SocketMode=0660
+RemoveOnStop=yes
+# The group, the directory and the identity rules, before the socket exists; the socket
+# itself once it's bound. A failure fails the socket unit, which then doesn't listen.
+ExecStartPre=@PREFIX@/bundle/tripwire.sh socket-pre --group @GROUP@ --gid @GID@ --caller @CALLER_USER@ --dir /run/wp-gcode
+ExecStartPost=@PREFIX@/bundle/tripwire.sh socket-post --group @GROUP@ --gid @GID@ --caller @CALLER_USER@ --dir /run/wp-gcode --socket /run/wp-gcode/gcode.sock --unit wp-gcode.socket
+
+[Install]
+WantedBy=sockets.target

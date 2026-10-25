@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
+# SPDX-License-Identifier: MIT
+#
+# The estimate server's release bundle (ADR-0046). Only this builds a bundle that is
+# installed: from a tag `server-vX.Y.Z` on a commit that is on main, never on the target
+# host. The bundle and its SHA-256 go on the tag's release; the install checklist
+# (packages/server/deploy/DEPLOY.md) checks both before anything is installed.
+#
+# No `uses:` steps (ADR-0006), as for CI.
+name: release-server
+
+on:
+  push:
+    tags: ['server-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-server-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The only write: attaching the bundle to the tag's release.
+    permissions:
+      contents: write
+    steps:
+      - name: The tag is a server release on a commit on main
+        run: |
+          case "$GITHUB_REF_NAME" in
+            server-v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::tag $GITHUB_REF_NAME isn't server-vX.Y.Z" >&2; exit 1 ;;
+          esac
+          printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^server-v[0-9]+\.[0-9]+\.[0-9]+$'
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --filter=blob:none origin "${GITHUB_SHA}" '+refs/heads/main:refs/remotes/origin/main'
+          git checkout -q --detach "${GITHUB_SHA}"
+          git merge-base --is-ancestor "${GITHUB_SHA}" refs/remotes/origin/main
+      - name: Toolchain (Node + pnpm, hash-pinned)
+        run: .github/ci/setup-toolchain.sh
+      - name: Install, build and test the server
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm --filter @woodpatch/gcode-server test
+      - name: Build the bundle (a release build, from a clean tree, no --dev)
+        run: |
+          out="$RUNNER_TEMP/gcode-server-bundle"
+          node packages/server/deploy/build.mjs --out "$out"
+          (cd "$out" && sha256sum -c --quiet SHA256SUMS)
+          grep -q 'Nicolas Raynaud' "$out/main.js"
+          grep -q 'Nicolas Raynaud' "$out/worker.js"
+          # The bundle names the tagged commit, and the tag's version is the package's.
+          grep -q "+$(git rev-parse --short=12 HEAD)\$" "$out/BUILD"
+          version="$(node -p 'require("./packages/server/package.json").version')"
+          test "server-v$version" = "$GITHUB_REF_NAME"
+      - name: Attach the bundle and its SHA-256 to the tag's release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name="gcode-${GITHUB_REF_NAME}"
+          cd "$RUNNER_TEMP"
+          # Reproducible: sorted names, numeric root ownership, the commit's own time.
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime="@$(git -C "$GITHUB_WORKSPACE" show -s --format=%ct HEAD)" \
+            -czf "$name.tar.gz" gcode-server-bundle
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          cat "$name.tar.gz.sha256"
+          gh release create "$GITHUB_REF_NAME" "$name.tar.gz" "$name.tar.gz.sha256" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Estimate server ${GITHUB_REF_NAME#server-}" \
+            --notes "The estimate server's bundle, built by CI from this tag (ADR-0046). Verify it with packages/server/deploy/DEPLOY.md before installing."

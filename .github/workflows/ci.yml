@@ -83,6 +83,18 @@ jobs:
       - name: Performance budget (ADR-0014)
         # A ratio against upstream's parser, measured on this runner: machine-independent.
         run: node --expose-gc tools/bench-core.mjs --ci
+      - name: Shellcheck the estimate server's tripwire (ADR-0046)
+        run: shellcheck -s sh packages/server/deploy/tripwire.sh
+      - name: The estimate server's bundle builds, checks and carries the notice (ADR-0046)
+        # A release build (a clean tree, no --dev). systemd-analyze verify on the rendered
+        # units runs in the server's tests (deploy.test.ts).
+        run: |
+          out="$RUNNER_TEMP/gcode-server-bundle"
+          node packages/server/deploy/build.mjs --out "$out"
+          (cd "$out" && sha256sum -c --quiet SHA256SUMS)
+          grep -q 'Nicolas Raynaud' "$out/main.js"
+          grep -q 'Nicolas Raynaud' "$out/worker.js"
+          cat "$out/BUILD"
 
   # ── Every file carries copyright + licence information ──
   reuse:

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
 # SPDX-License-Identifier: MIT
 #
-# Installs Node and pnpm for CI without any third-party GitHub Action.
+# Installs Node, pnpm and shellcheck for CI without any third-party GitHub Action.
 #
 # Why not actions/setup-node or pnpm/action-setup: this CI uses no actions at all,
 # not even GitHub's own (ADR-0006), and the repository's Actions policy blocks
@@ -19,6 +19,12 @@ NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce # n
 
 PNPM_VERSION=12.4.2 # must match "packageManager" in package.json
 PNPM_SHA512=CK3GYTGAJ1x8ntraOdzwjJxhrU5+rzMKTzRh8QKw+QdCNFTRF/mOctR/7wYWBwZE17/8lzpqV/UJCm18NosHyQ==
+
+# For the estimate server's tripwire (ADR-0046). Approved by the operator for CI only,
+# 2026-10-25, pinned and hash-checked like Node. The hash matches GitHub's published
+# digest for the release asset.
+SHELLCHECK_VERSION=0.11.0
+SHELLCHECK_SHA256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 # the v0.11.0 linux.x86_64 .tar.xz
 
 tools="${RUNNER_TEMP:-/tmp}/toolchain"
 mkdir -p "$tools"
@@ -44,6 +50,15 @@ if [[ "$actual" != "$PNPM_SHA512" ]]; then
 fi
 npm install -g --ignore-scripts --no-fund --no-audit ./pnpm.tgz >/dev/null
 
-# Make both visible to later steps.
+# ── shellcheck ────────────────────────────────────────────────────────────
+sc_tar="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+curl -fsSLo "$sc_tar" \
+  "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${sc_tar}"
+echo "${SHELLCHECK_SHA256}  ${sc_tar}" | sha256sum -c --quiet -
+tar -xJf "$sc_tar"
+sc_bin="$tools/shellcheck-v${SHELLCHECK_VERSION}"
+
+# Make them visible to later steps.
 echo "$node_bin" >> "${GITHUB_PATH:-/dev/null}"
-echo "node $(node --version), pnpm $(pnpm --version)"
+echo "$sc_bin" >> "${GITHUB_PATH:-/dev/null}"
+echo "node $(node --version), pnpm $(pnpm --version), shellcheck $("$sc_bin/shellcheck" --version | sed -n 's/^version: //p')"

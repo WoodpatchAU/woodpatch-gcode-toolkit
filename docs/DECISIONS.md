@@ -3277,3 +3277,103 @@ up, with the numbers.
 **Consequences.** The server can be run and tested end to end on any host with systemd's
 tools. The caller must configure its four timeouts as stated, or the chain breaks.
 Changing a budget means rechecking the chain test and this table.
+
+## ADR-0046: Deploying the estimate server
+
+**Status:** Proposed, 2026-10-25 (parcel 5d-3). The reviewer's GO on the outline, with
+seven conditions, all met here. Whoever runs the host owns the values and the install.
+Shellcheck in CI was approved by the operator on 2026-10-25. It completes ADR-0040's "the
+unit files ship with the server's PR".
+
+**Context.** ADR-0040 set out what the units, the socket and the start-time check must
+enforce. The values those need are a host's: the caller's user, a group and its reserved
+gid, and paths. This repository is public, and must not hold them.
+
+**Decision.**
+
+- **Templates, not values.** `packages/server/deploy/systemd/` holds the socket, the
+  service and the tmpfiles entry, with `@PLACEHOLDERS@`.
+  - `render.mjs` fills them from a host's values file, which is kept privately by
+    whoever runs the host. It refuses:
+    - an unknown, missing or ill-formed field. Names are plain lower-case, the gid is an
+      integer outside systemd's ranges, paths are absolute and normalised with no `..`,
+      no trailing slash and no character a unit file would read specially, and workers
+      run 1-16;
+    - a placeholder left unfilled or not known;
+    - a write outside `--out`, or over a file without `--force`.
+  - It writes 0644; the install owns the files to root. `values.example.json` is
+    fictional.
+- **The units,** each line checked against ADR-0040's list, and a test holds every
+  sandbox line in the rendered service:
+  - the socket is `ListenStream=/run/wp-gcode/gcode.sock` (one path, nothing else),
+    `Accept=no`, `root:<group>` `0660`, `RemoveOnStop=yes`. The tripwire runs before the
+    socket is made and once it's bound;
+  - the service has `DynamicUser=yes` and the whole sandbox, with no
+    `MemoryDenyWriteExecute=` (V8's JIT).
+    - `LoadCredential=` holds the log key, and `WP_GCODE_BUILD` the bundle's build.
+    - `MemoryMax=` = (workers + 1) × (heap + young) + main, from the values (a replaced
+      worker briefly overlaps its successor).
+    - `TimeoutStopSec=60` exceeds the stop's own bound, ADR-0045's 41 s + 5 s.
+    - `StartLimitBurst=5` in 60 s, so repeated failures fail the start for good.
+  - `systemd-analyze verify` runs on units rendered from fictional values in the
+    server's tests, with ANY output a failure: it only warns, and exits 0, on a misspelt
+    key.
+- **The tripwire** (`tripwire.sh`) is POSIX sh, run as root outside the sandbox. It
+  refuses unless:
+  - **The group:** its members are exactly the caller in `/etc/group`, `/etc/gshadow`
+    AND NSS. A directory group may add members, or shadow the name, and that's refused
+    too. Its gshadow password starts with `!` or `*`, and it has no administrators.
+  - **The gid:** no other user has it as its primary group, in the files and in NSS as
+    far as NSS enumerates (under sssd with enumerate off, only the files are seen). It's
+    the group's alone, and NSS resolves it to that name. It's outside every sssd domain's
+    range (a domain without both `min_id` and `max_id` counts as unbounded), and outside
+    systemd's DynamicUser (61184-65519) and homed (60001-60513) ranges.
+  - **The directory** is `root:<group>` `0750`, and the socket `root:<group>` `0660`.
+    Neither has an extended ACL: owner and mode checks read an ACL mask as the group's
+    bits, and this estate sets default ACLs.
+  - **The socket unit** listens on exactly that one path.
+  - **The log key** is a regular file (not a link), `root:root` `0600`, at least 32
+    bytes.
+  - **The bundle and Node** are root-owned with no group or other write, file by file.
+    The service is a DynamicUser, so nothing it runs as may write its own code. The
+    bundle's `BUILD` is the build the units were rendered with.
+
+  Its tests run it against fixture `/etc` trees, with shims for `stat`, `getfacl`,
+  `getent` and `systemctl` (a test can't make files root-owned): one case per rule, each
+  refused with one line naming the rule. Shellcheck (0.11.0, pinned by hash in
+  `setup-toolchain.sh`) runs on it in CI.
+
+- **The bundle** (`build.mjs`) is one directory, needing only the pinned Node:
+  - `main.js` and `worker.js`, with core and the record package inlined, each with the
+    MIT banner;
+  - the tripwire, `BUILD` (`gcode-server-<version>+<commit>`), and LICENSE and NOTICE;
+  - `SHA256SUMS`.
+
+  It refuses an uncommitted tree unless `--dev`, which marks the build `-dev`. CI builds
+  one on every run and checks its sums and banners.
+
+- **Provenance:** only `release-server.yml` builds a bundle that's installed, on a tag
+  `server-vX.Y.Z` whose commit is on `main`. It tests the server, builds the bundle and
+  checks it names the tagged commit. It then attaches a reproducible tarball (sorted,
+  root-owned, the commit's time) and its SHA-256 to the tag's release. `DEPLOY.md`'s
+  checklist checks both, and `SHA256SUMS` and `BUILD`, before installing. Nothing is
+  built on the target host.
+  - **Not a Sigstore attestation:** that needs GitHub's `attest-build-provenance`
+    action, which ADR-0006's no-`uses:` policy rules out. The tag on main, the
+    workflow's log and the checksums stand in for it. Adding one is the operator's call:
+    an exception to ADR-0006, SHA-pinned.
+- **The split of work:**
+  - this repository holds the templates, the tripwire, the build and the checklist;
+  - whoever runs the host holds the values file (privately), reserves the gid per host,
+    stages the log key from its credential store, and installs and proves it by the
+    checklist;
+  - the caller configures its socket path and ADR-0045's four timeouts.
+- **The host** is the operator's decision, still pending. The reviewer and the host's
+  operators lean
+  to the calling application's host, beside its caller, which keeps the transport a Unix
+  socket; another host reopens ADR-0040.
+
+**Consequences.** Installing is a checklist with no step taken on trust: the bundle's
+origin, its contents, the group, the key and the units are each checked, and the
+tripwire checks the host side again at every start. A host's values never enter this
+repository. A misconfiguration fails the start, loudly, rather than serving.
