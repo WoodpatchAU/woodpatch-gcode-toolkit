@@ -10,7 +10,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { Budgets } from './budgets.js';
+import { LARGE_BODY_BYTES, LARGE_IN_FLIGHT, type Budgets } from './budgets.js';
 import type { ResponseCache } from './cache.js';
 import { ERRORS, MAX_REQUEST_BYTES, errorBody, parseRequest, type ErrorCode } from './contract.js';
 import type { Logger, RequestLog } from './log.js';
@@ -62,19 +62,27 @@ function jsonType(header: string | undefined): boolean {
   return params.every((p) => p === 'charset=utf-8' || p === 'charset="utf-8"');
 }
 
-/** The body, or 'too-large' as soon as it passes the cap (without reading further). */
-function readBody(req: IncomingMessage): Promise<Buffer | 'too-large'> {
+/**
+ * The body; or 'too-large' as soon as it passes the cap, or 'busy' if it grows past
+ * LARGE_BODY_BYTES and `admitLarge` says no. Either way nothing more is read.
+ */
+function readBody(
+  req: IncomingMessage,
+  admitLarge: () => boolean,
+): Promise<Buffer | 'too-large' | 'busy'> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let n = 0;
+    const stop = (why: 'too-large' | 'busy'): void => {
+      req.off('data', onData);
+      req.pause();
+      resolve(why);
+    };
     const onData = (c: Buffer): void => {
+      const before = n;
       n += c.length;
-      if (n > MAX_REQUEST_BYTES) {
-        req.off('data', onData);
-        req.pause();
-        resolve('too-large');
-        return;
-      }
+      if (n > MAX_REQUEST_BYTES) return stop('too-large');
+      if (before <= LARGE_BODY_BYTES && n > LARGE_BODY_BYTES && !admitLarge()) return stop('busy');
       chunks.push(c);
     };
     req.on('data', onData);
@@ -94,6 +102,10 @@ export function createEstimateServer(parts: ServerParts): Server {
   const { pool, logger, cache, budgets, build } = parts;
   const cap = inFlightCap(budgets);
   let inFlight = 0;
+  // Large bodies (over LARGE_BODY_BYTES) between arriving and their parse finishing: at
+  // most LARGE_IN_FLIGHT, so a request never waits behind more than one other big parse
+  // on the main thread (ADR-0045's contended bound).
+  let largeInFlight = 0;
   const server = createServer(
     {
       headersTimeout: budgets.headersMs,
@@ -128,18 +140,50 @@ export function createEstimateServer(parts: ServerParts): Server {
         return;
       }
       inFlight++;
-      // A client gone before its answer: a job still waiting for a worker is dropped.
+      // Released exactly once, at the FIRST of the response closing or its socket
+      // closing: a response queued behind a pipelined request has no socket of its own,
+      // so if the client goes it never closes, and a slot freed only there would leak.
+      // A client gone before its answer also drops its job if that's still waiting.
       const gone = new AbortController();
-      res.on('close', () => {
+      const socket = req.socket;
+      let large = false;
+      let released = false;
+      const releaseLarge = (): void => {
+        if (large) largeInFlight--;
+        large = false;
+      };
+      const release = (): void => {
+        if (released) return;
+        released = true;
         inFlight--;
+        releaseLarge();
+        socket.off('close', release);
         if (!res.writableFinished) gone.abort();
-      });
-      handle(req, res, log, fail, gone.signal)
+      };
+      res.once('close', release);
+      socket.once('close', release);
+      // One listener per request in flight on this socket, so pipelining can't trip
+      // Node's listener-leak warning.
+      if (socket.getMaxListeners() < cap + 10) socket.setMaxListeners(cap + 10);
+      const admitLarge = (): boolean => {
+        if (large) return true;
+        if (largeInFlight >= LARGE_IN_FLIGHT) return false;
+        largeInFlight++;
+        large = true;
+        return true;
+      };
+      let clientGone = false;
+      handle(req, res, log, fail, gone.signal, admitLarge, releaseLarge)
         .catch(() => {
+          // A client that went mid-request isn't an internal error: nobody to answer.
+          if (gone.signal.aborted || socket.destroyed) {
+            clientGone = true;
+            return;
+          }
           if (!res.headersSent) fail('INTERNAL');
           else res.destroy();
         })
-        .finally(() => logger.request(log));
+        .finally(() => (clientGone ? logger.event('client-gone') : logger.request(log)));
     },
   );
 
@@ -149,6 +193,8 @@ export function createEstimateServer(parts: ServerParts): Server {
     log: RequestLog,
     fail: (code: ErrorCode, closeAfter?: boolean) => void,
     gone: AbortSignal,
+    admitLarge: () => boolean,
+    releaseLarge: () => void,
   ): Promise<void> {
     if (req.url !== '/estimate') return fail('NOT_FOUND');
     if (req.method !== 'POST') {
@@ -160,9 +206,15 @@ export function createEstimateServer(parts: ServerParts): Server {
     if (declared !== undefined && Number(declared) > MAX_REQUEST_BYTES) {
       return fail('REQUEST_TOO_LARGE', true);
     }
+    // A declared large body is admitted (or not) before anything is read; a chunked one
+    // when it grows past the threshold.
+    if (declared !== undefined && Number(declared) > LARGE_BODY_BYTES && !admitLarge()) {
+      return fail('SERVER_BUSY', true);
+    }
 
-    const body = await readBody(req);
+    const body = await readBody(req, admitLarge);
     if (body === 'too-large') return fail('REQUEST_TOO_LARGE', true);
+    if (body === 'busy') return fail('SERVER_BUSY', true);
     log.bytes = body.length;
     let text: string;
     try {
@@ -174,6 +226,8 @@ export function createEstimateServer(parts: ServerParts): Server {
     const t0 = performance.now();
     const parsed = parseRequest(text);
     log.parseMs = performance.now() - t0;
+    // Its main-thread work is done: another large body may come in.
+    releaseLarge();
     if (!parsed.ok) {
       const { status } = ERRORS[parsed.error.error.code];
       send(res, status, JSON.stringify(parsed.error));

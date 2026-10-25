@@ -223,6 +223,8 @@ export class WorkerPool {
       });
     }
     if (this.#closed) return busy('SERVER_BUSY');
+    // Its client already left: nothing to queue for.
+    if (gone?.aborted) return busy('SERVER_BUSY');
     if ((this.#perScope.get(job.scope) ?? 0) >= this.#b.perScope) return busy('SCOPE_BUSY');
     const idle = this.#slots.find((s) => s.ready && !s.pending);
     if (!idle && this.#queue.length >= this.#b.queue) return busy('SERVER_BUSY');

@@ -3140,14 +3140,27 @@ up, with the numbers.
     which has no heap limit of its own, and its timers (the job budgets) would run late.
     `maxConnections` is the backstop, four above the cap, since idle keep-alive
     connections count too.
+  - **A slot is released exactly once,** at the first of the response closing or its
+    socket closing (review of #76, round two). A response queued behind a pipelined
+    request has no socket of its own, so if the client goes it never closes: a slot
+    freed only there leaked, for good. The same moment drops the request's job if it's
+    still waiting.
+  - **At most two large bodies** (over 1 MB) are between arriving and the end of their
+    parse at once. A third is SERVER_BUSY, closed unread: before its body when declared,
+    or as it grows past 1 MB when chunked. So a request never waits behind more than one
+    other large parse.
+  - A client that goes mid-request is logged as the event `client-gone`, not as an
+    error.
   - Every answer carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 - **The request is parsed on the main thread,** so the fair share is applied before any
   worker is taken. It's linear and capped by the body. Measured on the development host
   on 2026-10-24, it takes about 0.8 s for a 20 MB program and 2.1 s for a body that is
   nearly all JSON escapes. The budget allows 5 s, and a test holds both cases under it.
-  The cost is that a large parse delays other requests by that long; the in-flight
-  cap bounds how many can queue up behind each other. The reviewer accepted it for 5d-2
-  on that condition. Each request's `parseMs` is logged.
+  The cost is that parses run one at a time, so a large one delays the requests behind
+  it. The reviewer accepted the main-thread parse for 5d-2 provided the in-flight cap
+  landed, the 41 s below was stated as a per-request bound, and a trigger for moving
+  the parse was stated (below). The large-body limit above bounds the contention. Each
+  request's `parseMs` is logged.
   - The alternative was to parse in a worker, with a second round trip so the main
     thread could then judge the scope. It frees the main thread, but takes a worker
     before the fair share can be applied. **Move to it** when the logged p99 `parseMs`
@@ -3161,8 +3174,9 @@ up, with the numbers.
   - a worker that throws, crashes, exits unasked, or sends a reply that can't be
     deserialised answers INTERNAL. It's replaced either way;
   - after three workers in a row die before loading (a broken build), the pool stops
-    respawning. Everything queued or running then answers INTERNAL, the entry point
-    exits, and systemd's start limits take over;
+    respawning. Everything queued or running answers INTERNAL. The entry point stops
+    accepting, lets those answers go out (at most 2 s), then exits, and systemd's start
+    limits take over;
   - a job still waiting for a worker when its client goes is dropped, rather than hold
     a worker for an answer nobody reads. A running job finishes;
   - on SIGTERM the server stops accepting, and what's in flight finishes. Anything
@@ -3210,18 +3224,25 @@ up, with the numbers.
   | headers / whole request               | 10 s / 10 s                     |
   | timeout check interval                | 1 s                             |
   | requests in flight / connections      | workers + queue (10) / that + 4 |
+  | large bodies (over 1 MB) at once      | 2                               |
   | parse allowance                       | 5 s                             |
   | cache                                 | 1,000 responses, 64 MB          |
 
-  **The chain nests** (ADR-0040). The server's worst answer to one request is 41 s: the
-  request (10 s), one timeout check (1 s), the parse allowance (5 s), the queue (5 s)
-  and the job (20 s). That's per request: big parses ahead of it on the main thread come
-  on top, which the in-flight cap bounds. That's less than
-  the caller's HTTP timeout of 45 s, which is less than its queued job's timeout
-  (60 s), its queue worker's timeout (90 s) and its queue's retry-after (120 s). The
-  server can't set the caller's four; it states them, `CALLER_BUDGETS` records them, and
-  a test checks the whole chain. A slower worker host can lower `WP_GCODE_WORKERS`; it
-  must never raise a budget past the chain.
+  **The chain nests** (ADR-0040).
+  - **Alone,** the server answers a request within 41 s: the request (10 s), one
+    timeout check (1 s), the parse allowance (5 s), the queue (5 s) and the job (20 s).
+  - **Contended,** within 48 s. Parses run one at a time on the main thread, so those
+    received first come ahead: at most one other large parse (5 s), and the in-flight
+    cap's other eight small ones (0.25 s each, since a parse is linear and a small body
+    is at most 1 MB). Without the large-body limit it would be up to nine large parses,
+    86 s at the allowance, past both of the caller's first two timeouts.
+  - The contended 48 s is less than the caller's HTTP timeout of 55 s. That's less than
+    its queued job's timeout (60 s), which is less than its queue worker's timeout
+    (90 s), which is less than its queue's retry-after (120 s).
+  - The server can't set the caller's four timeouts. It states them, `CALLER_BUDGETS`
+    records them, and a test checks the whole chain.
+  - A slower worker host can lower `WP_GCODE_WORKERS`. It must never raise a budget
+    past the chain.
 
 - **Hostile input** (ADR-0040's suite). Each case must answer within its budgets, with a
   bounded body, and leave the server serving:

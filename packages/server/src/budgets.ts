@@ -50,7 +50,8 @@ export const DEFAULT_BUDGETS: Budgets = Object.freeze({
   scopeRetrySeconds: 10,
   // Receiving the request (25 MB over a local socket takes well under a second), with
   // Node checking the timeouts every checkMs. Then parsing, queueMs and jobMs: the whole
-  // answer within 10 + 1 + 5 + 5 + 20 = 41 s, inside the caller's 45 s (ADR-0045).
+  // answer alone within 10 + 1 + 5 + 5 + 20 = 41 s; contended, 48 s, inside the caller's
+  // 55 s (ADR-0045).
   headersMs: 10_000,
   requestMs: 10_000,
   checkMs: 1_000,
@@ -66,25 +67,45 @@ export const DEFAULT_BUDGETS: Budgets = Object.freeze({
  */
 export const PARSE_ALLOWANCE_MS = 5_000;
 
+/** A body over this is "large": at most LARGE_IN_FLIGHT of them are received and parsed at once. */
+export const LARGE_BODY_BYTES = 1_000_000;
+export const LARGE_IN_FLIGHT = 2;
+/** A small body's parse: linear, so a 1 MB body takes about a twentieth of a 20 MB one. */
+export const SMALL_PARSE_ALLOWANCE_MS = 250;
+
 /**
- * The longest the server takes to answer one request, from its first byte: receiving it
- * (Node notices a timeout up to checkMs late), parsing, waiting for a worker, running.
- * Per request: big parses queued ahead of it on the main thread come on top, which the
- * in-flight cap (workers + queue) bounds.
+ * The longest the server takes to answer one request alone, from its first byte:
+ * receiving it (Node notices a timeout up to checkMs late), parsing, waiting for a
+ * worker, running.
  */
 export function serverWorstMs(b: Budgets): number {
   return b.requestMs + b.checkMs + PARSE_ALLOWANCE_MS + b.queueMs + b.jobMs;
 }
 
 /**
+ * The same, CONTENDED: parses run one at a time on the main thread, so others received
+ * first come ahead. At most one other large parse (LARGE_IN_FLIGHT is 2, this request
+ * included) and the rest of the in-flight cap's small ones. This is the bound the
+ * caller's timeouts must exceed.
+ */
+export function serverContendedWorstMs(b: Budgets): number {
+  const others = b.workers + b.queue - 1;
+  return (
+    serverWorstMs(b) +
+    (LARGE_IN_FLIGHT - 1) * PARSE_ALLOWANCE_MS +
+    Math.max(0, others - (LARGE_IN_FLIGHT - 1)) * SMALL_PARSE_ALLOWANCE_MS
+  );
+}
+
+/**
  * The caller's side of the chain (ADR-0045), each strictly longer than the one inside
- * it: the server's worst answer < the HTTP timeout < the queued job's timeout < the
+ * it: the server's contended worst answer < the HTTP timeout < the queued job's timeout < the
  * queue worker's timeout < the queue's retry-after. The server can't set these; a test
  * checks the chain holds with this file's numbers, and the caller's configuration
  * states them.
  */
 export const CALLER_BUDGETS = Object.freeze({
-  httpTimeoutMs: 45_000,
+  httpTimeoutMs: 55_000,
   jobTimeoutMs: 60_000,
   workerTimeoutMs: 90_000,
   retryAfterMs: 120_000,

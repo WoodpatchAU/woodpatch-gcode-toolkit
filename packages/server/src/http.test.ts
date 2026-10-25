@@ -204,14 +204,6 @@ describe('the HTTP layer', () => {
     expect(s.logs.map((l) => JSON.parse(l).event)).toContain('worker-out-of-memory');
   });
 
-  /** Sends `first`, then `second` once `first` holds a worker; answers both. */
-  async function both(path: string, first: string, second: string): Promise<[Reply, Reply]> {
-    const a = send(path, { body: first });
-    await new Promise((r) => setTimeout(r, 100));
-    const b = send(path, { body: second });
-    return [await a, await b];
-  }
-
   it("gives SCOPE_BUSY past a scope's share, with Retry-After", async () => {
     const s = await start({ workers: 2, perScope: 1, jobMs: 5_000 });
     const [a, b] = await both(s.path, body(SLOW), body(JOB));
@@ -334,9 +326,13 @@ describe('hostile input (ADR-0040, ADR-0045)', () => {
 
 describe('the budget chain (ADR-0045)', () => {
   it('nests: the server answers before every timeout outside it', async () => {
-    const { CALLER_BUDGETS, serverWorstMs } = await import('./budgets.js');
+    const { CALLER_BUDGETS, serverContendedWorstMs, serverWorstMs } = await import('./budgets.js');
+    // Alone: 10 + 1 + 5 + 5 + 20 = 41 s. Contended: one other large parse (5 s) and eight
+    // small ones (0.25 s each) ahead of it, 48 s. The caller's timeouts exceed the latter.
+    expect(serverWorstMs(DEFAULT_BUDGETS)).toBe(41_000);
+    expect(serverContendedWorstMs(DEFAULT_BUDGETS)).toBe(48_000);
     const chain = [
-      serverWorstMs(DEFAULT_BUDGETS),
+      serverContendedWorstMs(DEFAULT_BUDGETS),
       CALLER_BUDGETS.httpTimeoutMs,
       CALLER_BUDGETS.jobTimeoutMs,
       CALLER_BUDGETS.workerTimeoutMs,
@@ -459,5 +455,108 @@ describe('intake bounds (review of #76)', () => {
     await a;
     await new Promise((r) => setTimeout(r, 100));
     expect(s.logs.map((l) => JSON.parse(l).event)).toContain('job-dropped');
+  });
+});
+
+/** A whole request as raw HTTP text. */
+const rawRequest = (json: string): string =>
+  `POST /estimate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`;
+
+/** With workers 1 and queue 1 (a cap of 2): both of two requests at once are admitted. */
+async function fullCap(path: string): Promise<void> {
+  const [a, b] = await both(path, body(SLOW, 'staff:x'), body(JOB, 'staff:y'));
+  expect([a.status, b.status]).toEqual([200, 200]);
+}
+/** Sends `first`, then `second` once `first` holds a worker; answers both. */
+async function both(path: string, first: string, second: string): Promise<[Reply, Reply]> {
+  const a = send(path, { body: first });
+  await new Promise((r) => setTimeout(r, 100));
+  const b = send(path, { body: second });
+  return [await a, await b];
+}
+const settle = () => new Promise((r) => setTimeout(r, 300));
+
+describe('in-flight slots are never lost (review of #76, round two)', () => {
+  const B = { workers: 1, queue: 1, jobMs: 5_000 };
+
+  it('a pipelined burst, then a disconnect, leaves the full cap', async () => {
+    const s = await start(B);
+    const burst = rawRequest(body(SLOW, 'staff:p')) + rawRequest(body(JOB, 'staff:q')).repeat(20);
+    const { socket } = raw(s.path, burst);
+    await new Promise((r) => setTimeout(r, 200));
+    socket.destroy();
+    await new Promise((r) => setTimeout(r, 1_500)); // the slow job runs out
+    await fullCap(s.path);
+  });
+
+  it('a client gone mid-body leaves the full cap, and is logged as client-gone', async () => {
+    const s = await start(B);
+    const json = body(JOB);
+    const half = rawRequest(json).slice(0, -Math.floor(json.length / 2));
+    const { socket } = raw(s.path, half);
+    await new Promise((r) => setTimeout(r, 100));
+    socket.destroy();
+    await settle();
+    await fullCap(s.path);
+    const lines = s.logs.map((l) => JSON.parse(l));
+    expect(lines.map((l) => l.event)).toContain('client-gone');
+    expect(lines.filter((l) => l.event === 'request' && l.status === 500)).toEqual([]);
+  });
+
+  it('a client gone while queued leaves the full cap, and its job is dropped', async () => {
+    const s = await start(B);
+    const a = send(s.path, { body: body(SLOW, 'staff:a') });
+    await new Promise((r) => setTimeout(r, 100));
+    const { socket } = raw(s.path, rawRequest(body(JOB, 'staff:b')));
+    await new Promise((r) => setTimeout(r, 100));
+    socket.destroy();
+    await a;
+    await settle();
+    expect(s.logs.map((l) => JSON.parse(l).event)).toContain('job-dropped');
+    await fullCap(s.path);
+  });
+
+  it('admits at most two large bodies at once, declared or chunked', async () => {
+    const s = await start({ workers: 2, queue: 8 });
+    const bigHeaders = (n: number) =>
+      `POST /estimate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${n}\r\n\r\n`;
+    // Two large bodies declared, then stalled: both admitted and waiting for their bytes.
+    const held = [raw(s.path, bigHeaders(2_000_000)), raw(s.path, bigHeaders(2_000_000))];
+    await new Promise((r) => setTimeout(r, 100));
+    // A third declared large: busy, before its body.
+    const third = await raw(s.path, bigHeaders(2_000_000)).reply;
+    expect(third).toMatch(/^HTTP\/1\.1 503/);
+    expect(third).toMatch(/"SERVER_BUSY"/);
+    // A chunked one is turned away as it grows past the threshold.
+    const chunked = raw(
+      s.path,
+      'POST /estimate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n',
+    );
+    const piece = 'x'.repeat(600_000);
+    chunked.socket.write(`${piece.length.toString(16)}\r\n${piece}\r\n`);
+    chunked.socket.write(`${piece.length.toString(16)}\r\n${piece}\r\n`);
+    expect(await chunked.reply).toMatch(/"SERVER_BUSY"/);
+    // Small bodies are unaffected.
+    expect((await send(s.path, { body: body(JOB) })).status).toBe(200);
+    for (const h of held) h.socket.destroy();
+    await settle();
+    // Their slots came back: two large ones are admitted again.
+    const again = [raw(s.path, bigHeaders(2_000_000)), raw(s.path, bigHeaders(2_000_000))];
+    await new Promise((r) => setTimeout(r, 100));
+    for (const h of again) h.socket.destroy();
+    const results = await Promise.all(again.map((h) => h.reply));
+    expect(results.filter((r) => /SERVER_BUSY/.test(r))).toEqual([]);
+  });
+
+  it("doesn't queue a job whose client left before it was submitted", async () => {
+    const s = await start(B);
+    const gone = new AbortController();
+    gone.abort();
+    const done = await s.pool.submit(
+      { scope: 's', gcode: JOB, machine: RECORD, recordHash: '', build: BUILD },
+      gone.signal,
+    );
+    expect(done.outcome).toEqual({ kind: 'error', code: 'SERVER_BUSY' });
+    await fullCap(s.path);
   });
 });

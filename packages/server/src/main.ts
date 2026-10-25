@@ -66,8 +66,14 @@ const logger = new Logger(secret, (line) => process.stdout.write(`${line}\n`));
 secret.fill(0);
 const pool = new WorkerPool(new URL('./worker.js', import.meta.url), budgets, (name, fields) => {
   logger.event(name, fields);
-  // Workers that can't start: exit, so systemd restarts us under its start limits.
-  if (name === 'workers-failing') process.exit(1);
+  // Workers that can't start: the pool answers what it held with INTERNAL. Let those
+  // answers go out (the server stops accepting, and closes once they have), then exit,
+  // so systemd restarts us under its start limits.
+  if (name === 'workers-failing') {
+    setTimeout(() => process.exit(1), 2_000).unref();
+    server.close(() => process.exit(1));
+    server.closeIdleConnections();
+  }
 });
 const cache = new ResponseCache(budgets.cacheEntries, budgets.cacheBytes);
 const server = createEstimateServer({ pool, logger, cache, budgets, build });
