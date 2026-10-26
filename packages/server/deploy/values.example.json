@@ -1,0 +1,10 @@
+{
+  "group": "wpgcode",
+  "gid": 960,
+  "callerUser": "exampleapp",
+  "prefix": "/opt/wp-gcode",
+  "credFile": "/etc/wp-gcode/log-key",
+  "node": "/opt/wp-gcode/node/bin/node",
+  "inaccessible": ["/srv/example-app", "/etc/example-app"],
+  "workers": 2
+}

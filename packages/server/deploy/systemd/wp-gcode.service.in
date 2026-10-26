@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
+# SPDX-License-Identifier: MIT
+#
+# The estimate server (ADR-0040, ADR-0045, ADR-0046). Rendered by deploy/render.mjs from a
+# host's private values file; never edit a rendered copy by hand. Every line of the
+# sandbox below is ADR-0040's, and a test checks each is present.
+
+[Unit]
+Description=Woodpatch G-code estimate server
+Documentation=https://github.com/WoodpatchAU/woodpatch-gcode-toolkit/blob/main/packages/server/deploy/DEPLOY.md
+Requires=wp-gcode.socket
+After=wp-gcode.socket
+# Repeated failed starts stop the socket too (ADR-0040's "fails closed").
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Outside the sandbox, as root: the group rules, the log key, the bundle (ADR-0040). Run
+# from a root-only system path, never from the bundle it checks (ADR-0046).
+ExecStartPre=+@TRIPWIRE@ service --group @GROUP@ --gid @GID@ --caller @CALLER_USER@ --dir /run/wp-gcode --cred @CRED_FILE@ --bundle @PREFIX@/bundle --build @BUILD@ --node @NODE@
+ExecStart=@NODE@ @PREFIX@/bundle/main.js
+Environment=WP_GCODE_BUILD=@BUILD@
+Environment=WP_GCODE_WORKERS=@WORKERS@
+Environment=WP_GCODE_HEAP_MB=@HEAP_MB@
+Environment=WP_GCODE_YOUNG_MB=@YOUNG_MB@
+LoadCredential=log-key:@CRED_FILE@
+Restart=on-failure
+RestartSec=2
+# The longest answer still owed, contended, plus 5 s (48 + 5 = 53 s; 56.5 s at 16
+# workers; ADR-0045), with room.
+TimeoutStopSec=60
+
+# The sandbox (ADR-0040).
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+InaccessiblePaths=@INACCESSIBLE@
+# No other service's state: the caller passes every input, so nothing here is needed.
+TemporaryFileSystem=/var/lib
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+UMask=0077
+# Not MemoryDenyWriteExecute=: V8's JIT needs writable executable memory (ADR-0040).
+
+# It shares its host with the caller, whose services must always win (ADR-0046):
+# (workers + 1) x (heap + young) + main, since a replaced worker briefly overlaps its
+# successor; throttled from 90% of that; no swap; the kernel's first choice to kill.
+MemoryMax=@MEMORY_MAX_MB@M
+MemoryHigh=@MEMORY_HIGH_MB@M
+MemorySwapMax=0
+OOMScoreAdjust=@OOM_SCORE_ADJUST@
+OOMPolicy=stop
+CPUQuota=@CPU_QUOTA@%
+CPUWeight=@CPU_WEIGHT@
+IOWeight=@IO_WEIGHT@
+Nice=@NICE@
+TasksMax=@TASKS_MAX@
+LimitCORE=0
