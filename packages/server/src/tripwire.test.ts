@@ -33,6 +33,7 @@ cat "$TW_FIX/listen"`,
   realpath: `#!/bin/sh
 for p; do :; done
 line=$(grep -F -- "$p|" "$TW_FIX/realpath" 2>/dev/null | head -n1)
+[ "\${line#*|}" = FAIL ] && exit 1
 if [ -n "$line" ]; then printf '%s\n' "\${line#*|}"; else printf '%s\n' "$p"; fi`,
 };
 
@@ -154,7 +155,13 @@ function setup(change: (f: Fixture, p: Record<string, string>) => void = () => {
       'socket-post': ['--socket', p.socket, '--unit', 'wp-gcode.socket'],
     }[mode];
     const r = spawnSync('sh', [TRIPWIRE, mode, ...common, ...extra], {
-      env: { PATH: `${bin}:/usr/bin:/bin`, TRIPWIRE_ROOT: root, TW_FIX: fix },
+      env: {
+        PATH: '/usr/bin:/bin',
+        TRIPWIRE_TEST: '1',
+        TRIPWIRE_TEST_PATH: `${bin}:/usr/bin:/bin`,
+        TRIPWIRE_ROOT: root,
+        TW_FIX: fix,
+      },
       encoding: 'utf8',
     });
     return { status: r.status, stderr: r.stderr };
@@ -537,6 +544,63 @@ describe('the tripwire', () => {
       ALL,
       /isn't plain numbers/,
     ],
+    // Review of #77 r2: each refusal below survived a mutant without its own case.
+    [
+      'a setuid bundle file (4755, no write bit)',
+      (f, p) => {
+        f.stat[join(p.bundle as string, 'main.js')] = '0 0 4755 10 regular file';
+      },
+      ['service'],
+      /setuid/,
+    ],
+    [
+      'a setgid bundle directory (2755)',
+      (f, p) => {
+        f.stat[join(p.bundle as string, 'lib')] = '0 0 2755 100 directory';
+      },
+      ['service'],
+      /setuid/,
+    ],
+    [
+      'a setuid tripwire (4755)',
+      (f) => {
+        f.stat[TRIPWIRE] = '0 0 4755 9000 regular file';
+      },
+      ALL,
+      /setuid/,
+    ],
+    [
+      'a world-writable /',
+      (f) => {
+        f.stat['/'] = '0 0 777 4096 directory';
+      },
+      ALL,
+      /^wp-gcode tripwire: \/ must not be writable/m,
+    ],
+    [
+      'a symlink on the way to the bundle',
+      (f, p) => {
+        f.realpath[p.bundle as string] = '/srv/elsewhere/bundle';
+      },
+      ['service'],
+      /real path/,
+    ],
+    [
+      'a symlink on the way to the log key',
+      (f, p) => {
+        f.realpath[p.cred as string] = '/etc/elsewhere/log-key';
+      },
+      ['service'],
+      /real path/,
+    ],
+    [
+      "a path that doesn't resolve",
+      (f, p) => {
+        f.realpath[p.node as string] = 'FAIL';
+      },
+      ['service'],
+      /can't resolve/,
+    ],
     [
       "a build the units weren't rendered for",
       (f) => {
@@ -588,13 +652,51 @@ describe('the tripwire', () => {
           '/x',
         ],
         {
-          env: { PATH: '/usr/bin:/bin', TRIPWIRE_ROOT: '/nonexistent' },
+          env: { PATH: '/usr/bin:/bin', TRIPWIRE_TEST: '1', TRIPWIRE_ROOT: '/nonexistent' },
           encoding: 'utf8',
         },
       );
       expect(r.status, gid).toBe(1);
       expect(r.stderr).toMatch(/DynamicUser|homed|nobody/);
     }
+  });
+
+  it('ignores its test-only settings without TRIPWIRE_TEST=1', () => {
+    // The same fixture that passes with the marker: without it, the real /etc and the
+    // real PATH are used, where the fixture's group doesn't exist.
+    const r = spawnSync(
+      'sh',
+      [
+        TRIPWIRE,
+        'socket-pre',
+        '--group',
+        'wpgcode',
+        '--gid',
+        '960',
+        '--caller',
+        'bosapp',
+        '--dir',
+        '/run/wp-gcode',
+      ],
+      {
+        env: {
+          PATH: '/usr/bin:/bin',
+          TRIPWIRE_ROOT: '/nonexistent',
+          TRIPWIRE_TEST_PATH: '/nonexistent',
+        },
+        encoding: 'utf8',
+      },
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/group wpgcode isn't in \/etc\/group/);
+    expect(r.stderr).not.toMatch(/nonexistent/);
+  });
+
+  it('passes an empty bundle file ("regular empty file" to GNU stat)', () => {
+    const run = setup((f, p) => {
+      f.stat[join(p.bundle as string, 'lib', 'worker.js')] = '0 0 644 0 regular empty file';
+    });
+    expect(run('service')).toEqual({ status: 0, stderr: '' });
   });
 
   it('passes with no sssd at all, and refuses bad arguments', () => {

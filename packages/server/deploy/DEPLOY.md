@@ -53,7 +53,10 @@ database's and the cache's, say). The sandbox allows only `AF_UNIX`, so a reacha
 socket is the one way out. The service also gets an empty `/var/lib`, so nothing at or
 under `/var/lib` goes in `inaccessible` (it wouldn't exist there, and the start would
 fail): `render.mjs` refuses one. Check every path exists before rendering, since a missing
-one also fails the start.
+one also fails the start, and that each is its real path (`realpath -e` gives it back
+unchanged): a symlink into `/var/lib` gets past `render.mjs` and fails the start the
+same way. Keep `prefix`, `node` and `credFile` outside `/var/lib` and outside every
+`inaccessible` path: `render.mjs` refuses them there.
 
 ## 2. The group and its gid
 
@@ -107,13 +110,46 @@ root-owned and not group- or other-writable too, and its path must be its real p
      `git rev-list --first-parent origin/main | grep -x "$(git rev-parse server-vX.Y.Z^{commit})"`;
    - the release's assets were uploaded by that workflow's run (both its jobs' logs
      print the SHA-256).
-3. `sha256sum -c gcode-server-vX.Y.Z.tar.gz.sha256`, then unpack it.
-4. Inside the bundle: `sha256sum -c SHA256SUMS`. `BUILD` must end with the tag's commit
-   (`git rev-parse --short=12 server-vX.Y.Z`).
-5. Install it at `<prefix>/bundle`: the directory `root:root 0755`, its files
+3. `sha256sum -c gcode-server-vX.Y.Z.tar.gz.sha256`.
+4. **Before unpacking, check its entries are exactly the bundle's files**, each a plain
+   file. `sha256sum -c` checks only the files it lists, and GNU tar strips up to the
+   last `../` from a name, so an extra entry, an `a/../../x`, a second copy of a name or
+   a device node would otherwise get past it. This is the release workflow's own check.
+   In an empty directory, as a user other than root:
+
+   ```bash
+   t=gcode-server-vX.Y.Z.tar.gz; tar -tzf "$t" --quoting-style=escape | LC_ALL=C sort > actual
+   ```
+
+   ```bash
+   uniq -d actual
+   ```
+
+   ```bash
+   tar -xzOf "$t" gcode-server-bundle/SHA256SUMS > sums; grep -Evx '[0-9a-f]{64}  [A-Za-z0-9_][A-Za-z0-9._-]*' sums
+   ```
+
+   ```bash
+   { echo gcode-server-bundle/; echo gcode-server-bundle/SHA256SUMS; sed 's|^[0-9a-f]*  |gcode-server-bundle/|' sums; } | LC_ALL=C sort | diff - actual
+   ```
+
+   ```bash
+   tar -tvzf "$t" --numeric-owner --quoting-style=escape | grep -Ev '^(d[^ sStT]* .* gcode-server-bundle/|-[^ sStT]* .* gcode-server-bundle/[^/]+)$'
+   ```
+
+   Each of these must print **nothing**: no name twice, every `SHA256SUMS` line a hash
+   and a plain name, the entries exactly those names, and every entry a plain file or
+   the one directory. Only then unpack it, still not as root, with
+   `tar -xzf "$t" --no-same-owner --no-same-permissions`: the bundle's own modes are set
+   at install (step 6), never taken from the archive.
+
+5. Inside the bundle: `sha256sum -c SHA256SUMS`. `BUILD` must be exactly one line
+   (`wc -l < BUILD` and `grep -c '' BUILD` both print 1), `gcode-server-X.Y.Z+`
+   followed by the tag's commit (`git rev-parse --short=12 server-vX.Y.Z`).
+6. Install it at `<prefix>/bundle`: the directory `root:root 0755`, its files
    `root:root 0644`, and `tripwire.sh` `0755`. Every directory above it, up to `/`, must
    be root-owned and not group- or other-writable.
-6. **Install the tripwire apart from the bundle.** It runs as root, so it never runs from
+7. **Install the tripwire apart from the bundle.** It runs as root, so it never runs from
    the bundle: copy the bundle's `tripwire.sh` to `tripwire`
    (`/usr/local/libexec/wp-gcode-tripwire` by default), `root:root 0755`, in a
    directory that is root-owned and not group- or other-writable all the way up to `/`.

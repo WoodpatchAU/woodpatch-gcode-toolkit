@@ -111,6 +111,20 @@ export function readValues(raw) {
   if (out.tripwire === out.prefix || out.tripwire.startsWith(`${out.prefix}/`)) {
     throw new RenderError('"tripwire" must be outside "prefix": never run from the bundle');
   }
+  // The service runs node and reads the bundle inside its sandbox, so neither may be
+  // where it can't see: its /var/lib is an empty tmpfs, ProtectHome= hides /home, /root
+  // and /run/user, and the inaccessible paths are hidden. Said here, not as a failed
+  // start. The log key and the tripwire are read by systemd and run unsandboxed, so
+  // the sandbox doesn't hide them; they're kept out of those places anyway, so the
+  // host's layout keeps the service's files together and visible.
+  const under = (p, dir) => p === dir || p.startsWith(`${dir}/`);
+  for (const k of ['prefix', 'node', 'credFile', 'tripwire']) {
+    for (const dir of ['/var/lib', '/home', '/root', '/run/user']) {
+      if (under(out[k], dir)) throw new RenderError(`"${k}" is under ${dir}`);
+    }
+    const hidden = out.inaccessible.find((dir) => under(out[k], dir));
+    if (hidden) throw new RenderError(`"${k}" is under the inaccessible path ${hidden}`);
+  }
   return out;
 }
 
