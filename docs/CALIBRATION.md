@@ -64,7 +64,10 @@ None of this replaces the operator's judgement at the machine. If anything looks
 stop.
 
 1. **Remove the tool.** Retracted is not clear: on some machines, even at the top of Z
-   the tool can sit below a workpiece top. Collet nut on and tight.
+   the tool can sit below a workpiece top. **Don't tighten a collet nut on an empty
+   collet:** with no shank in it, an ER collet can be over-compressed and damaged. Clamp
+   a short plain shank (a dowel pin, or a blank with no cutting edge), or remove the
+   collet and nut if the spindle's maker allows it to run bare.
 2. **Clear the bed and the workholding** from the whole envelope, and from the gantry's
    path at the top of Z.
 3. **Home the machine first.** Check the readout: machine Z 0 at the top, negative
@@ -78,12 +81,18 @@ stop.
 6. **Before the plunge program,** jog over its start point (the envelope's centre) to its
    lowest machine Z, and check the spindle nose clears the bed.
 7. **Check each program's preview and extents** on the controller before starting it.
-8. **Spindle off.** Only the events program (`--events`) starts it, and that runs with no
-   tool fitted.
+8. **Spindle off.** Only the events program (`--events`) starts it. It runs with no
+   cutting tool fitted, and the collet as in step 1: a deformed collet spinning is the
+   one real hazard here. Stand clear of the spindle's line. If neither a plain shank nor
+   running bare is possible, skip the events program. On its first lap, if the first
+   dwell after M3 hasn't ended within about 10 s of the spindle reaching speed, feed
+   hold and stop: the controller reads G4's P in another unit than the record's dialect
+   says, and the dwell could run for half an hour.
 9. **A hand on the E-stop** (or feed hold) for every run.
 10. **First pass: the feed AND rapid overrides low,** or single-block through the first
     lines. A feed override alone leaves every G0 at full speed. Watch the first moves:
-    up to the safe height, then across to the start point. Stop it.
+    up to the safe height, then across to the start point. Stop if anything looks
+    wrong.
 11. **Timed run at 100% feed and 100% rapid.** If it isn't, record the overrides used:
     they change the time.
 

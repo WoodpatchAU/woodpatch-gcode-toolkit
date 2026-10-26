@@ -11,6 +11,13 @@
 // stay fictional (its id, its name, and every value a seed).
 //
 //   node .github/ci/calibration-private.mjs     checks `git ls-files`
+//
+// What it can't catch, so review still does: a record or a runs file rewritten without
+// its format name, header or field names (as CSV, say); a machine's numbers pasted into
+// prose or a test; anything already in history, or only in a branch or PR it never runs
+// on; and a file in a MAY_MENTION path (the code and docs are trusted to name these
+// things, not to hold a machine's data). It's a net for the likely slip, a generated
+// file or a record copied in whole, not a proof that nothing private is here.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
