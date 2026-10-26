@@ -621,6 +621,15 @@ describe('in-flight slots are never lost (review of #76, round two)', () => {
     const bad = Buffer.alloc(1_500_000, 0xff);
     const head = `POST /estimate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${bad.length}\r\n\r\n`;
     const pinned = raw(s.path, rawRequest(body(SLOW, 'staff:p')));
+    // Listen from the start: on a fast host every answer can arrive before the checks
+    // below are done, and a listener added afterwards would wait forever.
+    const text = new Promise<string>((resolve) => {
+      let got = '';
+      pinned.socket.on('data', (c: Buffer) => {
+        got += c.toString('utf8');
+        if ((got.match(/REQUEST_MALFORMED/g) ?? []).length === 2) resolve(got);
+      });
+    });
     for (let i = 0; i < 2; i++) {
       pinned.socket.write(head);
       pinned.socket.write(bad);
@@ -635,14 +644,7 @@ describe('in-flight slots are never lost (review of #76, round two)', () => {
     expect(early).toEqual([]);
     for (const n of next) n.socket.destroy();
     // The pipelined answers: the estimate, then two REQUEST_MALFORMED.
-    const text = await new Promise<string>((resolve) => {
-      let got = '';
-      pinned.socket.on('data', (c: Buffer) => {
-        got += c.toString('utf8');
-        if ((got.match(/REQUEST_MALFORMED/g) ?? []).length === 2) resolve(got);
-      });
-    });
-    expect(text).toMatch(/^HTTP\/1\.1 200/);
+    expect(await text).toMatch(/^HTTP\/1\.1 200/);
     pinned.socket.destroy();
   });
 

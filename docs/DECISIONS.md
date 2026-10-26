@@ -3302,9 +3302,12 @@ gid, and paths. This repository is public, and must not hold them.
       integer outside systemd's ranges and not nobody's (65534) or an overflow id, paths
       are absolute and normalised with no `..`, no trailing slash and no character a unit
       file would read specially, and workers run 1-16;
-    - a tripwire path inside the prefix (it must never run from the bundle), and an
-      inaccessible path at or under `/var/lib` (the service's `/var/lib` is an empty
-      tmpfs, where it wouldn't exist, and the start would fail);
+    - a tripwire path inside the prefix (it must never run from the bundle);
+    - `prefix` or `node` where the sandbox hides them (under `/var/lib`, `/home`,
+      `/root`, `/run/user` or an `inaccessible` path), and `credFile` or `tripwire`
+      there too, though systemd reads and runs those outside the sandbox;
+    - an inaccessible path at or under `/var/lib`: the service's `/var/lib` is an empty
+      tmpfs, where it wouldn't exist, so the start would fail;
     - a placeholder left unfilled or not known;
     - a write outside `--out`, through a symlink (even with `--force`), or over a file
       without `--force`. It checks with `lstat` and creates each file exclusively.
@@ -3332,8 +3335,9 @@ gid, and paths. This repository is public, and must not hold them.
   - `systemd-analyze verify` runs on units rendered from fictional values in the
     server's tests, with ANY output a failure: it only warns, and exits 0, on a misspelt
     key.
-- **The tripwire** (`tripwire.sh`) is POSIX sh, run as root outside the sandbox. It
-  refuses unless:
+- **The tripwire** (`tripwire.sh`) is POSIX sh, run as root outside the sandbox, with
+  its own PATH (the base system's directories: systemd's default puts `/usr/local/bin`
+  first). It refuses unless:
   - **The group:** its members are exactly the caller in `/etc/group`, `/etc/gshadow`
     AND NSS. A directory group may add members, or shadow the name, and that's refused
     too. Its gshadow password starts with `!` or `*`, and it has no administrators.
@@ -3391,10 +3395,17 @@ gid, and paths. This repository is public, and must not hold them.
     without `uses:`.
   - **release,** the only one with write access: on a fresh runner, it runs no code from
     the repository or its dependencies, only base-system tools by absolute path. It
-    checks the tag's first-parent line again, decodes the tarball, checks its SHA-256,
-    that it holds only the bundle's own files, its `SHA256SUMS` and its `BUILD`, then
-    attaches it and its SHA-256 to the tag's release. A dependency compromised in the
-    build job can't reach the write token.
+    checks the tag's first-parent line again, decodes the tarball, and checks its
+    SHA-256. Before extracting anything, it checks that the tarball's entries are
+    exactly the bundle's directory, the plain file names `SHA256SUMS` lists, and
+    `SHA256SUMS` itself. `sha256sum -c` checks only what it lists, and GNU tar strips up
+    to the last `../` from a name, so an extra entry or `a/../../x` would otherwise pass
+    and land elsewhere (review of #77 r2). Then `SHA256SUMS`, and `BUILD` as a whole
+    string (this tag's version and commit). Only then does it attach the tarball and its
+    SHA-256 to the tag's release. DEPLOY.md's install runs the same entry check. A
+    dependency compromised in the build job can't reach the write token. The entry
+    check lists owners as numbers (a raw owner name could split a line), refuses any
+    name twice and any setuid, setgid or sticky bit, and BUILD must be one ended line.
 
   `DEPLOY.md`'s checklist checks the tarball, `SHA256SUMS` and `BUILD` again before
   installing. Nothing is built on the target host.

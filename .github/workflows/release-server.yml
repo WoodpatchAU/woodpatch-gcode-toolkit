@@ -85,8 +85,9 @@ jobs:
           sha="$(sha256sum "$name.tar.gz" | cut -d' ' -f1)"
           echo "$sha  $name.tar.gz"
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
-          # Job outputs hold up to 1 MB each; parts of 100 kB keep every one well inside
-          # that, and inside one environment variable's limit in the release job.
+          # A job's outputs hold up to 1 MB IN ALL (counted as UTF-16, so about 500 k
+          # characters of base64): four parts of 100 kB fit, with the hash. Each part is
+          # one environment variable in the release job, well under its 128 kB limit.
           base64 -w0 "$name.tar.gz" > b64
           [ "$(wc -c < b64)" -le 400000 ] ||
             { echo "::error::the tarball has outgrown four output parts: add more" >&2; exit 1; }
@@ -112,7 +113,7 @@ jobs:
           PART2: ${{ needs.build.outputs.part2 }}
           PART3: ${{ needs.build.outputs.part3 }}
         run: |
-          set -eu
+          set -euo pipefail
           export PATH=/usr/bin:/bin
           git=/usr/bin/git tar=/usr/bin/tar sum=/usr/bin/sha256sum gh=/usr/bin/gh
           for t in "$git" "$tar" "$sum" "$gh" /usr/bin/base64; do [ -x "$t" ]; done
@@ -130,19 +131,61 @@ jobs:
 
           name="gcode-${GITHUB_REF_NAME}"
           printf '%s%s%s%s' "$PART0" "$PART1" "$PART2" "$PART3" > b64
-          grep -Eq '^[A-Za-z0-9+/]+=*$' b64
+          # grep -v -x: fail if ANY line isn't wholly base64 (not just "if one line is").
+          [ -s b64 ]
+          if grep -Eqvx '[A-Za-z0-9+/]*=*' b64; then echo "::error::the tarball isn't base64" >&2; exit 1; fi
           /usr/bin/base64 -d b64 > "$name.tar.gz"
           echo "$SHA256  $name.tar.gz" | "$sum" -c --quiet -
 
-          # Only the bundle's own directory, plain files, nothing outside it.
-          "$tar" -tvzf "$name.tar.gz" | while read -r perms _ _ _ _ path; do
-            case "$perms" in d* | -*) ;; *) echo "::error::$path isn't a file or directory" >&2; exit 1 ;; esac
-            case "$path" in gcode-server-bundle/ | gcode-server-bundle/[!/.]*) ;; *) echo "::error::$path" >&2; exit 1 ;; esac
+          # Exactly the bundle's files, before anything is extracted: the directory, the
+          # files SHA256SUMS lists (each a plain name), and SHA256SUMS. Nothing extra
+          # (sha256sum -c checks only what it lists) and nothing elsewhere: GNU tar
+          # strips up to the last ../ on extract, so "gcode-server-bundle/a/../../x"
+          # would land outside it. Names are compared whole, as tar prints them escaped.
+          # No name twice: tar -xzO prints EVERY member called SHA256SUMS, but only the
+          # last is left on disk, so a second copy could list a file the first never
+          # hashes.
+          "$tar" -tzf "$name.tar.gz" --quoting-style=escape | LC_ALL=C sort > actual
+          if [ -n "$(uniq -d actual)" ]; then
+            echo "::error::the tarball holds a name twice" >&2; exit 1
+          fi
+          "$tar" -xzOf "$name.tar.gz" gcode-server-bundle/SHA256SUMS > sums
+          if grep -Evqx '[0-9a-f]{64}  [A-Za-z0-9_][A-Za-z0-9._-]*' sums; then
+            echo "::error::SHA256SUMS names something that isn't a plain file name" >&2; exit 1
+          fi
+          { echo gcode-server-bundle/
+            echo gcode-server-bundle/SHA256SUMS
+            sed 's|^[0-9a-f]*  |gcode-server-bundle/|' sums
+          } | LC_ALL=C sort > expected
+          if ! cmp -s expected actual; then
+            echo "::error::the tarball's entries aren't exactly the bundle's files" >&2
+            diff expected actual >&2 || true
+            exit 1
+          fi
+          # And each is a plain file, or the one directory.
+          # --numeric-owner: tar prints an owner NAME raw, and one with a newline in it
+          # would split an entry into two lines here.
+          "$tar" -tvzf "$name.tar.gz" --numeric-owner --quoting-style=escape | while read -r perms _ _ _ _ path; do
+            case "$perms:$path" in
+              # No setuid, setgid or sticky bit either: install sets the modes, but
+              # there's no reason to accept one.
+              *[sStT]*:*) echo "::error::$path has a setuid, setgid or sticky bit" >&2; exit 1 ;;
+              d*:gcode-server-bundle/ | -*:gcode-server-bundle/?*) ;;
+              *) echo "::error::$path isn't a plain file in the bundle" >&2; exit 1 ;;
+            esac
           done
           mkdir x
           "$tar" -xzf "$name.tar.gz" -C x --no-same-owner
           (cd x/gcode-server-bundle && "$sum" -c --quiet SHA256SUMS)
-          grep -Eq "\\+$(printf '%s' "$GITHUB_SHA" | cut -c1-12)[0-9a-f]*\$" x/gcode-server-bundle/BUILD
+          # The whole BUILD: this tag's version, and its commit.
+          version="$(printf '%s' "${GITHUB_REF_NAME#server-v}" | sed 's/\./\\./g')"
+          # Both: wc -l counts newlines, so it misses an unterminated second line, and
+          # grep -c '' counts lines, so it misses a missing final newline. One line, ended.
+          [ "$(wc -l < x/gcode-server-bundle/BUILD)" -eq 1 ] && [ "$(grep -c '' x/gcode-server-bundle/BUILD)" -eq 1 ] ||
+            { echo "::error::BUILD isn't exactly one line" >&2; exit 1; }
+          grep -Eqx "gcode-server-${version}\\+$(printf '%s' "$GITHUB_SHA" | cut -c1-12)[0-9a-f]*" \
+            x/gcode-server-bundle/BUILD ||
+            { echo "::error::BUILD isn't this tag's version and commit" >&2; exit 1; }
 
           sha256_line="$("$sum" "$name.tar.gz")"
           echo "$sha256_line"

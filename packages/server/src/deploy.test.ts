@@ -91,6 +91,12 @@ describe('the values file', () => {
     // The service's /var/lib is an empty tmpfs: these don't exist there.
     ['/var/lib as inaccessible', { inaccessible: ['/var/lib'] }],
     ['a path under /var/lib as inaccessible', { inaccessible: ['/srv/x', '/var/lib/mysql'] }],
+    ['the prefix under /var/lib', { prefix: '/var/lib/wp-gcode' }],
+    ['node under an inaccessible path', { node: '/srv/example-app/node' }],
+    ['the log key under an inaccessible path', { credFile: '/etc/example-app/log-key' }],
+    ['the prefix as an inaccessible path', { prefix: '/srv/example-app' }],
+    ['node under /home', { node: '/home/ops/node/bin/node' }],
+    ['the prefix under /root', { prefix: '/root/wp-gcode' }],
   ];
   it.each(bad)('refuses %s', (_, change) => {
     expect(() => readValues({ ...EXAMPLE, ...change })).toThrow(RenderError);
@@ -198,7 +204,9 @@ describe('the rendered units (ADR-0040)', () => {
   // Shared by the tests below, so removed only after them all.
   const w = workspace(undefined, false);
   afterAll(() => rmSync(w.base, { recursive: true, force: true }));
-  const values = { ...EXAMPLE, prefix: w.prefix, node: process.execPath, tripwire: w.tripwire };
+  // An executable that exists on every host, for systemd-analyze verify: never
+  // process.execPath, which on a CI runner is under /home and so refused (ProtectHome=).
+  const values = { ...EXAMPLE, prefix: w.prefix, node: '/usr/bin/env', tripwire: w.tripwire };
   render({ values, bundle: w.bundle, out: w.out });
   const service = unit(w.out, 'wp-gcode.service');
   const socket = unit(w.out, 'wp-gcode.socket');
