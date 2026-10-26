@@ -134,7 +134,7 @@ root-owned and not group- or other-writable too, and its path must be its real p
    ```
 
    ```bash
-   tar -tvzf "$t" --quoting-style=escape | grep -Ev '^(d[^ ]* .* gcode-server-bundle/|-[^ ]* .* gcode-server-bundle/[^/]+)$'
+   tar -tvzf "$t" --numeric-owner --quoting-style=escape | grep -Ev '^(d[^ sStT]* .* gcode-server-bundle/|-[^ sStT]* .* gcode-server-bundle/[^/]+)$'
    ```
 
    Each of these must print **nothing**: no name twice, every `SHA256SUMS` line a hash
@@ -143,9 +143,9 @@ root-owned and not group- or other-writable too, and its path must be its real p
    `tar -xzf "$t" --no-same-owner --no-same-permissions`: the bundle's own modes are set
    at install (step 6), never taken from the archive.
 
-5. Inside the bundle: `sha256sum -c SHA256SUMS`. `BUILD` must be exactly one line,
-   `gcode-server-X.Y.Z+` followed by the tag's commit
-   (`git rev-parse --short=12 server-vX.Y.Z`).
+5. Inside the bundle: `sha256sum -c SHA256SUMS`. `BUILD` must be exactly one line
+   (`wc -l < BUILD` and `grep -c '' BUILD` both print 1), `gcode-server-X.Y.Z+`
+   followed by the tag's commit (`git rev-parse --short=12 server-vX.Y.Z`).
 6. Install it at `<prefix>/bundle`: the directory `root:root 0755`, its files
    `root:root 0644`, and `tripwire.sh` `0755`. Every directory above it, up to `/`, must
    be root-owned and not group- or other-writable.

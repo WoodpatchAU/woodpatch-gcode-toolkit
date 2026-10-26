@@ -3399,8 +3399,10 @@ gid, and paths. This repository is public, and must not hold them.
     to the last `../` from a name, so an extra entry or `a/../../x` would otherwise pass
     and land elsewhere (review of #77 r2). Then `SHA256SUMS`, and `BUILD` as a whole
     string (this tag's version and commit). Only then does it attach the tarball and its
-    SHA-256 to the tag's release. DEPLOY.md's install runs the same entry check. A dependency compromised in the
-    build job can't reach the write token.
+    SHA-256 to the tag's release. DEPLOY.md's install runs the same entry check. A
+    dependency compromised in the build job can't reach the write token. The entry
+    check lists owners as numbers (a raw owner name could split a line), refuses any
+    name twice and any setuid, setgid or sticky bit, and BUILD must be one ended line.
 
   `DEPLOY.md`'s checklist checks the tarball, `SHA256SUMS` and `BUILD` again before
   installing. Nothing is built on the target host.

@@ -113,7 +113,7 @@ jobs:
           PART2: ${{ needs.build.outputs.part2 }}
           PART3: ${{ needs.build.outputs.part3 }}
         run: |
-          set -eu
+          set -euo pipefail
           export PATH=/usr/bin:/bin
           git=/usr/bin/git tar=/usr/bin/tar sum=/usr/bin/sha256sum gh=/usr/bin/gh
           for t in "$git" "$tar" "$sum" "$gh" /usr/bin/base64; do [ -x "$t" ]; done
@@ -163,8 +163,13 @@ jobs:
             exit 1
           fi
           # And each is a plain file, or the one directory.
-          "$tar" -tvzf "$name.tar.gz" --quoting-style=escape | while read -r perms _ _ _ _ path; do
+          # --numeric-owner: tar prints an owner NAME raw, and one with a newline in it
+          # would split an entry into two lines here.
+          "$tar" -tvzf "$name.tar.gz" --numeric-owner --quoting-style=escape | while read -r perms _ _ _ _ path; do
             case "$perms:$path" in
+              # No setuid, setgid or sticky bit either: install sets the modes, but
+              # there's no reason to accept one.
+              *[sStT]*:*) echo "::error::$path has a setuid, setgid or sticky bit" >&2; exit 1 ;;
               d*:gcode-server-bundle/ | -*:gcode-server-bundle/?*) ;;
               *) echo "::error::$path isn't a plain file in the bundle" >&2; exit 1 ;;
             esac
@@ -174,7 +179,9 @@ jobs:
           (cd x/gcode-server-bundle && "$sum" -c --quiet SHA256SUMS)
           # The whole BUILD: this tag's version, and its commit.
           version="$(printf '%s' "${GITHUB_REF_NAME#server-v}" | sed 's/\./\\./g')"
-          [ "$(wc -l < x/gcode-server-bundle/BUILD)" -eq 1 ] ||
+          # Both: wc -l counts newlines, so it misses an unterminated second line, and
+          # grep -c '' counts lines, so it misses a missing final newline. One line, ended.
+          [ "$(wc -l < x/gcode-server-bundle/BUILD)" -eq 1 ] && [ "$(grep -c '' x/gcode-server-bundle/BUILD)" -eq 1 ] ||
             { echo "::error::BUILD isn't exactly one line" >&2; exit 1; }
           grep -Eqx "gcode-server-${version}\\+$(printf '%s' "$GITHUB_SHA" | cut -c1-12)[0-9a-f]*" \
             x/gcode-server-bundle/BUILD ||

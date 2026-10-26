@@ -204,7 +204,9 @@ describe('the rendered units (ADR-0040)', () => {
   // Shared by the tests below, so removed only after them all.
   const w = workspace(undefined, false);
   afterAll(() => rmSync(w.base, { recursive: true, force: true }));
-  const values = { ...EXAMPLE, prefix: w.prefix, node: process.execPath, tripwire: w.tripwire };
+  // An executable that exists on every host, for systemd-analyze verify: never
+  // process.execPath, which on a CI runner is under /home and so refused (ProtectHome=).
+  const values = { ...EXAMPLE, prefix: w.prefix, node: '/usr/bin/env', tripwire: w.tripwire };
   render({ values, bundle: w.bundle, out: w.out });
   const service = unit(w.out, 'wp-gcode.service');
   const socket = unit(w.out, 'wp-gcode.socket');
