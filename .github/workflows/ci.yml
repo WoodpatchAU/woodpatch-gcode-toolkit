@@ -78,6 +78,12 @@ jobs:
         run: node tools/golden-legacy.cjs --check
       - name: Legacy harness tests (smoke + plan §2.4 reference values)
         run: node --test 'tools/**/*.test.cjs'
+      - name: Calibration programs' generator, safety rules included (ADR-0047)
+        run: node --test 'tools/calibration/*.test.mjs'
+      - name: A machine's calibration stays private (ADR-0047)
+        run: |
+          node --test .github/ci/calibration-private.test.mjs
+          node .github/ci/calibration-private.mjs
       - name: Playground smoke tests (real browser, the runner's preinstalled Chrome)
         # The playground was built (and its MIT notice checked) by the Build step.
         run: pnpm --filter @woodpatch/gcode-playground e2e
