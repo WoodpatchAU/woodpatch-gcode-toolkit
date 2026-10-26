@@ -317,10 +317,17 @@ export function checkProgram(s, p, gcode) {
   //   - G0-3 motion, G4 dwell (with P), G17 XY plane, G21 mm, G53 machine coordinates,
   //     G54 the work offset, G90 absolute, G94 feed per minute;
   //   - M5 spindle off and M30 end; M3 and S only in the events program;
-  //   - X Y I J F, and Z only on a G53 line, which carries no X, Y, I or J.
+  //   - X Y I J F, and Z only on a G53 line, which carries no X, Y, I or J;
+  //   - each word spelled exactly as the generator writes it: upper case, no space inside
+  //     it, no leading zero or trailing ".0" (G053, G53.0 and "G 0 X 2 0" read the same
+  //     to RS-274, but nobody has checked they do on every controller);
+  //   - S above 0 and at most the record's maxRpm; a G4 dwell of at most 60 s in the
+  //     dialect's unit, which also catches a millisecond/second mix-up.
   // Not G40, G49 or G80: these programs never compensate, never apply a tool length and
   // never start a canned cycle, and Masso documents no G49. Nothing after M30.
   const G_OK = new Set([0, 1, 2, 3, 4, 17, 21, 53, 54, 90, 94]);
+  const MAX_DWELL_SECONDS = 60;
+  const dwellScale = s.dialect.interpreter.dwellUnits === 'milliseconds' ? 1000 : 1;
   let ended = false;
   for (const line of program.lines) {
     const at = `line ${line.lineNo}`;
@@ -347,6 +354,16 @@ export function checkProgram(s, p, gcode) {
         (l === 'P' && has('G', 4)) ||
         'XYZIJF'.includes(l);
       if (!ok) problems.push(`${at}: ${l}${v} isn't one these programs use`);
+      const raw = line.text.slice(w.span.start, w.span.end);
+      if (raw !== `${l}${num(v)}`) {
+        problems.push(`${at}: ${JSON.stringify(raw)} isn't spelled as these programs write it`);
+      }
+      if (l === 'S' && !(v > 0 && v <= s.maxRpm)) {
+        problems.push(`${at}: S${v} is outside 0 < S <= the record's maxRpm (${s.maxRpm})`);
+      }
+      if (l === 'P' && !(v >= 0 && v <= MAX_DWELL_SECONDS * dwellScale)) {
+        problems.push(`${at}: P${v} dwells over ${MAX_DWELL_SECONDS} s, or under 0`);
+      }
     }
     if (has('Z') && !has('G', 53)) problems.push(`${at}: a Z word outside a G53 line`);
     if (has('G', 53) && ['X', 'Y', 'I', 'J'].some((l) => has(l))) {
