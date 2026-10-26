@@ -11,7 +11,7 @@ export default tseslint.config(
   ...tseslint.configs.strict,
   {
     // Build and CI scripts run in Node.
-    files: ['scripts/**', 'tools/**', '*.mjs', 'apps/*/scripts/**'],
+    files: ['scripts/**', 'tools/**', '*.mjs', 'apps/*/scripts/**', 'packages/server/deploy/**'],
     languageOptions: { globals: globals.node },
   },
   {

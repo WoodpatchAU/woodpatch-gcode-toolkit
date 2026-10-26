@@ -1,0 +1,153 @@
+# SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
+# SPDX-License-Identifier: MIT
+#
+# The estimate server's release bundle (ADR-0046). Only this builds a bundle that is
+# installed: from a tag `server-vX.Y.Z` on a commit on main's first-parent line (a merge
+# result, never a commit from inside a branch), never on the target host. Only an admin
+# can create such a tag (the repository's tag ruleset). The bundle and its SHA-256 go on
+# the tag's release; the install checklist (packages/server/deploy/DEPLOY.md) checks both
+# before anything is installed.
+#
+# Two jobs, so that no dependency's code ever runs where the write token is:
+#   build    read-only. Installs, builds and tests, and passes the tarball on as job
+#            outputs (base64, in parts). `uses:` steps are banned here (ADR-0006), so
+#            there is no artifact action.
+#   release  write. Runs no code from the repository or its dependencies: base-system
+#            tools by absolute path, on a fresh runner. It checks the tag again, decodes
+#            the tarball, checks its SHA-256, its manifest and its BUILD, and uploads it.
+name: release-server
+
+on:
+  push:
+    tags: ['server-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-server-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      part0: ${{ steps.pack.outputs.part0 }}
+      part1: ${{ steps.pack.outputs.part1 }}
+      part2: ${{ steps.pack.outputs.part2 }}
+      part3: ${{ steps.pack.outputs.part3 }}
+    steps:
+      - name: The tag is a server release on main's first-parent line
+        run: |
+          printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^server-v[0-9]+\.[0-9]+\.[0-9]+$' ||
+            { echo "::error::tag $GITHUB_REF_NAME isn't server-vX.Y.Z" >&2; exit 1; }
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --filter=blob:none origin "${GITHUB_SHA}" '+refs/heads/main:refs/remotes/origin/main'
+          git checkout -q --detach "${GITHUB_SHA}"
+          # Into a file, not a pipe: grep -q stops reading at a match, and under pipefail
+          # rev-list's SIGPIPE would fail the step on exactly the good case.
+          git rev-list --first-parent refs/remotes/origin/main > "$RUNNER_TEMP/first-parent"
+          grep -qx "${GITHUB_SHA}" "$RUNNER_TEMP/first-parent" ||
+            { echo "::error::${GITHUB_SHA} isn't on main's first-parent line" >&2; exit 1; }
+      - name: Toolchain (Node + pnpm, hash-pinned)
+        run: .github/ci/setup-toolchain.sh
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Build the bundle (a release build, from a clean tree, no --dev)
+        # Before the tests, so nothing a test writes can make the tree dirty.
+        run: |
+          out="$RUNNER_TEMP/gcode-server-bundle"
+          node packages/server/deploy/build.mjs --out "$out"
+          (cd "$out" && sha256sum -c --quiet SHA256SUMS)
+          grep -q 'Nicolas Raynaud' "$out/main.js"
+          grep -q 'Nicolas Raynaud' "$out/worker.js"
+          # The bundle names the tagged commit, and the tag's version is the package's.
+          grep -q "+$(git rev-parse --short=12 HEAD)\$" "$out/BUILD"
+          version="$(node -p 'require("./packages/server/package.json").version')"
+          test "server-v$version" = "$GITHUB_REF_NAME"
+      - name: Test the server
+        run: pnpm --filter @woodpatch/gcode-server test
+      - name: Pack the bundle for the release job
+        id: pack
+        run: |
+          name="gcode-${GITHUB_REF_NAME}"
+          cd "$RUNNER_TEMP"
+          # Reproducible: sorted names, numeric root ownership, no group or other write
+          # whatever the umask, and the commit's own time.
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mode=go-w \
+            --mtime="@$(git -C "$GITHUB_WORKSPACE" show -s --format=%ct HEAD)" \
+            -czf "$name.tar.gz" gcode-server-bundle
+          sha="$(sha256sum "$name.tar.gz" | cut -d' ' -f1)"
+          echo "$sha  $name.tar.gz"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          # Job outputs hold up to 1 MB each; parts of 100 kB keep every one well inside
+          # that, and inside one environment variable's limit in the release job.
+          base64 -w0 "$name.tar.gz" > b64
+          [ "$(wc -c < b64)" -le 400000 ] ||
+            { echo "::error::the tarball has outgrown four output parts: add more" >&2; exit 1; }
+          split -b 100000 -d -a 1 b64 part
+          for i in 0 1 2 3; do
+            if [ -f "part$i" ]; then echo "part$i=$(cat "part$i")"; else echo "part$i="; fi >> "$GITHUB_OUTPUT"
+          done
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The only write: attaching the bundle to the tag's release.
+    permissions:
+      contents: write
+    steps:
+      - name: Check and attach the bundle (base-system tools only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+          PART0: ${{ needs.build.outputs.part0 }}
+          PART1: ${{ needs.build.outputs.part1 }}
+          PART2: ${{ needs.build.outputs.part2 }}
+          PART3: ${{ needs.build.outputs.part3 }}
+        run: |
+          set -eu
+          export PATH=/usr/bin:/bin
+          git=/usr/bin/git tar=/usr/bin/tar sum=/usr/bin/sha256sum gh=/usr/bin/gh
+          for t in "$git" "$tar" "$sum" "$gh" /usr/bin/base64; do [ -x "$t" ]; done
+          printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^server-v[0-9]+\.[0-9]+\.[0-9]+$'
+          printf '%s' "$SHA256" | grep -Eq '^[0-9a-f]{64}$'
+
+          # The tag again, from here: nothing the build job ran can vouch for it.
+          work="$RUNNER_TEMP/release"
+          mkdir "$work" && cd "$work"
+          "$git" init -q repo
+          "$git" -C repo fetch -q --filter=blob:none "https://github.com/${GITHUB_REPOSITORY}.git" \
+            '+refs/heads/main:refs/remotes/origin/main'
+          "$git" -C repo rev-list --first-parent refs/remotes/origin/main > first-parent
+          grep -qx "${GITHUB_SHA}" first-parent
+
+          name="gcode-${GITHUB_REF_NAME}"
+          printf '%s%s%s%s' "$PART0" "$PART1" "$PART2" "$PART3" > b64
+          grep -Eq '^[A-Za-z0-9+/]+=*$' b64
+          /usr/bin/base64 -d b64 > "$name.tar.gz"
+          echo "$SHA256  $name.tar.gz" | "$sum" -c --quiet -
+
+          # Only the bundle's own directory, plain files, nothing outside it.
+          "$tar" -tvzf "$name.tar.gz" | while read -r perms _ _ _ _ path; do
+            case "$perms" in d* | -*) ;; *) echo "::error::$path isn't a file or directory" >&2; exit 1 ;; esac
+            case "$path" in gcode-server-bundle/ | gcode-server-bundle/[!/.]*) ;; *) echo "::error::$path" >&2; exit 1 ;; esac
+          done
+          mkdir x
+          "$tar" -xzf "$name.tar.gz" -C x --no-same-owner
+          (cd x/gcode-server-bundle && "$sum" -c --quiet SHA256SUMS)
+          grep -Eq "\\+$(printf '%s' "$GITHUB_SHA" | cut -c1-12)[0-9a-f]*\$" x/gcode-server-bundle/BUILD
+
+          sha256_line="$("$sum" "$name.tar.gz")"
+          echo "$sha256_line"
+          echo "$sha256_line" > "$name.tar.gz.sha256"
+          "$gh" release create "$GITHUB_REF_NAME" "$name.tar.gz" "$name.tar.gz.sha256" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Estimate server ${GITHUB_REF_NAME#server-}" \
+            --notes "The estimate server's bundle, built by CI from this tag (ADR-0046). Verify it with packages/server/deploy/DEPLOY.md before installing."

@@ -38,7 +38,11 @@ interface Running {
 }
 const running: Running[] = [];
 
-async function start(over: Partial<Budgets> = {}, build = BUILD): Promise<Running> {
+async function start(
+  over: Partial<Budgets> = {},
+  build = BUILD,
+  draining: () => boolean = () => false,
+): Promise<Running> {
   const budgets = { ...DEFAULT_BUDGETS, workers: 1, heapMb: 256, ...over };
   const dir = mkdtempSync(join(tmpdir(), 'gcode-server-'));
   const path = join(dir, 's.sock');
@@ -46,7 +50,7 @@ async function start(over: Partial<Budgets> = {}, build = BUILD): Promise<Runnin
   const logger = new Logger(SECRET, (l) => logs.push(l));
   const pool = new WorkerPool(WORKER, budgets, (n, f) => logger.event(n, f));
   const cache = new ResponseCache(budgets.cacheEntries, budgets.cacheBytes);
-  const server = createEstimateServer({ pool, logger, cache, budgets, build });
+  const server = createEstimateServer({ pool, logger, cache, budgets, build, draining });
   await pool.ready();
   await new Promise<void>((r) => server.listen(path, r));
   const run = { path, logs, server, pool };
@@ -331,15 +335,22 @@ describe('the budget chain (ADR-0045)', () => {
     // small ones (0.25 s each) ahead of it, 48 s. The caller's timeouts exceed the latter.
     expect(serverWorstMs(DEFAULT_BUDGETS)).toBe(41_000);
     expect(serverContendedWorstMs(DEFAULT_BUDGETS)).toBe(48_000);
-    const chain = [
-      serverContendedWorstMs(DEFAULT_BUDGETS),
-      CALLER_BUDGETS.httpTimeoutMs,
-      CALLER_BUDGETS.jobTimeoutMs,
-      CALLER_BUDGETS.workerTimeoutMs,
-      CALLER_BUDGETS.retryAfterMs,
-    ];
-    for (let i = 1; i < chain.length; i++) {
-      expect(chain[i - 1], `link ${i}`).toBeLessThan(chain[i] as number);
+    // At the most workers a host may set, eight more small parses ahead: 51.5 s.
+    const most = { ...DEFAULT_BUDGETS, workers: 16 };
+    expect(serverContendedWorstMs(most)).toBe(51_500);
+    for (const b of [DEFAULT_BUDGETS, most]) {
+      const chain = [
+        serverContendedWorstMs(b),
+        CALLER_BUDGETS.httpTimeoutMs,
+        CALLER_BUDGETS.jobTimeoutMs,
+        CALLER_BUDGETS.workerTimeoutMs,
+        CALLER_BUDGETS.retryAfterMs,
+      ];
+      for (let i = 1; i < chain.length; i++) {
+        expect(chain[i - 1], `${b.workers} workers, link ${i}`).toBeLessThan(chain[i] as number);
+      }
+      // The stop bound (main.ts) fits inside the unit's TimeoutStopSec=60.
+      expect(serverContendedWorstMs(b) + 5_000).toBeLessThan(60_000);
     }
   });
 
@@ -462,10 +473,34 @@ describe('intake bounds (review of #76)', () => {
 const rawRequest = (json: string): string =>
   `POST /estimate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`;
 
-/** With workers 1 and queue 1 (a cap of 2): both of two requests at once are admitted. */
+/**
+ * With workers 1 and queue 1 (a cap of 2): both of two requests at once are admitted,
+ * and the cap is exactly what it was, neither less nor more.
+ */
 async function fullCap(path: string): Promise<void> {
   const [a, b] = await both(path, body(SLOW, 'staff:x'), body(JOB, 'staff:y'));
   expect([a.status, b.status]).toEqual([200, 200]);
+  await exactCap(path, 2);
+}
+/**
+ * cap + 1 requests that stall after their headers: exactly one is turned away. A slot
+ * freed twice would admit them all, and a lost one would turn away two.
+ */
+async function exactCap(path: string, cap: number): Promise<void> {
+  const held: ReturnType<typeof raw>[] = [];
+  for (let i = 0; i <= cap; i++) {
+    held.push(raw(path, HEADERS_ONLY));
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await new Promise((r) => setTimeout(r, 200));
+  const closed: string[] = [];
+  for (const h of held) void h.reply.then((t) => closed.push(t));
+  await new Promise((r) => setTimeout(r, 50));
+  expect(closed).toHaveLength(1);
+  expect(closed[0]).toMatch(/"SERVER_BUSY"/);
+  for (const h of held) h.socket.destroy();
+  await Promise.all(held.map((h) => h.reply));
+  await settle();
 }
 /** Sends `first`, then `second` once `first` holds a worker; answers both. */
 async function both(path: string, first: string, second: string): Promise<[Reply, Reply]> {
@@ -485,7 +520,13 @@ describe('in-flight slots are never lost (review of #76, round two)', () => {
     const { socket } = raw(s.path, burst);
     await new Promise((r) => setTimeout(r, 200));
     socket.destroy();
-    await new Promise((r) => setTimeout(r, 1_500)); // the slow job runs out
+    // The slow job runs to its end (a running job isn't dropped), however loaded the
+    // host: wait for its log line, not a fixed time.
+    const t0 = Date.now();
+    const ran = () => s.logs.some((l) => JSON.parse(l).status === 200);
+    while (!ran() && Date.now() - t0 < 10_000) await new Promise((r) => setTimeout(r, 50));
+    expect(ran()).toBe(true);
+    await settle();
     await fullCap(s.path);
   });
 
@@ -546,6 +587,50 @@ describe('in-flight slots are never lost (review of #76, round two)', () => {
     for (const h of again) h.socket.destroy();
     const results = await Promise.all(again.map((h) => h.reply));
     expect(results.filter((r) => /SERVER_BUSY/.test(r))).toEqual([]);
+    await settle();
+    await exactCap(s.path, 10);
+  });
+
+  it('frees a large slot as soon as its body is refused, not when its answer goes', async () => {
+    const s = await start({ workers: 1, queue: 8, jobMs: 5_000 });
+    // One connection: a slow request, then two 1.5 MB bodies that aren't UTF-8. Their
+    // answers wait behind the slow one's, but their bodies are read and refused at once.
+    const bad = Buffer.alloc(1_500_000, 0xff);
+    const head = `POST /estimate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${bad.length}\r\n\r\n`;
+    const pinned = raw(s.path, rawRequest(body(SLOW, 'staff:p')));
+    for (let i = 0; i < 2; i++) {
+      pinned.socket.write(head);
+      pinned.socket.write(bad);
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    // Both large slots are free again: two more large bodies are admitted (they stall).
+    const big = `POST /estimate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2000000\r\n\r\n`;
+    const next = [raw(s.path, big), raw(s.path, big)];
+    const early: string[] = [];
+    for (const n of next) void n.reply.then((t) => early.push(t));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(early).toEqual([]);
+    for (const n of next) n.socket.destroy();
+    // The pipelined answers: the estimate, then two REQUEST_MALFORMED.
+    const text = await new Promise<string>((resolve) => {
+      let got = '';
+      pinned.socket.on('data', (c: Buffer) => {
+        got += c.toString('utf8');
+        if ((got.match(/REQUEST_MALFORMED/g) ?? []).length === 2) resolve(got);
+      });
+    });
+    expect(text).toMatch(/^HTTP\/1\.1 200/);
+    pinned.socket.destroy();
+  });
+
+  it('closes every connection it answers once it is stopping', async () => {
+    let stopping = false;
+    const s = await start(B, BUILD, () => stopping);
+    expect((await send(s.path, { body: body(JOB) })).headers['connection']).not.toBe('close');
+    stopping = true;
+    for (const b of [body(JOB), '{']) {
+      expect((await send(s.path, { body: b })).headers['connection']).toBe('close');
+    }
   });
 
   it("doesn't queue a job whose client left before it was submitted", async () => {
