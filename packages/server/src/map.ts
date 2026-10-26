@@ -65,15 +65,15 @@ export function mapRecord(r: MachineRecord): Mapped {
   }
 
   const cal = r.calibration;
+  // Revision 2 can say how rapids move; only a measured model is confirmed. Without it
+  // (revision 1, or left out), 'coordinated' is assumed: what the operator's router does
+  // (operator, 2026-10-24). Unconfirmed, every estimate notes the assumption.
+  const rapid = r.planner.rapidModel;
   const machine: EstimateMachine = {
     axes,
     ...(r.rapidRate ? { rapidRate: r.rapidRate.value } : {}),
-    // Record version 1 revision 1 has no field for this. 'coordinated' is what the
-    // operator's router does (operator, 2026-10-24), but the record can't say so for
-    // any machine, so it's unconfirmed and every estimate notes the assumption. A later
-    // revision adds the field, measured in 5c.
-    rapidModel: 'coordinated',
-    rapidModelConfirmed: false,
+    rapidModel: rapid?.value ?? 'coordinated',
+    rapidModelConfirmed: rapid?.source === 'measured',
     junctionDeviation: r.planner.junctionDeviation.value,
     ...(r.planner.blockRate ? { blockRate: r.planner.blockRate.value } : {}),
     ...(r.planner.lookahead ? { lookahead: r.planner.lookahead.value } : {}),

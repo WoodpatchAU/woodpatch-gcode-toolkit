@@ -26,6 +26,9 @@ export {
   MACHINE_REVISION,
   MACHINE_VERSION,
   MAX_RECORD_BYTES,
+  RAPID_MODELS,
+  RAPID_MODEL_SOURCES,
+  SINCE_REVISION,
   SOURCES,
   readMachine,
   utf8Length,
@@ -39,6 +42,8 @@ export {
   type MachineRecord,
   type MachineResult,
   type P,
+  type RapidModel,
+  type RapidModelField,
   type RotaryAxis,
   type Source,
 } from './machine.js';
