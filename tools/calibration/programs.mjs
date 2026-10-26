@@ -47,10 +47,13 @@ export class ProgramsError extends Error {}
 /** The air-cut header every program starts with (reviewer's condition 1, 5c outline). */
 export const SAFETY = [
   'CALIBRATION AIR CUT: NOTHING IS CUT. NOTHING MAY BE IN THE PATH.',
-  'Remove the tool, or retract it fully. Clear the workholding and the bed.',
+  'Remove the tool: retracted is not clear. Clear the workholding and the bed.',
+  'Home the machine FIRST, then set the work origin [G54], with soft limits on.',
   'Spindle OFF throughout (the events program is the only exception).',
   'Keep a hand on the E-stop for the whole run.',
-  'Run it first at a reduced feed override, watching. Then time it at 100% feed and rapid.',
+  // Kept under 100 characters a line, as the reviewed headers were.
+  'First run it with the feed AND rapid overrides low, watching: feed alone leaves G0 fast.',
+  'Then time it at 100% feed and 100% rapid.',
   'Record the overrides used if they were not 100%: they change the time.',
   "This program doesn't replace the operator's judgement at the machine.",
 ];
@@ -275,7 +278,8 @@ function text(s, p, repeats) {
       : `Z stays at Z${num(s.safeZ)} in machine coordinates (G53), never relative to the work.`,
     `Record ${s.record.id} revision ${s.record.revision}, content hash ${s.hash.slice(0, 12)}. Generator v${GENERATOR_VERSION}. Body x${repeats}.`,
   ].map(comment);
-  lines.push('G21 G90 G17 G94', 'M5', `G53 G0 Z${num(s.safeZ)}`);
+  // G54: the work offset the checklist has the operator set, selected explicitly.
+  lines.push('G21 G90 G17 G94 G54', 'M5', `G53 G0 Z${num(s.safeZ)}`);
   // Every program first goes, at the safe height, to a known place inside the envelope.
   const [sx, sy] = p.start ?? [10, 10];
   lines.push(`G0 X${num(sx)} Y${num(sy)}`);
@@ -305,22 +309,51 @@ export function checkProgram(s, p, gcode) {
   for (const d of core.checkTravel(result.steps, s.travel)) {
     problems.push(`line ${d.line}: travel: ${d.code}`);
   }
-  // On the text too: the interpreter assumes a zero work offset, so a work-coordinate
-  // "G0 Z-5" at Z-5 looks like no move at all, but on the machine it moves by the
-  // offset. Z only on G53 lines, and nothing that changes an offset or homes.
-  gcode.split('\n').forEach((raw, i) => {
-    const code = raw
-      .replace(/\([^)]*\)/g, '')
-      .replace(/;.*$/, '')
-      .toUpperCase();
-    if (/Z/.test(code) && !/^\s*G53\b/.test(code)) {
-      problems.push(`line ${i + 1}: a Z word outside a G53 line`);
+  // On the words too, as an allow-list: the interpreter assumes a zero work offset, so
+  // a work-coordinate "G0 Z-5" at Z-5 looks like no move at all, but on the machine it
+  // moves by the offset; and a code it models loosely (a leading-zero G030, a G18 arc
+  // swinging Z) could slip past the motion rules. So every word must be one these
+  // programs use, as a plain number:
+  //   - G0-3 motion, G4 dwell (with P), G17 XY plane, G21 mm, G53 machine coordinates,
+  //     G54 the work offset, G90 absolute, G94 feed per minute;
+  //   - M5 spindle off and M30 end; M3 and S only in the events program;
+  //   - X Y I J F, and Z only on a G53 line, which carries no X, Y, I or J.
+  // Not G40, G49 or G80: these programs never compensate, never apply a tool length and
+  // never start a canned cycle, and Masso documents no G49. Nothing after M30.
+  const G_OK = new Set([0, 1, 2, 3, 4, 17, 21, 53, 54, 90, 94]);
+  let ended = false;
+  for (const line of program.lines) {
+    const at = `line ${line.lineNo}`;
+    const words = [];
+    for (const t of line.tokens) {
+      if (t.kind === 'comment') continue;
+      if (t.kind !== 'word' || t.value.kind !== 'number') {
+        problems.push(`${at}: only plain words (no ${t.kind === 'word' ? 'expression' : t.kind})`);
+        continue;
+      }
+      words.push(t);
     }
-    if (/G\s*(10|28|30|52|92|5[4-9])(\.\d)?\b/.test(code)) {
-      problems.push(`line ${i + 1}: an offset change, or a homing move`);
+    if (words.length === 0) continue;
+    if (ended) problems.push(`${at}: something after M30`);
+    const has = (l, v) =>
+      words.some((w) => w.letter === l && (v === undefined || w.value.value === v));
+    for (const w of words) {
+      const { letter: l, value } = w;
+      const v = value.value;
+      const ok =
+        (l === 'G' && G_OK.has(v)) ||
+        (l === 'M' && (v === 5 || v === 30 || (v === 3 && p.events))) ||
+        (l === 'S' && p.events) ||
+        (l === 'P' && has('G', 4)) ||
+        'XYZIJF'.includes(l);
+      if (!ok) problems.push(`${at}: ${l}${v} isn't one these programs use`);
     }
-    if (/G\s*91\b/.test(code)) problems.push(`line ${i + 1}: incremental moves (G91)`);
-  });
+    if (has('Z') && !has('G', 53)) problems.push(`${at}: a Z word outside a G53 line`);
+    if (has('G', 53) && ['X', 'Y', 'I', 'J'].some((l) => has(l))) {
+      problems.push(`${at}: X, Y, I or J on a G53 line (machine XY)`);
+    }
+    if (has('M', 30)) ended = true;
+  }
   const eps = 1e-6;
   let zSet = false;
   for (const st of result.steps) {

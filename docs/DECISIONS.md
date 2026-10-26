@@ -3283,11 +3283,11 @@ Changing a budget means rechecking the chain test and this table.
 **Status:** Proposed, 2026-10-25 (parcel 5c-1a). The reviewer's GO on the 5c outline,
 with five conditions; the first (router safety) and third (the private boundary) are
 met here. The fit tool, record revision 2 (`planner.rapidModel`) and a computed
-staleness come in 5c-1b. The operator runs the programs on the router on 2026-10-26.
+staleness come in 5c-1b.
 
 **Context.** ADR-0043's estimator is tuned by calibration, not by hand: the record's
-`accelFactor` and `timeFactor`, and the junction deviation, which the operator's
-controller (Masso G3, firmware 5.13) doesn't publish, are fitted from timed runs. The
+`accelFactor` and `timeFactor`, and the junction deviation, which some controllers
+don't publish, are fitted from timed runs. The
 runs happen on a real machine with the operator at it, so the programs must be safe by
 construction. And they're generated from a machine's own record, which is private.
 
@@ -3303,13 +3303,17 @@ construction. And they're generated from a machine's own record, which is privat
   program back through the interpreter and writes nothing unless all pass:
   - every Z move is in machine coordinates (G53), at a clearance below the top of Z
     travel, so Z never depends on the work offset; only the plunge program moves Z, and
-    only within `--plunge` of that height. A Z word outside a G53 line is refused on the
-    text, since the interpreter's assumed zero offset would hide a work-coordinate Z
-    move that happens to match;
+    only within `--plunge` of that height;
+  - every word is on an allow-list of what these programs use, as plain numbers (G0-4,
+    G17, G21, G53, G54, G90, G94; M5, M30, and M3 and S only in the events program;
+    X Y I J F; P only with G4), Z only on a G53 line, and no X, Y, I or J on one. The
+    interpreter assumes a zero work offset, so a work-coordinate Z move that happens to
+    match looks like none, and it models some codes loosely (`G030`, a G18 arc); the
+    allow-list closes both (review of #78). Nothing may follow M30. The work offset is
+    selected explicitly (G54);
   - the first move is that retract; X and Y move only at the safe height, inside the
     envelope (arcs included, full circles too), and the travel check (ADR-0042) finds
     nothing;
-  - no offset change, homing or incremental move;
   - no feed above the record's maximum velocity for the axes it moves;
   - the spindle stays off and no tool changes, except in the opt-in events program;
   - the dialect's own job checks pass (M5 then M30), bar "cuts with the spindle off".
@@ -3321,9 +3325,11 @@ construction. And they're generated from a machine's own record, which is privat
 
 - **Private by construction.** The generator is public; its input and output aren't.
   It refuses an `--out` inside this repository. A CI guard
-  (`.github/ci/calibration-private.mjs`) fails on a runs file, a generated program (by
-  name or by its header), any G-code or JSON under `tools/calibration/` or `docs/`, and
-  any machine record other than the fictional example.
+  (`.github/ci/calibration-private.mjs`) fails on a runs file or a generated program by
+  name (any case or extension), and, by content, which survives a rename, on the air-cut
+  header, a measured time or a machine record anywhere but the code that defines them.
+  The one allowed record, the example, must keep its id, a name saying it's fictional,
+  only seed values, and no calibration.
 - **The runs file** (`calibration-runs.json`) is written beside the programs: each
   program's SHA-256 and estimate, with blanks for the measured time, the method
   (controller timer or stopwatch), the overrides and the date.

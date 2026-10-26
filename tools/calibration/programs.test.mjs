@@ -58,6 +58,8 @@ describe('the generated programs', () => {
         }
         assert.ok(p.estimateSeconds >= s.target * 0.9, `${p.name}: ${p.estimateSeconds}`);
         assert.ok(p.gcode.trimEnd().endsWith('M5\nM30'), p.name);
+        // Short lines: a controller's limit is unknown, and the reviewed headers were short.
+        for (const line of p.gcode.split('\n')) assert.ok(line.length <= 100, `${p.name}: ${line}`);
       }
     });
   }
@@ -112,7 +114,7 @@ describe('the generated programs', () => {
 
 describe('the safety check refuses', () => {
   const s = readSetup(EXAMPLE, OPTS);
-  const head = 'G21 G90 G17 G94\nM5\nG53 G0 Z-5\nG0 X10 Y10\n';
+  const head = 'G21 G90 G17 G94 G54\nM5\nG53 G0 Z-5\nG0 X10 Y10\n';
   const tail = 'G53 G0 Z-5\nM5\nM30\n';
   const xy = { zMoves: false, events: false };
   const cases = [
@@ -157,10 +159,38 @@ describe('the safety check refuses', () => {
       `G21 G90 G17 G94\nM5\nG53 G0 Z-5\nG53 G1 Z-40 F500\n${tail}`,
       /outside the plunge range/,
     ],
-    ['an offset change', xy, `${head}G10 L2 P1 X5\n${tail}`, /offset change/],
-    ['a work offset selected', xy, `${head}G55\n${tail}`, /offset change/],
-    ['a homing move', xy, `${head}G28\n${tail}`, /homing/],
-    ['incremental moves', xy, `${head}G91\nG0 X5\nG90\n${tail}`, /G91/],
+    ['an offset change', xy, `${head}G10 L2 P1 X5\n${tail}`, /G10 isn't one/],
+    ['another work offset selected', xy, `${head}G55\n${tail}`, /G55 isn't one/],
+    ['a homing move', xy, `${head}G28\n${tail}`, /G28 isn't one/],
+    ['incremental moves', xy, `${head}G91\nG0 X5\nG90\n${tail}`, /G91 isn't one/],
+    // Leading zeros read as the same codes (review of #78).
+    ['G030', xy, `${head}G030\n${tail}`, /G30 isn't one/],
+    ['G092', xy, `${head}G092 X-900 Y0\n${tail}`, /G92 isn't one/],
+    ['G010', xy, `${head}G010 L20 P1 X-900\n${tail}`, /G10 isn't one/],
+    ['G055', xy, `${head}G055\n${tail}`, /G55 isn't one/],
+    ['machine XY (G53 with X and Y)', xy, `${head}G53 G0 X500 Y500\n${tail}`, /on a G53 line/],
+    ['a G18 arc, swinging Z', xy, `${head}G18\nG2 X20 Y10 I5 K0 F1000\n${tail}`, /G18 isn't one/],
+    ['K on an arc', xy, `${head}G2 X20 Y10 I5 K0 F1000\n${tail}`, /K0 isn't one/],
+    ['T alone', xy, `${head}T2\n${tail}`, /T2 isn't one/],
+    ['S alone', xy, `${head}S1000\n${tail}`, /S1000 isn't one/],
+    ['M0', xy, `${head}M0\n${tail}`, /M0 isn't one/],
+    ['M3 outside the events program', xy, `${head}M3 S1000\nM5\n${tail}`, /M3 isn't one/],
+    ['an expression', xy, `${head}G0 X[10+5] Y10\n${tail}`, /no expression/],
+    ['a parameter assignment', xy, `${head}#1=5\n${tail}`, /no assignment/],
+    ['a line after M30', xy, `${head}${tail}G0 X20 Y20\n`, /after M30/],
+    // Two rules the word check also covers: each must still say its own piece.
+    [
+      'Z together with X and Y',
+      { zMoves: true, events: false },
+      `${head}G53 G0 X20 Y20 Z-10\n${tail}`,
+      /Z moves together with X or Y/,
+    ],
+    [
+      'Z moved in work coordinates',
+      { zMoves: true, events: false },
+      `${head}G0 Z-10\n${tail}`,
+      /Z moves outside machine coordinates/,
+    ],
     ['a missing M30', xy, `${head}G53 G0 Z-5\nM5\n`, /PROGRAM_END|run it to its end/],
   ];
   for (const [name, p, gcode, re] of cases) {

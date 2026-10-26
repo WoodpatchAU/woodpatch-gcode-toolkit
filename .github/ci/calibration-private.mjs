@@ -3,13 +3,12 @@
 //
 // A machine's calibration stays private (ADR-0047): its record, the programs generated
 // from it, its measured times and its fitted factors. This repository holds only the
-// tools. Fails, naming each path, if a tracked file looks like one of those:
-//
-//   - the generator's runs file (calibration-runs.json), anywhere;
-//   - a generated program: named cal-NN-*, or carrying the generator's air-cut header;
-//   - any G-code or JSON file under tools/calibration/ or docs/;
-//   - a machine record (format "woodpatch-gcode-machine") in a JSON file, other than the
-//     fictional example and the schema.
+// tools. Fails, naming each path, if a tracked file looks like one of those. By NAME
+// (any case, any extension): a runs file (calibration-runs, runs.json) or a generated
+// program (cal-N-...). By CONTENT, which survives a rename: the generator's air-cut
+// header, a measured time (measuredSeconds), or a machine record (its format name) in
+// any file but the code that defines it; and the one allowed record, the example, must
+// stay fictional (its id, its name, and every value a seed).
 //
 //   node .github/ci/calibration-private.mjs     checks `git ls-files`
 
@@ -19,37 +18,74 @@ import process from 'node:process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** The only JSON files that may name the record format. */
-const ALLOWED_RECORDS = new Set([
-  'packages/db-schema/examples/example-router.json',
-  'packages/db-schema/schema/machine-record-v1.schema.json',
-]);
-const GCODE = /\.(nc|ngc|tap|gcode|cnc)$/i;
+const EXAMPLE = 'packages/db-schema/examples/example-router.json';
 const HEADER = 'CALIBRATION AIR CUT';
+const FORMAT = 'woodpatch-gcode-machine';
+
+/**
+ * Files that may NAME these things, because they define or check them: the generator
+ * and its tests, this guard and its test, the schema package's code and schema, the
+ * server's code and tests, the docs. Data files are never on this list.
+ */
+const MAY_MENTION = [
+  /^tools\/calibration\/[^/]+\.mjs$/,
+  /^\.github\/ci\/calibration-private(\.test)?\.mjs$/,
+  /^packages\/db-schema\/(src\/[^/]+\.ts|schema\/[^/]+\.schema\.json)$/,
+  /^packages\/server\/src\/[^/]+\.ts$/,
+  /^docs\/[^/]+\.md$/,
+];
+
+/** The example record must stay the fictional one. */
+function exampleProblems(text) {
+  let r;
+  try {
+    r = JSON.parse(text);
+  } catch {
+    return ["isn't JSON"];
+  }
+  const out = [];
+  if (r.id !== 'example-1') out.push('its id changed from example-1');
+  if (!/fictional/i.test(String(r.name))) out.push('its name no longer says fictional');
+  const sources = [];
+  const walk = (v) => {
+    if (v && typeof v === 'object') {
+      if ('source' in v && 'value' in v) sources.push(v.source);
+      for (const x of Object.values(v)) walk(x);
+    }
+  };
+  walk(r);
+  if (sources.some((s) => s !== 'seed')) out.push('it holds a value that is not a seed');
+  if (r.calibration?.status !== 'uncalibrated') out.push('it is calibrated');
+  return out;
+}
 
 /** The offending paths, with why. `read` returns a file's text. */
 export function findPrivate(paths, read) {
   const out = [];
   for (const p of paths) {
-    const base = p.slice(p.lastIndexOf('/') + 1);
-    const where = /^(tools\/calibration|docs)\//.test(p);
-    if (base === 'calibration-runs.json') out.push(`${p}: a calibration runs file`);
-    else if (/^cal-\d\d-/i.test(base) && GCODE.test(base))
-      out.push(`${p}: a generated calibration program`);
-    else if (where && (GCODE.test(base) || /\.json$/i.test(base))) {
-      out.push(`${p}: G-code or JSON under tools/calibration/ or docs/`);
-    } else if (GCODE.test(base) || /\.json$/i.test(base)) {
-      const text = read(p);
-      if (GCODE.test(base) && text.includes(HEADER)) {
-        out.push(`${p}: carries the calibration programs' header`);
-      } else if (
-        /\.json$/i.test(base) &&
-        text.includes('woodpatch-gcode-machine') &&
-        !ALLOWED_RECORDS.has(p)
-      ) {
-        out.push(`${p}: a machine record`);
-      }
+    const base = p.slice(p.lastIndexOf('/') + 1).toLowerCase();
+    if (/calibration[-_. ]?runs|(^|[-_.])runs\.(json|ya?ml)$/.test(base)) {
+      out.push(`${p}: named like a calibration runs file`);
+      continue;
     }
+    if (/^cal-\d+-/.test(base)) {
+      out.push(`${p}: named like a generated calibration program`);
+      continue;
+    }
+    if (p === EXAMPLE) {
+      for (const why of exampleProblems(read(p))) out.push(`${p}: the example record: ${why}`);
+      continue;
+    }
+    if (MAY_MENTION.some((re) => re.test(p))) continue;
+    let text;
+    try {
+      text = read(p);
+    } catch {
+      continue;
+    }
+    if (text.includes(HEADER)) out.push(`${p}: carries the calibration programs' header`);
+    else if (text.includes('measuredSeconds')) out.push(`${p}: holds measured times`);
+    else if (text.includes(FORMAT)) out.push(`${p}: holds a machine record`);
   }
   return out;
 }
@@ -59,7 +95,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     .split('\0')
     .filter(Boolean);
   const hits = findPrivate(paths, (p) => readFileSync(p, 'utf8'));
-  for (const h of hits)
+  for (const h of hits) {
     process.stderr.write(`::error::${h} (a machine's calibration stays private, ADR-0047)\n`);
+  }
   process.exit(hits.length ? 1 : 0);
 }

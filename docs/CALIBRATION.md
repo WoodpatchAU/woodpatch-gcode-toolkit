@@ -63,19 +63,29 @@ program's SHA-256, for the measured times.
 None of this replaces the operator's judgement at the machine. If anything looks wrong,
 stop.
 
-1. **Remove the tool**, or retract it fully. Nothing in the collet that could touch
-   anything.
+1. **Remove the tool.** Retracted is not clear: on some machines, even at the top of Z
+   the tool can sit below a workpiece top. Collet nut on and tight.
 2. **Clear the bed and the workholding** from the whole envelope, and from the gantry's
    path at the top of Z.
-3. **Set the work origin** (X0 Y0) at the envelope's corner, so the whole envelope is
-   inside the machine's travel. The work Z doesn't matter: Z only moves in machine
-   coordinates.
-4. **Home the machine**, so machine coordinates are true.
-5. **Spindle off**, and not set to start by itself.
-6. **A hand on the E-stop** for every run.
-7. **First run each program at a reduced feed override** (say 25%), watching the first
-   lap. Stop it, then run it again at **100% feed and 100% rapid** for the time.
-8. If a timed run isn't at 100%, record the overrides used: they change the time.
+3. **Home the machine first.** Check the readout: machine Z 0 at the top, negative
+   downwards.
+4. **Then set the work origin** (G54 X0 Y0) at the envelope's corner, so the whole
+   envelope is inside the machine's travel. An origin set before homing moves with the
+   homing. The work Z doesn't matter: Z only moves in machine coordinates. **Soft limits
+   on.**
+5. **Check the safe height in MDI:** `G53 G0 Z<safe>` (the header gives it) shows that
+   machine Z, and the active tool length offset doesn't move it.
+6. **Before the plunge program,** jog over its start point (the envelope's centre) to its
+   lowest machine Z, and check the spindle nose clears the bed.
+7. **Check each program's preview and extents** on the controller before starting it.
+8. **Spindle off.** Only the events program (`--events`) starts it, and that runs with no
+   tool fitted.
+9. **A hand on the E-stop** (or feed hold) for every run.
+10. **First pass: the feed AND rapid overrides low,** or single-block through the first
+    lines. A feed override alone leaves every G0 at full speed. Watch the first moves:
+    up to the safe height, then across to the start point. Stop it.
+11. **Timed run at 100% feed and 100% rapid.** If it isn't, record the overrides used:
+    they change the time.
 
 ## 3. Time each run
 
