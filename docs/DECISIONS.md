@@ -3299,10 +3299,12 @@ gid, and paths. This repository is public, and must not hold them.
       integer outside systemd's ranges and not nobody's (65534) or an overflow id, paths
       are absolute and normalised with no `..`, no trailing slash and no character a unit
       file would read specially, and workers run 1-16;
-    - a tripwire path inside the prefix (it must never run from the bundle); `prefix`,
-      `node`, `credFile` or `tripwire` at or under `/var/lib` or an `inaccessible` path
-      (the service couldn't see them); and an inaccessible path at or under `/var/lib` (the service's `/var/lib` is an empty
-      tmpfs, where it wouldn't exist, and the start would fail);
+    - a tripwire path inside the prefix (it must never run from the bundle);
+    - `prefix` or `node` where the sandbox hides them (under `/var/lib`, `/home`,
+      `/root`, `/run/user` or an `inaccessible` path), and `credFile` or `tripwire`
+      there too, though systemd reads and runs those outside the sandbox;
+    - an inaccessible path at or under `/var/lib`: the service's `/var/lib` is an empty
+      tmpfs, where it wouldn't exist, so the start would fail;
     - a placeholder left unfilled or not known;
     - a write outside `--out`, through a symlink (even with `--force`), or over a file
       without `--force`. It checks with `lstat` and creates each file exclusively.

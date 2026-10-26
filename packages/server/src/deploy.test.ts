@@ -95,6 +95,8 @@ describe('the values file', () => {
     ['node under an inaccessible path', { node: '/srv/example-app/node' }],
     ['the log key under an inaccessible path', { credFile: '/etc/example-app/log-key' }],
     ['the prefix as an inaccessible path', { prefix: '/srv/example-app' }],
+    ['node under /home', { node: '/home/ops/node/bin/node' }],
+    ['the prefix under /root', { prefix: '/root/wp-gcode' }],
   ];
   it.each(bad)('refuses %s', (_, change) => {
     expect(() => readValues({ ...EXAMPLE, ...change })).toThrow(RenderError);

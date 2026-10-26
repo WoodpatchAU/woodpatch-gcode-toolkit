@@ -38,14 +38,18 @@
 # Modes are tested as numbers (stat's %a prints 0002 as "2"), never as text.
 #
 # POSIX sh and the base system's tools only, from the base system's own directories: it
-# runs as root, and systemd's default PATH puts /usr/local/bin first. Tests only:
-# TRIPWIRE_ROOT is prefixed to the files it reads under /etc, and TRIPWIRE_TEST_PATH
-# replaces the PATH (for its shims). Whoever sets a unit's environment is root anyway.
+# runs as root, and systemd's default PATH puts /usr/local/bin first. Tests only, and
+# only with TRIPWIRE_TEST=1: TRIPWIRE_ROOT is prefixed to the files it reads under /etc,
+# and TRIPWIRE_TEST_PATH replaces the PATH (for its shims). Otherwise both are ignored.
 set -eu
-PATH="${TRIPWIRE_TEST_PATH:-/usr/sbin:/usr/bin:/sbin:/bin}"
+if [ "${TRIPWIRE_TEST:-}" = 1 ]; then
+  PATH="${TRIPWIRE_TEST_PATH:-/usr/sbin:/usr/bin:/sbin:/bin}"
+  ROOT="${TRIPWIRE_ROOT:-}"
+else
+  PATH=/usr/sbin:/usr/bin:/sbin:/bin
+  ROOT=''
+fi
 export PATH
-
-ROOT="${TRIPWIRE_ROOT:-}"
 
 die() {
   printf 'wp-gcode tripwire: %s\n' "$*" >&2

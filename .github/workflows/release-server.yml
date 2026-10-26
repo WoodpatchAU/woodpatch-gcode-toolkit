@@ -131,7 +131,7 @@ jobs:
 
           name="gcode-${GITHUB_REF_NAME}"
           printf '%s%s%s%s' "$PART0" "$PART1" "$PART2" "$PART3" > b64
-          # Every line base64, not just one of them.
+          # grep -v -x: fail if ANY line isn't wholly base64 (not just "if one line is").
           [ -s b64 ]
           if grep -Eqvx '[A-Za-z0-9+/]*=*' b64; then echo "::error::the tarball isn't base64" >&2; exit 1; fi
           /usr/bin/base64 -d b64 > "$name.tar.gz"
@@ -142,6 +142,13 @@ jobs:
           # (sha256sum -c checks only what it lists) and nothing elsewhere: GNU tar
           # strips up to the last ../ on extract, so "gcode-server-bundle/a/../../x"
           # would land outside it. Names are compared whole, as tar prints them escaped.
+          # No name twice: tar -xzO prints EVERY member called SHA256SUMS, but only the
+          # last is left on disk, so a second copy could list a file the first never
+          # hashes.
+          "$tar" -tzf "$name.tar.gz" --quoting-style=escape | LC_ALL=C sort > actual
+          if [ -n "$(uniq -d actual)" ]; then
+            echo "::error::the tarball holds a name twice" >&2; exit 1
+          fi
           "$tar" -xzOf "$name.tar.gz" gcode-server-bundle/SHA256SUMS > sums
           if grep -Evqx '[0-9a-f]{64}  [A-Za-z0-9_][A-Za-z0-9._-]*' sums; then
             echo "::error::SHA256SUMS names something that isn't a plain file name" >&2; exit 1
@@ -150,7 +157,6 @@ jobs:
             echo gcode-server-bundle/SHA256SUMS
             sed 's|^[0-9a-f]*  |gcode-server-bundle/|' sums
           } | LC_ALL=C sort > expected
-          "$tar" -tzf "$name.tar.gz" --quoting-style=escape | LC_ALL=C sort > actual
           if ! cmp -s expected actual; then
             echo "::error::the tarball's entries aren't exactly the bundle's files" >&2
             diff expected actual >&2 || true
@@ -168,6 +174,8 @@ jobs:
           (cd x/gcode-server-bundle && "$sum" -c --quiet SHA256SUMS)
           # The whole BUILD: this tag's version, and its commit.
           version="$(printf '%s' "${GITHUB_REF_NAME#server-v}" | sed 's/\./\\./g')"
+          [ "$(wc -l < x/gcode-server-bundle/BUILD)" -eq 1 ] ||
+            { echo "::error::BUILD isn't exactly one line" >&2; exit 1; }
           grep -Eqx "gcode-server-${version}\\+$(printf '%s' "$GITHUB_SHA" | cut -c1-12)[0-9a-f]*" \
             x/gcode-server-bundle/BUILD ||
             { echo "::error::BUILD isn't this tag's version and commit" >&2; exit 1; }

@@ -111,32 +111,39 @@ root-owned and not group- or other-writable too, and its path must be its real p
    - the release's assets were uploaded by that workflow's run (both its jobs' logs
      print the SHA-256).
 3. `sha256sum -c gcode-server-vX.Y.Z.tar.gz.sha256`.
-4. **Before unpacking, check its entries are exactly the bundle's files.** `sha256sum -c`
-   checks only the files it lists, and GNU tar strips up to the last `../` from a name,
-   so an extra or a `a/../../x` entry would pass it and land elsewhere. In an empty
-   directory:
+4. **Before unpacking, check its entries are exactly the bundle's files**, each a plain
+   file. `sha256sum -c` checks only the files it lists, and GNU tar strips up to the
+   last `../` from a name, so an extra entry, an `a/../../x`, a second copy of a name or
+   a device node would otherwise get past it. This is the release workflow's own check.
+   In an empty directory, as a user other than root:
 
    ```bash
-   t=gcode-server-vX.Y.Z.tar.gz; tar -xzOf "$t" gcode-server-bundle/SHA256SUMS > sums
+   t=gcode-server-vX.Y.Z.tar.gz; tar -tzf "$t" --quoting-style=escape | LC_ALL=C sort > actual
    ```
 
    ```bash
-   grep -Evx '[0-9a-f]{64}  [A-Za-z0-9_][A-Za-z0-9._-]*' sums
+   uniq -d actual
    ```
 
    ```bash
-   { echo gcode-server-bundle/; echo gcode-server-bundle/SHA256SUMS; sed 's|^[0-9a-f]*  |gcode-server-bundle/|' sums; } | LC_ALL=C sort > expected
+   tar -xzOf "$t" gcode-server-bundle/SHA256SUMS > sums; grep -Evx '[0-9a-f]{64}  [A-Za-z0-9_][A-Za-z0-9._-]*' sums
    ```
 
    ```bash
-   tar -tzf "$t" --quoting-style=escape | LC_ALL=C sort | diff expected -
+   { echo gcode-server-bundle/; echo gcode-server-bundle/SHA256SUMS; sed 's|^[0-9a-f]*  |gcode-server-bundle/|' sums; } | LC_ALL=C sort | diff - actual
    ```
 
-   The `grep` must print nothing, and the `diff` must print nothing. The release
-   workflow ran the same check before attaching the tarball. Only then unpack it, with
-   `--no-same-owner`.
+   ```bash
+   tar -tvzf "$t" --quoting-style=escape | grep -Ev '^(d[^ ]* .* gcode-server-bundle/|-[^ ]* .* gcode-server-bundle/[^/]+)$'
+   ```
 
-5. Inside the bundle: `sha256sum -c SHA256SUMS`. `BUILD` must be exactly
+   Each of these must print **nothing**: no name twice, every `SHA256SUMS` line a hash
+   and a plain name, the entries exactly those names, and every entry a plain file or
+   the one directory. Only then unpack it, still not as root, with
+   `tar -xzf "$t" --no-same-owner --no-same-permissions`: the bundle's own modes are set
+   at install (step 6), never taken from the archive.
+
+5. Inside the bundle: `sha256sum -c SHA256SUMS`. `BUILD` must be exactly one line,
    `gcode-server-X.Y.Z+` followed by the tag's commit
    (`git rev-parse --short=12 server-vX.Y.Z`).
 6. Install it at `<prefix>/bundle`: the directory `root:root 0755`, its files

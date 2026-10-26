@@ -157,6 +157,7 @@ function setup(change: (f: Fixture, p: Record<string, string>) => void = () => {
     const r = spawnSync('sh', [TRIPWIRE, mode, ...common, ...extra], {
       env: {
         PATH: '/usr/bin:/bin',
+        TRIPWIRE_TEST: '1',
         TRIPWIRE_TEST_PATH: `${bin}:/usr/bin:/bin`,
         TRIPWIRE_ROOT: root,
         TW_FIX: fix,
@@ -651,13 +652,44 @@ describe('the tripwire', () => {
           '/x',
         ],
         {
-          env: { PATH: '/usr/bin:/bin', TRIPWIRE_ROOT: '/nonexistent' },
+          env: { PATH: '/usr/bin:/bin', TRIPWIRE_TEST: '1', TRIPWIRE_ROOT: '/nonexistent' },
           encoding: 'utf8',
         },
       );
       expect(r.status, gid).toBe(1);
       expect(r.stderr).toMatch(/DynamicUser|homed|nobody/);
     }
+  });
+
+  it('ignores its test-only settings without TRIPWIRE_TEST=1', () => {
+    // The same fixture that passes with the marker: without it, the real /etc and the
+    // real PATH are used, where the fixture's group doesn't exist.
+    const r = spawnSync(
+      'sh',
+      [
+        TRIPWIRE,
+        'socket-pre',
+        '--group',
+        'wpgcode',
+        '--gid',
+        '960',
+        '--caller',
+        'bosapp',
+        '--dir',
+        '/run/wp-gcode',
+      ],
+      {
+        env: {
+          PATH: '/usr/bin:/bin',
+          TRIPWIRE_ROOT: '/nonexistent',
+          TRIPWIRE_TEST_PATH: '/nonexistent',
+        },
+        encoding: 'utf8',
+      },
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/group wpgcode isn't in \/etc\/group/);
+    expect(r.stderr).not.toMatch(/nonexistent/);
   });
 
   it('passes an empty bundle file ("regular empty file" to GNU stat)', () => {
