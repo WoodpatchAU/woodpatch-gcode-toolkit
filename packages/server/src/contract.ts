@@ -221,3 +221,8 @@ export function parseRequest(text: string): ParseResult {
   if (!record.ok) return fail('MACHINE_INVALID', 'The machine record was refused', record.problems);
   return { ok: true, request: { scope, gcode, record: record.record, recordHash: record.hash } };
 }
+
+/** A UTC calendar day, YYYY-MM-DD, of a time in milliseconds since the epoch. */
+export function utcDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}

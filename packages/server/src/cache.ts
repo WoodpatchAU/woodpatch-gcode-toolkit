@@ -18,6 +18,8 @@ export interface CacheInput {
   /** ADR-0041's content hash of the record. */
   recordHash: string;
   build: string;
+  /** The UTC day (ADR-0048): the calibration age notes change with it. */
+  today: string;
 }
 
 export class ResponseCache {
@@ -36,7 +38,9 @@ export class ResponseCache {
   key(i: CacheInput): string {
     const gcode = createHash('sha256').update(i.gcode, 'utf8').digest('hex');
     const h = createHmac('sha256', this.#key);
-    for (const part of [i.scope, gcode, i.recordHash, i.build]) h.update(`${part.length}:${part};`);
+    for (const part of [i.scope, gcode, i.recordHash, i.build, i.today]) {
+      h.update(`${part.length}:${part};`);
+    }
     return h.digest('hex');
   }
 

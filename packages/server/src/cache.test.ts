@@ -8,6 +8,7 @@ const IN: CacheInput = {
   gcode: 'G0 X1',
   recordHash: 'a'.repeat(64),
   build: 'b1',
+  today: '2026-10-26',
 };
 
 describe('ResponseCache', () => {
@@ -15,7 +16,7 @@ describe('ResponseCache', () => {
     const c = new ResponseCache(10, 1e6);
     const base = c.key(IN);
     expect(c.key({ ...IN })).toBe(base);
-    for (const k of ['scope', 'gcode', 'recordHash', 'build'] as const) {
+    for (const k of ['scope', 'gcode', 'recordHash', 'build', 'today'] as const) {
       expect(c.key({ ...IN, [k]: `${IN[k]}x` }), k).not.toBe(base);
     }
   });

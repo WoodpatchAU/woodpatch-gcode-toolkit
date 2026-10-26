@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { MAX_LISTED, MAX_TEXT, boundText, parseRequest, type EstimateRequest } from './contract.js';
-import { handleEstimate, type EstimateResponse } from './handle.js';
+import { CALIBRATION_MAX_AGE_DAYS, handleEstimate, type EstimateResponse } from './handle.js';
 
 const EXAMPLE = JSON.parse(
   readFileSync(new URL('../../db-schema/examples/example-router.json', import.meta.url), 'utf8'),
@@ -25,6 +25,7 @@ const CALIBRATED = {
 };
 
 const BUILD = 'test-build';
+const TODAY = '2026-10-26';
 function request(gcode: string, record: object = EXAMPLE): EstimateRequest {
   const r = parseRequest(
     JSON.stringify({ v: 1, scope: 'staff:1', gcode, machine: JSON.stringify(record) }),
@@ -33,7 +34,7 @@ function request(gcode: string, record: object = EXAMPLE): EstimateRequest {
   return r.request;
 }
 const run = (gcode: string, record?: object): EstimateResponse =>
-  handleEstimate(request(gcode, record), BUILD);
+  handleEstimate(request(gcode, record), BUILD, TODAY);
 
 const JOB = 'G21 G90\nM3 S12000\nG0 X0 Y0 Z5\nG1 Z-1 F300\nG1 X100 F1500\nG0 Z5\nM5\nM30\n';
 const TIMES = ['knownMs', 'cutMs', 'rapidMs', 'eventMs', 'dwellMs'] as const;
@@ -145,9 +146,9 @@ describe('handleEstimate', () => {
   it('refuses a build that is not 1-128 printable ASCII characters', () => {
     const req = request(JOB);
     for (const b of ['', 'a b', 'b'.repeat(129), 'é']) {
-      expect(() => handleEstimate(req, b), JSON.stringify(b)).toThrow(/build/);
+      expect(() => handleEstimate(req, b, TODAY), JSON.stringify(b)).toThrow(/build/);
     }
-    expect(handleEstimate(req, 'b'.repeat(128)).build).toHaveLength(128);
+    expect(handleEstimate(req, 'b'.repeat(128), TODAY).build).toHaveLength(128);
   });
 
   it('is deterministic: the same request gives the same bytes', () => {
@@ -159,5 +160,54 @@ describe('handleEstimate', () => {
     expect(r.diagnostics.items.length).toBeGreaterThan(0);
     for (const d of r.diagnostics.items)
       expect(Object.keys(d).sort()).toEqual(['code', 'line', 'message', 'severity']);
+  });
+});
+
+describe('the calibration age (ADR-0048)', () => {
+  const at = (today: string, fittedOn = '2026-10-01', record: object = CALIBRATED) =>
+    handleEstimate(
+      request(JOB, { ...record, calibration: { ...CALIBRATED.calibration, fittedOn } }),
+      BUILD,
+      today,
+    );
+  const ageNotes = (r: EstimateResponse) =>
+    r.estimate.notes.items.filter((n) => n.startsWith('calibrated on'));
+
+  it(`says nothing up to ${CALIBRATION_MAX_AGE_DAYS} days, and says so the day after`, () => {
+    expect(ageNotes(at('2026-10-01'))).toEqual([]);
+    // 2026-10-01 + 90 days is 2026-12-30.
+    expect(ageNotes(at('2026-12-30'))).toEqual([]);
+    expect(ageNotes(at('2026-12-31'))).toEqual([
+      'calibrated on 2026-10-01, 91 days ago: past the 90-day limit, recalibrate',
+    ]);
+    // Across a leap day, counted in calendar days.
+    expect(ageNotes(at('2028-05-30', '2028-02-28'))[0]).toContain('92 days ago');
+  });
+
+  it('says so when the calibration is dated after today', () => {
+    expect(ageNotes(at('2026-09-30'))).toEqual([
+      "calibrated on 2026-10-01, after today (2026-09-30): check the record's date",
+    ]);
+  });
+
+  it("changes nothing else: calibrated stays the record's status, and the times stay", () => {
+    const fresh = at('2026-10-26');
+    const stale = at('2027-10-26');
+    expect(stale.estimate.calibrated).toBe(true);
+    expect(stale.record).toEqual(fresh.record);
+    expect({ ...stale.estimate, notes: null }).toEqual({ ...fresh.estimate, notes: null });
+    // After the estimator's own notes.
+    expect(stale.estimate.notes.items.slice(0, -1)).toEqual(fresh.estimate.notes.items);
+    expect(stale.estimate.notes.count).toBe(fresh.estimate.notes.count + 1);
+  });
+
+  it('notes nothing on an uncalibrated record, however old', () => {
+    expect(ageNotes(handleEstimate(request(JOB), BUILD, '2099-01-01'))).toEqual([]);
+  });
+
+  it('refuses a day that is not a real date', () => {
+    for (const bad of ['', '2026-02-30', '26-10-26', '2026-10-26T00:00:00Z', '2026-1-5']) {
+      expect(() => handleEstimate(request(JOB), BUILD, bad), bad).toThrow(/today/);
+    }
   });
 });

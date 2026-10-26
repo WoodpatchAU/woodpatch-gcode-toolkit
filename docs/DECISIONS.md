@@ -3193,7 +3193,8 @@ up, with the numbers.
 - **The cache** (ADR-0040) is in memory, and LRU by entries and by bytes. No one
   response may take more than a quarter of it.
   - Its key holds the scope, the G-code's SHA-256, the record's hash and the build, each
-    length-prefixed so no two inputs run together.
+    length-prefixed so no two inputs run together. (Amended by ADR-0048: and the UTC
+    day, which the calibration age notes depend on.)
   - The key is an HMAC under a key made fresh for each process, so memory holds nothing
     to match a guessed file against.
   - A scope never sees another's entry, and a deployment (a new build) or a changed
@@ -3500,7 +3501,8 @@ reach this repository.
 ## ADR-0048: The machine record, revision 2: the rapid model
 
 **Status:** Proposed, 2026-10-26 (parcel 5c-1b). Adds an optional field to ADR-0041's
-version 1 under its own versioning rule. **Amends ADR-0044** (the rapid model).
+version 1 under its own versioning rule, and notes a calibration's age. **Amends
+ADR-0044** (the rapid model) and **ADR-0045** (the cache key).
 
 **Context.** The estimator models rapids two ways (ADR-0043): `coordinated`, like a G1 at
 the rapid rate, blended with its neighbours, or `per-axis`, each axis at its own speed,
@@ -3531,6 +3533,21 @@ stopping at both ends. Revision 1 has no field for it, so the mapping assumes
   estimator's coordinated model blends. If the rapids program's residual says the
   controller doesn't, that's a later revision, with the measurement behind it.
 
+- **A calibration's age is noted, not gated.** A calibration is stale 90 days after its
+  `fittedOn` (CALIBRATION.md §5). When it is, the estimate's notes say so ("calibrated
+  on 2026-01-02, 91 days ago: past the 90-day limit, recalibrate"). A `fittedOn` after
+  the request's day gets a note of its own. Nothing else changes: `calibrated` stays
+  the record's status, so ADR-0044's biconditional holds, and the caller still gates
+  on its own stored `fittedOn` (ADR-0044: the pricing rules read it). Making staleness
+  machine-readable in the response would be a new response version, and the caller's
+  call.
+- **The day is an input, so the cache keys on it.** The server reads its clock once per
+  request, as a UTC day (`YYYY-MM-DD`), and the same day goes to the cache key and to
+  the worker. A cached answer never outlives its day, and the key and the notes can't
+  disagree across midnight. The handler takes the day as an argument and refuses one
+  that isn't a real date, so it stays pure.
+
 **Consequences.** Every revision 1 record keeps its meaning and its hash. The
 every-field-once mapping test covers the new field: its value and a `"measured"` source
-both change the mapping.
+both change the mapping. A response is now a function of the request, the build and
+the UTC day. A cached answer is computed again at most once a day.

@@ -12,7 +12,14 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { LARGE_BODY_BYTES, LARGE_IN_FLIGHT, type Budgets } from './budgets.js';
 import type { ResponseCache } from './cache.js';
-import { ERRORS, MAX_REQUEST_BYTES, errorBody, parseRequest, type ErrorCode } from './contract.js';
+import {
+  ERRORS,
+  MAX_REQUEST_BYTES,
+  errorBody,
+  parseRequest,
+  utcDay,
+  type ErrorCode,
+} from './contract.js';
 import type { Logger, RequestLog } from './log.js';
 import type { WorkerPool } from './pool.js';
 
@@ -28,6 +35,8 @@ export interface ServerParts {
    * so keep-alive sockets don't hold `server.close()` open until they time out.
    */
   draining?: () => boolean;
+  /** The clock, in ms since the epoch: the day decides the calibration age notes. */
+  now?: () => number;
 }
 
 /** The fixed message for each code the HTTP layer gives itself (the parser words its own). */
@@ -104,7 +113,7 @@ export function inFlightCap(b: Budgets): number {
 }
 
 export function createEstimateServer(parts: ServerParts): Server {
-  const { pool, logger, cache, budgets, build, draining = () => false } = parts;
+  const { pool, logger, cache, budgets, build, draining = () => false, now = Date.now } = parts;
   const reply = (
     res: ServerResponse,
     status: number,
@@ -256,7 +265,9 @@ export function createEstimateServer(parts: ServerParts): Server {
     log.scope = scope;
     log.gcode = gcode;
 
-    const key = cache.key({ scope, gcode, recordHash, build });
+    // Read once, so the cache key and the response are for the same day.
+    const today = utcDay(now());
+    const key = cache.key({ scope, gcode, recordHash, build, today });
     const hit = cache.get(key);
     if (hit !== undefined) {
       reply(res, 200, hit);
@@ -268,7 +279,7 @@ export function createEstimateServer(parts: ServerParts): Server {
     // The record goes as JSON text: its content hash is of the parsed values, so the
     // worker reads the same record and checks it gets the same hash.
     const done = await pool.submit(
-      { scope, gcode, machine: JSON.stringify(record), recordHash, build },
+      { scope, gcode, machine: JSON.stringify(record), recordHash, build, today },
       gone,
     );
     log.queueMs = done.queueMs;
