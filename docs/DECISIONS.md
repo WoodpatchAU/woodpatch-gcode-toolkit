@@ -3561,4 +3561,7 @@ stopping at both ends. Revision 1 has no field for it, so the mapping assumes
 **Consequences.** Every revision 1 record keeps its meaning and its hash. The
 every-field-once mapping test covers the new field: its value and a `"measured"` source
 both change the mapping. A response is now a function of the request, the build and
-the UTC day. A cached answer is computed again at most once a day.
+the UTC day. A cached answer is computed again at most once a day. The gate moves to
+the consumer: when the storing application prices from estimates, it must refuse or
+flag a price built on a calibration past 90 days, from its own stored `fittedOn`, never
+by parsing this note (reviewer, 2026-10-26).

@@ -322,7 +322,10 @@ export function checkProgram(s, p, gcode) {
   //     it, no leading zero or trailing ".0" (G053, G53.0 and "G 0 X 2 0" read the same
   //     to RS-274, but nobody has checked they do on every controller);
   //   - S above 0 and at most the record's maxRpm; a G4 dwell of at most 60 s in the
-  //     dialect's unit, which also catches a millisecond/second mix-up.
+  //     dialect's unit. That catches a generator writing the wrong unit for the record's
+  //     dialect, NOT a controller that reads P differently from what the dialect says
+  //     (P2000 is 2 s in milliseconds, 33 minutes in seconds). Only the operator can
+  //     check that, on the first lap: CALIBRATION.md §2 step 8.
   // Not G40, G49 or G80: these programs never compensate, never apply a tool length and
   // never start a canned cycle, and Masso documents no G49. Nothing after M30.
   const G_OK = new Set([0, 1, 2, 3, 4, 17, 21, 53, 54, 90, 94]);

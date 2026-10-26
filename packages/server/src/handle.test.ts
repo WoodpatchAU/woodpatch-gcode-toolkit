@@ -3,7 +3,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { MAX_LISTED, MAX_TEXT, boundText, parseRequest, type EstimateRequest } from './contract.js';
-import { CALIBRATION_MAX_AGE_DAYS, handleEstimate, type EstimateResponse } from './handle.js';
+import {
+  CALIBRATION_MAX_AGE_DAYS,
+  estimateNotes,
+  handleEstimate,
+  type EstimateResponse,
+} from './handle.js';
 
 const EXAMPLE = JSON.parse(
   readFileSync(new URL('../../db-schema/examples/example-router.json', import.meta.url), 'utf8'),
@@ -196,9 +201,18 @@ describe('the calibration age (ADR-0048)', () => {
     expect(stale.estimate.calibrated).toBe(true);
     expect(stale.record).toEqual(fresh.record);
     expect({ ...stale.estimate, notes: null }).toEqual({ ...fresh.estimate, notes: null });
-    // After the estimator's own notes.
-    expect(stale.estimate.notes.items.slice(0, -1)).toEqual(fresh.estimate.notes.items);
+    // Before the estimator's own notes.
+    expect(stale.estimate.notes.items[0]).toMatch(/^calibrated on 2026-10-01, 390 days ago/);
+    expect(stale.estimate.notes.items.slice(1)).toEqual(fresh.estimate.notes.items);
     expect(stale.estimate.notes.count).toBe(fresh.estimate.notes.count + 1);
+  });
+
+  it('keeps the age note when the list is cut: it goes first', () => {
+    const many = Array.from({ length: MAX_LISTED + 50 }, (_, i) => `note ${i}`);
+    const notes = estimateNotes(['recalibrate'], many);
+    expect(notes.count).toBe(MAX_LISTED + 51);
+    expect(notes.items).toHaveLength(MAX_LISTED);
+    expect(notes.items[0]).toBe('recalibrate');
   });
 
   it('notes nothing on an uncalibrated record, however old', () => {

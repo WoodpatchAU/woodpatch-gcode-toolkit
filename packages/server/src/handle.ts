@@ -115,6 +115,19 @@ export function calibrationAgeNotes(request: EstimateRequest, today: string): st
 }
 
 /**
+ * The estimate's notes: the calibration age first, since it's about the whole estimate,
+ * then the estimator's. The list is cut at MAX_LISTED, so a note at the end could be
+ * the one dropped. The estimator writes a handful today, but the order shouldn't
+ * depend on that.
+ */
+export function estimateNotes(
+  age: readonly string[],
+  estimator: readonly string[],
+): Listed<string> {
+  return listed([...age, ...estimator], boundText);
+}
+
+/**
  * `today` is the UTC day (YYYY-MM-DD) the response is for: it decides the calibration
  * age notes, so the cache key carries it too, and a cached answer never outlives it.
  */
@@ -164,7 +177,7 @@ export function handleEstimate(
         reason: u.reason,
         ...(u.file !== undefined ? { file: boundText(u.file) } : {}),
       })),
-      notes: listed([...e.notes, ...calibrationAgeNotes(request, today)], boundText),
+      notes: estimateNotes(calibrationAgeNotes(request, today), e.notes),
     },
     travel: listed(checkTravel(result.steps, travel), finding),
     diagnostics: listed(diagnostics, finding),
