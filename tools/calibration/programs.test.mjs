@@ -117,6 +117,9 @@ describe('the safety check refuses', () => {
   const head = 'G21 G90 G17 G94 G54\nM5\nG53 G0 Z-5\nG0 X10 Y10\n';
   const tail = 'G53 G0 Z-5\nM5\nM30\n';
   const xy = { zMoves: false, events: false };
+  const ev = { zMoves: false, events: true };
+  // The example's dialect is generic, whose G4 P is in seconds.
+  const dw = (sec) => sec * (s.dialect.interpreter.dwellUnits === 'milliseconds' ? 1000 : 1);
   const cases = [
     ['a Z move in work coordinates', xy, `${head}G0 Z-5\n${tail}`, /a Z word outside a G53 line/],
     [
@@ -192,6 +195,17 @@ describe('the safety check refuses', () => {
       /Z moves outside machine coordinates/,
     ],
     ['a missing M30', xy, `${head}G53 G0 Z-5\nM5\n`, /PROGRAM_END|run it to its end/],
+    // Spelled exactly as written: these read the same to RS-274, unchecked on a controller.
+    ['G053', xy, `${head}G053 G0 Z-5\n${tail}`, /"G053" isn't spelled/],
+    ['G53.0', xy, `${head}G53.0 G0 Z-5\n${tail}`, /"G53.0" isn't spelled/],
+    ['a space inside a word', xy, `${head}G 0 X 2 0 Y10\n${tail}`, /"X 2 0" isn't spelled/],
+    ['lower case', xy, `${head}g0 X20 Y10\n${tail}`, /"g0" isn't spelled/],
+    ['X+20', xy, `${head}G0 X+20 Y10\n${tail}`, /"X\+20" isn't spelled/],
+    // The spindle's speed and the dwell, bounded in the events program too.
+    ['S over maxRpm', ev, `${head}M3 S180000\nG4 P${dw(2)}\nM5\n${tail}`, /S180000 is outside/],
+    ['S0', ev, `${head}M3 S0\nG4 P${dw(2)}\nM5\n${tail}`, /S0 is outside/],
+    ['a dwell over 60 s', ev, `${head}G4 P${dw(61)}\n${tail}`, /dwells over 60 s/],
+    ['an hour-long dwell', ev, `${head}G4 P1000000000\n${tail}`, /dwells over 60 s/],
   ];
   for (const [name, p, gcode, re] of cases) {
     it(name, () => {
@@ -202,6 +216,20 @@ describe('the safety check refuses', () => {
       );
     });
   }
+});
+
+describe('the bounds accept what they should', () => {
+  it('S up to maxRpm, and dwells up to 60 s, in either dialect', () => {
+    for (const record of [EXAMPLE, MASSO]) {
+      const s = readSetup(record, OPTS);
+      const scale = s.dialect.interpreter.dwellUnits === 'milliseconds' ? 1000 : 1;
+      const g = `G21 G90 G17 G94 G54\nM5\nG53 G0 Z-5\nG0 X10 Y10\nM3 S${s.maxRpm}\nG4 P${60 * scale}\nM5\nG4 P0\nG53 G0 Z-5\nM5\nM30\n`;
+      const r = checkProgram(s, { zMoves: false, events: true }, g);
+      assert.deepEqual(r.problems, [], s.dialect.id);
+      const over = g.replace(`P${60 * scale}`, `P${61 * scale}`);
+      assert.ok(checkProgram(s, { zMoves: false, events: true }, over).problems.length > 0);
+    }
+  });
 });
 
 describe('the inputs', () => {

@@ -158,7 +158,7 @@ describe('the JSON Schemas', () => {
     for (const g of PROGRAMS) {
       const r = parseRequest(body(g));
       if (!r.ok) throw new Error(r.error.error.code);
-      const res = JSON.parse(JSON.stringify(handleEstimate(r.request, 'b')));
+      const res = JSON.parse(JSON.stringify(handleEstimate(r.request, 'b', '2026-10-26')));
       expect(check(RESPONSE, res), g.slice(0, 20)).toEqual([]);
     }
   });
@@ -166,7 +166,7 @@ describe('the JSON Schemas', () => {
   it('refuse a time that is not a whole millisecond, and any field they do not list', () => {
     const r = parseRequest(body(PROGRAMS[0] as string));
     if (!r.ok) throw new Error(r.error.error.code);
-    const res = JSON.parse(JSON.stringify(handleEstimate(r.request, 'b')));
+    const res = JSON.parse(JSON.stringify(handleEstimate(r.request, 'b', '2026-10-26')));
     expect(check(RESPONSE, { ...res, estimate: { ...res.estimate, knownMs: 1.5 } })).not.toEqual(
       [],
     );
@@ -181,7 +181,7 @@ describe('the JSON Schemas', () => {
   it("express ADR-0044's two biconditionals", () => {
     const r = parseRequest(body(PROGRAMS[0] as string));
     if (!r.ok) throw new Error(r.error.error.code);
-    const res = JSON.parse(JSON.stringify(handleEstimate(r.request, 'b')));
+    const res = JSON.parse(JSON.stringify(handleEstimate(r.request, 'b', '2026-10-26')));
     expect(res.estimate.complete).toBe(true);
     expect(check(RESPONSE, res)).toEqual([]);
     const est = (o: object) => ({ ...res, estimate: { ...res.estimate, ...o } });

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_BUDGETS, type Budgets } from './budgets.js';
 import { ResponseCache } from './cache.js';
-import { MAX_REQUEST_BYTES, parseRequest } from './contract.js';
+import { MAX_REQUEST_BYTES, parseRequest, utcDay } from './contract.js';
 import { handleEstimate } from './handle.js';
 import { createEstimateServer, inFlightCap } from './http.js';
 import { Logger } from './log.js';
@@ -29,6 +29,8 @@ const JOB = 'G21 G90\nM3 S12000\nG0 X0 Y0 Z5\nG1 Z-1 F300\nG1 X100 F1500\nM5\nM3
 const SLOW = 'o100 while [#1 LT 150000]\n#1=[#1+1]\no100 endwhile\nM30\n';
 const BUILD = 'test-build-1';
 const SECRET = Buffer.alloc(32, 7);
+// The servers' clock, unless a test passes its own: the day is in the response's notes.
+const NOW = Date.parse('2026-10-26T12:00:00Z');
 
 interface Running {
   path: string;
@@ -42,6 +44,7 @@ async function start(
   over: Partial<Budgets> = {},
   build = BUILD,
   draining: () => boolean = () => false,
+  now: () => number = () => NOW,
 ): Promise<Running> {
   const budgets = { ...DEFAULT_BUDGETS, workers: 1, heapMb: 256, ...over };
   const dir = mkdtempSync(join(tmpdir(), 'gcode-server-'));
@@ -50,7 +53,7 @@ async function start(
   const logger = new Logger(SECRET, (l) => logs.push(l));
   const pool = new WorkerPool(WORKER, budgets, (n, f) => logger.event(n, f));
   const cache = new ResponseCache(budgets.cacheEntries, budgets.cacheBytes);
-  const server = createEstimateServer({ pool, logger, cache, budgets, build, draining });
+  const server = createEstimateServer({ pool, logger, cache, budgets, build, draining, now });
   await pool.ready();
   await new Promise<void>((r) => server.listen(path, r));
   const run = { path, logs, server, pool };
@@ -118,7 +121,7 @@ describe('the HTTP layer', () => {
     const parsed = parseRequest(body(JOB));
     if (!parsed.ok) throw new Error('bad fixture');
     expect(JSON.parse(r.body)).toEqual(
-      JSON.parse(JSON.stringify(handleEstimate(parsed.request, BUILD))),
+      JSON.parse(JSON.stringify(handleEstimate(parsed.request, BUILD, utcDay(NOW)))),
     );
   });
 
@@ -129,6 +132,25 @@ describe('the HTTP layer', () => {
     const c = await send(s.path, { body: body(JOB, 'staff:2') });
     expect(b.body).toBe(a.body);
     expect(c.body).toBe(a.body);
+    const cached = s.logs
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.event === 'request')
+      .map((l) => l.cached);
+    expect(cached).toEqual([false, true, false]);
+  });
+
+  it('caches for the day: the same request the next UTC day is computed again', async () => {
+    let now = Date.parse('2026-10-26T23:59:59Z');
+    const s = await start(
+      {},
+      BUILD,
+      () => false,
+      () => now,
+    );
+    await send(s.path, { body: body(JOB) });
+    await send(s.path, { body: body(JOB) });
+    now += 1000;
+    await send(s.path, { body: body(JOB) });
     const cached = s.logs
       .map((l) => JSON.parse(l))
       .filter((l) => l.event === 'request')
@@ -377,7 +399,7 @@ describe('a worker that cannot start', () => {
       events.push(n),
     );
     // Sent before any worker could load: it waits in the queue, and must not wait forever.
-    const job = { scope: 's', gcode: '', machine: '{}', recordHash: '', build: 'b' };
+    const job = { scope: 's', gcode: '', machine: '{}', recordHash: '', build: 'b', today: '' };
     const waiting = pool.submit(job);
     await pool.ready();
     expect((await waiting).outcome).toEqual({ kind: 'error', code: 'INTERNAL' });
@@ -389,6 +411,7 @@ describe('a worker that cannot start', () => {
       machine: '{}',
       recordHash: '',
       build: 'b',
+      today: '',
     });
     expect(done.outcome).toEqual({ kind: 'error', code: 'INTERNAL' });
     await pool.close();
@@ -640,7 +663,7 @@ describe('in-flight slots are never lost (review of #76, round two)', () => {
     const gone = new AbortController();
     gone.abort();
     const done = await s.pool.submit(
-      { scope: 's', gcode: JOB, machine: RECORD, recordHash: '', build: BUILD },
+      { scope: 's', gcode: JOB, machine: RECORD, recordHash: '', build: BUILD, today: utcDay(NOW) },
       gone.signal,
     );
     expect(done.outcome).toEqual({ kind: 'error', code: 'SERVER_BUSY' });

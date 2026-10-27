@@ -21,6 +21,8 @@ export interface Job {
   machine: string;
   recordHash: string;
   build: string;
+  /** The UTC day the response is for, as in its cache key (ADR-0048). */
+  today: string;
 }
 
 /** `body` is the response's JSON text. A throw is reported as `ok: false`, nothing more. */
@@ -43,6 +45,7 @@ port.on('message', (job: Job) => {
     const response = handleEstimate(
       { scope: job.scope, gcode: job.gcode, record: record.record, recordHash: record.hash },
       job.build,
+      job.today,
     );
     result = { id: job.id, ok: true, body: JSON.stringify(response) };
   } catch {

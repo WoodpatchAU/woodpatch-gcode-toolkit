@@ -2566,7 +2566,8 @@ user-defined controller (custom dialects) comes later, as an additive field.
     `maxVelocity`.
   - `planner` R: `junctionDeviation` R (mm, GRBL's cornering model); `blockRate` O
     (blocks/s the controller can process; dense tiny segments slow to it); `lookahead`
-    O (blocks, an integer: `Number.isSafeInteger`).
+    O (blocks, an integer: `Number.isSafeInteger`). Revision 2 adds `rapidModel` O
+    (ADR-0048).
   - `spindle` R: `maxRpm` R, `minRpm` O (default 0), `spinUpSeconds` R,
     `spinDownSeconds` R. These are the controller's own delays: Masso waits that long
     on M3/M4 and on M5.
@@ -3079,7 +3080,8 @@ message; an integer, not a float; "unknown", not a partial figure that looks who
   field must leave the mapping unchanged, and every entry must match a field, so the
   list can neither grow silently nor go stale.
 
-- **The rapid model.** Record version 1 revision 1 has no field for how rapids move, so
+- **The rapid model** (amended by ADR-0048: revision 2 has the field, and only a measured
+  model is confirmed). Record version 1 revision 1 has no field for how rapids move, so
   the mapping assumes `coordinated`, unconfirmed, and every estimate says so in its
   notes. The operator has confirmed coordinated rapids on their router: the axes move
   together and finish together. Revision 2 (an optional field, under ADR-0041's
@@ -3191,7 +3193,8 @@ up, with the numbers.
 - **The cache** (ADR-0040) is in memory, and LRU by entries and by bytes. No one
   response may take more than a quarter of it.
   - Its key holds the scope, the G-code's SHA-256, the record's hash and the build, each
-    length-prefixed so no two inputs run together.
+    length-prefixed so no two inputs run together. (Amended by ADR-0048: and the UTC
+    day, which the calibration age notes depend on.)
   - The key is an HMAC under a key made fresh for each process, so memory holds nothing
     to match a guessed file against.
   - A scope never sees another's entry, and a deployment (a new build) or a changed
@@ -3505,3 +3508,60 @@ construction. And they're generated from a machine's own record, which is privat
 safety is tested, not trusted: each rule has a hand-written program that breaks it, and
 the checker must refuse it. Removing a rule fails a test. A machine's numbers never
 reach this repository.
+
+## ADR-0048: The machine record, revision 2: the rapid model
+
+**Status:** Proposed, 2026-10-26 (parcel 5c-1b). Adds an optional field to ADR-0041's
+version 1 under its own versioning rule, and notes a calibration's age. **Amends
+ADR-0044** (the rapid model) and **ADR-0045** (the cache key).
+
+**Context.** The estimator models rapids two ways (ADR-0043): `coordinated`, like a G1 at
+the rapid rate, blended with its neighbours, or `per-axis`, each axis at its own speed,
+stopping at both ends. Revision 1 has no field for it, so the mapping assumes
+`coordinated`, unconfirmed, and every estimate says so (ADR-0044). The calibration runs
+(ADR-0047) can measure it: the rapids program's time under each model.
+
+**Decision.**
+
+- **Revision 2 adds one optional field,** `planner.rapidModel`: an object with exactly
+  `value`, `"coordinated"` or `"per-axis"`, and `source`, `"seed"`, `"manual"` or
+  `"measured"`. It isn't a `P` (its value isn't a number), and it's never `"fitted"`:
+  the fit tool reports the two models' residuals, and a person sets the field.
+- **A revision 1 record can't hold it.** ADR-0041 validates a record strictly against
+  the revision it states, so the field is an unknown field there
+  (`MACHINE_UNKNOWN_FIELD`, at `planner`). `SINCE_REVISION` in
+  `@woodpatch/gcode-db` lists each later field with its revision; the JSON Schema says
+  the same in an `allOf` condition, and a test keeps the two equal. A revision above 2
+  is still refused, so the toolkit is deployed before the storing application writes
+  revision 2.
+- **The mapping:** the model is the field's value, confirmed only when its source is
+  `"measured"`. An entered model is an assertion, not a measurement, so the estimate
+  still notes it. Left out (revision 1, or not given): `coordinated`, unconfirmed, as
+  before.
+- **A seeded model counts against calibration:** like every `P`, a calibrated record
+  can't hold a `"seed"` rapid model.
+- **Not added:** a field for whether coordinated rapids blend at their corners. The
+  estimator's coordinated model blends. If the rapids program's residual says the
+  controller doesn't, that's a later revision, with the measurement behind it.
+
+- **A calibration's age is noted, not gated.** A calibration is stale 90 days after its
+  `fittedOn` (CALIBRATION.md §5). When it is, the estimate's notes say so ("calibrated
+  on 2026-01-02, 91 days ago: past the 90-day limit, recalibrate"). A `fittedOn` after
+  the request's day gets a note of its own. Nothing else changes: `calibrated` stays
+  the record's status, so ADR-0044's biconditional holds, and the caller still gates
+  on its own stored `fittedOn` (ADR-0044: the pricing rules read it). Making staleness
+  machine-readable in the response would be a new response version, and the caller's
+  call.
+- **The day is an input, so the cache keys on it.** The server reads its clock once per
+  request, as a UTC day (`YYYY-MM-DD`), and the same day goes to the cache key and to
+  the worker. A cached answer never outlives its day, and the key and the notes can't
+  disagree across midnight. The handler takes the day as an argument and refuses one
+  that isn't a real date, so it stays pure.
+
+**Consequences.** Every revision 1 record keeps its meaning and its hash. The
+every-field-once mapping test covers the new field: its value and a `"measured"` source
+both change the mapping. A response is now a function of the request, the build and
+the UTC day. A cached answer is computed again at most once a day. The gate moves to
+the consumer: when the storing application prices from estimates, it must refuse or
+flag a price built on a calibration past 90 days, from its own stored `fittedOn`, never
+by parsing this note (reviewer, 2026-10-26).

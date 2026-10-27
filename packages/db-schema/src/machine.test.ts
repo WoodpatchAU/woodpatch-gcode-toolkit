@@ -10,6 +10,7 @@ import {
   MACHINE_DIALECTS,
   MACHINE_FIELDS,
   MAX_RECORD_BYTES,
+  SINCE_REVISION,
   readMachine,
   utf8Length,
   validateMachine,
@@ -157,6 +158,71 @@ describe('validateMachine: shape', () => {
   });
 });
 
+describe('validateMachine: revision 2, the rapid model', () => {
+  const rev2 = (rapidModel: unknown, base: Rec = example()): Rec =>
+    withField('planner.rapidModel', rapidModel, withField('revision', 2, base));
+
+  it('takes either model, entered or measured, in a revision 2 record', () => {
+    for (const value of ['coordinated', 'per-axis']) {
+      for (const source of ['seed', 'manual', 'measured']) {
+        expect(validateMachine(rev2({ value, source })), `${value} ${source}`).toEqual([]);
+      }
+    }
+    // Optional: a revision 2 record without it is valid.
+    expect(validateMachine(withField('revision', 2))).toEqual([]);
+  });
+
+  it('refuses it in a revision 1 record, as an unknown field there', () => {
+    const r = withField('planner.rapidModel', { value: 'coordinated', source: 'manual' });
+    expect(validateMachine(r)).toEqual([
+      {
+        code: 'MACHINE_UNKNOWN_FIELD',
+        path: 'planner',
+        message: 'has a field "rapidModel" that needs revision 2',
+      },
+    ]);
+  });
+
+  it('judges only against a revision it reads: a bad revision is the one problem', () => {
+    const r = withField('planner.rapidModel', { value: 'coordinated', source: 'manual' });
+    expect(codes(validateMachine(withField('revision', 3, r)))).toEqual([
+      'MACHINE_VERSION revision',
+    ]);
+    expect(codes(validateMachine(withField('revision', '1', r)))).toEqual([
+      'MACHINE_TYPE revision',
+    ]);
+  });
+
+  it('refuses another model, a fitted source, a stray or missing field', () => {
+    expect(codes(validateMachine(rev2({ value: 'per_axis', source: 'manual' })))).toEqual([
+      'MACHINE_VALUE planner.rapidModel.value',
+    ]);
+    expect(codes(validateMachine(rev2({ value: 1, source: 'manual' })))).toEqual([
+      'MACHINE_VALUE planner.rapidModel.value',
+    ]);
+    // Measured or entered, never fitted: the fit tool reports it, a person sets it.
+    expect(codes(validateMachine(rev2({ value: 'coordinated', source: 'fitted' })))).toEqual([
+      'MACHINE_VALUE planner.rapidModel.source',
+    ]);
+    expect(
+      codes(validateMachine(rev2({ value: 'coordinated', source: 'manual', blends: true }))),
+    ).toEqual(['MACHINE_UNKNOWN_FIELD planner.rapidModel']);
+    expect(codes(validateMachine(rev2({ value: 'coordinated' })))).toEqual([
+      'MACHINE_MISSING planner.rapidModel.source',
+    ]);
+    expect(codes(validateMachine(rev2('coordinated')))).toEqual([
+      'MACHINE_TYPE planner.rapidModel',
+    ]);
+  });
+
+  it('counts a seeded rapid model against a calibrated record', () => {
+    const seeded = rev2({ value: 'coordinated', source: 'seed' }, calibrated());
+    expect(codes(validateMachine(seeded))).toEqual(['MACHINE_VALUE calibration']);
+    const measured = rev2({ value: 'coordinated', source: 'measured' }, calibrated());
+    expect(validateMachine(measured)).toEqual([]);
+  });
+});
+
 describe('validateMachine: identity fields', () => {
   it('reads only version 1, and stops there on any other', () => {
     expect(codes(validateMachine(withField('version', 2)))).toEqual(['MACHINE_VERSION version']);
@@ -164,7 +230,8 @@ describe('validateMachine: identity fields', () => {
   });
 
   it('refuses a revision newer than it knows, and a non-integer one', () => {
-    expect(codes(validateMachine(withField('revision', 2)))).toEqual(['MACHINE_VERSION revision']);
+    expect(validateMachine(withField('revision', 2))).toEqual([]);
+    expect(codes(validateMachine(withField('revision', 3)))).toEqual(['MACHINE_VERSION revision']);
     expect(codes(validateMachine(withField('revision', 1.5)))).toEqual(['MACHINE_TYPE revision']);
     expect(codes(validateMachine(withField('revision', 0)))).toEqual(['MACHINE_RANGE revision']);
   });
@@ -516,7 +583,13 @@ describe('the JSON Schema', () => {
       };
     }
     r['rapidRate'] = p(10_000);
-    r['planner'] = { junctionDeviation: p(0.02), blockRate: p(500), lookahead: p(200) };
+    r['revision'] = 2;
+    r['planner'] = {
+      junctionDeviation: p(0.02),
+      blockRate: p(500),
+      lookahead: p(200),
+      rapidModel: { value: 'coordinated', source: 'manual' },
+    };
     (r['spindle'] as Rec)['minRpm'] = p(6000);
     r['overheads'] = { toolChangeSeconds: p(60), programStartSeconds: p(30), pauseSeconds: p(120) };
     return r;
@@ -539,7 +612,7 @@ describe('the JSON Schema', () => {
   }[] {
     const out: { schemaPath: string; recordPath: string; schema: S; record: () => Rec }[] = [];
     const visit = (s: S, schemaPath: string, recordPath: string, record: () => Rec): void => {
-      const target = s['$ref'] === '#/$defs/P' ? ((SCHEMA['$defs'] as S)['P'] as S) : s;
+      const target = deref(s);
       if (target['additionalProperties'] === false) {
         out.push({ schemaPath, recordPath, schema: target, record });
       }
@@ -554,6 +627,13 @@ describe('the JSON Schema', () => {
     };
     visit(SCHEMA, '', '', full);
     return out;
+  }
+
+  /** A field's own schema, or the definition it refers to (`#/$defs/...`). */
+  function deref(s: S): S {
+    const ref = s['$ref'];
+    if (typeof ref !== 'string') return s;
+    return (SCHEMA['$defs'] as S)[ref.replace('#/$defs/', '')] as S;
   }
 
   const get = (r: Rec, path: string): unknown =>
@@ -580,7 +660,7 @@ describe('the JSON Schema', () => {
   });
 
   it("each schema object lists exactly the code's fields, with the same required set", () => {
-    const def = (s: S): S => (s['$ref'] === '#/$defs/P' ? ((SCHEMA['$defs'] as S)['P'] as S) : s);
+    const def = deref;
     const axes = at('axes');
     const cal = (at('calibration')['oneOf'] as S[]).map(def);
     const pairs: [keyof typeof MACHINE_FIELDS, S][] = [
@@ -595,6 +675,7 @@ describe('the JSON Schema', () => {
       ['calibrated', cal[1] as S],
       ['residuals', ((cal[1] as S)['properties'] as S)['residuals'] as S],
       ['p', def(at('rapidRate'))],
+      ['rapidModel', def(at('planner', 'rapidModel'))],
     ];
     for (const [name, schema] of pairs) {
       const fields = MACHINE_FIELDS[name];
@@ -649,6 +730,13 @@ describe('the JSON Schema', () => {
           const r = o.record();
           const pair = partnerOf(path);
           if (pair) withField(pair[0], shape(pair[1]), r);
+          // An earlier revision can't hold a later one's fields: drop them, so only the
+          // revision's own bound decides.
+          if (path === 'revision') {
+            for (const [f, since] of Object.entries(SINCE_REVISION)) {
+              if (v < since) withField(f, undefined, r);
+            }
+          }
           withField(path, shape(v), r);
           return codes(validateMachine(r));
         };
@@ -691,6 +779,26 @@ describe('the JSON Schema', () => {
     expect(checked).toBeGreaterThan(40);
   });
 
+  it("the schema's revision conditions are the code's SINCE_REVISION", () => {
+    // Each condition: if revision is n, then none of the fields a later revision added.
+    const said: Record<string, number> = {};
+    for (const c of SCHEMA['allOf'] as S[]) {
+      const n = (((c['if'] as S)['properties'] as S)['revision'] as S)['const'] as number;
+      const walk = (t: S, path: string): void => {
+        for (const [k, v] of Object.entries((t['properties'] ?? {}) as S)) {
+          const at = path === '' ? k : `${path}.${k}`;
+          const not = (v as S)['not'] as S | undefined;
+          for (const f of (not?.['required'] ?? []) as string[]) {
+            said[`${at}.${f}`] = Math.min(said[`${at}.${f}`] ?? Infinity, n + 1);
+          }
+          walk(v as S, at);
+        }
+      };
+      walk(c['then'] as S, '');
+    }
+    expect(said).toEqual(SINCE_REVISION);
+  });
+
   it("the dialects are the code's", () => {
     expect((at('dialect')['enum'] as string[]).sort()).toEqual([...MACHINE_DIALECTS].sort());
   });
@@ -699,7 +807,9 @@ describe('the JSON Schema', () => {
     const fields = [
       ...['X', 'Y', 'Z', 'A'].flatMap((a) => props(at('axes', a)).map((k) => at('axes', a, k))),
       at('rapidRate'),
-      ...props(at('planner')).map((k) => at('planner', k)),
+      ...props(at('planner'))
+        .map((k) => at('planner', k))
+        .filter((f) => f['$ref'] === '#/$defs/P'),
       ...props(at('spindle')).map((k) => at('spindle', k)),
       ...props(at('overheads')).map((k) => at('overheads', k)),
     ];

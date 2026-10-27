@@ -19,7 +19,7 @@ import { contentHash } from './jcs.js';
 export const MACHINE_FORMAT = 'woodpatch-gcode-machine';
 export const MACHINE_VERSION = 1;
 /** The newest revision of version 1 this toolkit knows. Older ones are accepted. */
-export const MACHINE_REVISION = 1;
+export const MACHINE_REVISION = 2;
 /** The cap on a record's text, in UTF-8 bytes, checked before it's parsed. */
 export const MAX_RECORD_BYTES = 16_384;
 
@@ -66,6 +66,30 @@ export interface RotaryAxis {
   jerk?: P;
 }
 
+export const RAPID_MODELS = ['coordinated', 'per-axis'] as const;
+/**
+ * How rapids move: 'coordinated', like a G1 at the rapid rate, blended with its
+ * neighbours; 'per-axis', each axis at its own speed, stopping at both ends.
+ */
+export type RapidModel = (typeof RAPID_MODELS)[number];
+/** A rapid model is entered or measured, never fitted: the fit tool only reports it. */
+export const RAPID_MODEL_SOURCES = ['seed', 'manual', 'measured'] as const;
+
+/** Revision 2. Only `measured` confirms it; anything else, and estimates note the assumption. */
+export interface RapidModelField {
+  value: RapidModel;
+  source: (typeof RAPID_MODEL_SOURCES)[number];
+}
+
+/**
+ * The fields each revision after the first added, as dotted paths. A record of an
+ * earlier revision is validated strictly against it (ADR-0041), so these are unknown
+ * fields there. A test checks the JSON Schema's revision conditions say the same.
+ */
+export const SINCE_REVISION: Readonly<Record<string, number>> = {
+  'planner.rapidModel': 2,
+};
+
 export interface Calibrated {
   status: 'calibrated';
   /** YYYY-MM-DD. */
@@ -92,7 +116,7 @@ export interface MachineRecord {
   };
   /** mm/min, linear axes only. Absent: each axis's maxVelocity. */
   rapidRate?: P;
-  planner: { junctionDeviation: P; blockRate?: P; lookahead?: P };
+  planner: { junctionDeviation: P; blockRate?: P; lookahead?: P; rapidModel?: RapidModelField };
   spindle: { minRpm?: P; maxRpm: P; spinUpSeconds: P; spinDownSeconds: P };
   overheads?: { toolChangeSeconds?: P; programStartSeconds?: P; pauseSeconds?: P };
   calibration: { status: 'uncalibrated' } | Calibrated;
@@ -148,7 +172,7 @@ export const MACHINE_FIELDS = {
   axes: { required: ['X', 'Y', 'Z'], optional: ['A', 'B', 'C'] },
   linearAxis: { required: ['min', 'max', 'maxVelocity', 'acceleration'], optional: ['jerk'] },
   rotaryAxis: { required: ['maxVelocity', 'acceleration'], optional: ['min', 'max', 'jerk'] },
-  planner: { required: ['junctionDeviation'], optional: ['blockRate', 'lookahead'] },
+  planner: { required: ['junctionDeviation'], optional: ['blockRate', 'lookahead', 'rapidModel'] },
   spindle: { required: ['maxRpm', 'spinUpSeconds', 'spinDownSeconds'], optional: ['minRpm'] },
   overheads: {
     required: [],
@@ -161,6 +185,7 @@ export const MACHINE_FIELDS = {
   },
   residuals: { required: ['jobs', 'meanAbsPercent', 'maxAbsPercent'], optional: [] },
   p: { required: ['value', 'source'], optional: [] },
+  rapidModel: { required: ['value', 'source'], optional: [] },
 } as const satisfies Record<string, FieldSet>;
 
 // ---------------------------------------------------------------------------
@@ -308,14 +333,37 @@ export function validateMachine(record: unknown): MachineProblem[] {
       return c.problems;
     }
   }
+  // The revision the record was written for, once known to be one this toolkit reads.
+  let revision: number | undefined;
   if (Object.hasOwn(r, 'revision')) {
     const v = own(r, 'revision');
-    if (c.number(v, 'revision', { min: 1, integer: true }) && v > MACHINE_REVISION) {
-      c.add(
-        'MACHINE_VERSION',
-        'revision',
-        `is newer than this toolkit reads (revision ${MACHINE_REVISION}): deploy the toolkit first`,
-      );
+    if (c.number(v, 'revision', { min: 1, integer: true })) {
+      if (v > MACHINE_REVISION) {
+        c.add(
+          'MACHINE_VERSION',
+          'revision',
+          `is newer than this toolkit reads (revision ${MACHINE_REVISION}): deploy the toolkit first`,
+        );
+      } else revision = v;
+    }
+  }
+  // A field a later revision added is unknown to the record's own revision (ADR-0041:
+  // validated strictly against the revision it states, so a misspelling is caught).
+  // With no usable revision, its own problem is reported, and these aren't judged.
+  if (revision !== undefined) {
+    for (const [path, since] of Object.entries(SINCE_REVISION)) {
+      if (revision >= since) continue;
+      const keys = path.split('.');
+      let o: unknown = r;
+      for (const k of keys.slice(0, -1)) o = isObj(o) ? own(o, k) : undefined;
+      const last = keys.at(-1) as string;
+      if (isObj(o) && Object.hasOwn(o, last)) {
+        c.add(
+          'MACHINE_UNKNOWN_FIELD',
+          keys.slice(0, -1).join('.'),
+          `has a field ${quoteKey(last)} that needs revision ${since}`,
+        );
+      }
     }
   }
 
@@ -388,6 +436,29 @@ export function validateMachine(record: unknown): MachineProblem[] {
     field('junctionDeviation', { gt: 0, max: 10, unit: 'mm' });
     field('blockRate', { gt: 0, max: 100_000, unit: 'blocks/s' });
     field('lookahead', { gt: 0, max: 10_000, integer: true, unit: 'blocks' });
+    const rm = own(planner, 'rapidModel');
+    const rp = 'planner.rapidModel';
+    if (Object.hasOwn(planner, 'rapidModel') && c.object(rm, rp, MACHINE_FIELDS.rapidModel)) {
+      if (Object.hasOwn(rm, 'value')) {
+        const v = own(rm, 'value');
+        if (typeof v !== 'string' || !(RAPID_MODELS as readonly string[]).includes(v)) {
+          c.add('MACHINE_VALUE', join(rp, 'value'), `must be one of ${RAPID_MODELS.join(', ')}`);
+        }
+      }
+      if (Object.hasOwn(rm, 'source')) {
+        const s = own(rm, 'source');
+        if (typeof s === 'string' && (RAPID_MODEL_SOURCES as readonly string[]).includes(s)) {
+          // Counted with the rest, so a calibrated record can't hold a seeded rapid model.
+          sources.push(s as Source);
+        } else {
+          c.add(
+            'MACHINE_VALUE',
+            join(rp, 'source'),
+            `must be one of ${RAPID_MODEL_SOURCES.join(', ')}`,
+          );
+        }
+      }
+    }
   }
 
   // Spindle.

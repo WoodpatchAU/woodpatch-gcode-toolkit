@@ -19,7 +19,14 @@ import {
   type EstimateUnknown,
   type Severity,
 } from '@woodpatch/gcode-core';
-import { BUILD, MAX_LISTED, REQUEST_VERSION, boundText, type EstimateRequest } from './contract.js';
+import {
+  BUILD,
+  MAX_LISTED,
+  REQUEST_VERSION,
+  boundText,
+  utcDay,
+  type EstimateRequest,
+} from './contract.js';
 import { echoRecord, mapRecord, type RecordEcho } from './map.js';
 
 /** A list cut at MAX_LISTED entries, with how many there were. */
@@ -81,8 +88,58 @@ const finding = (d: Diagnostic): Finding => ({
   ...(d.file !== undefined ? { file: boundText(d.file) } : {}),
 });
 
-export function handleEstimate(request: EstimateRequest, build: string): EstimateResponse {
+/** Days after `fittedOn` that a calibration is stale (ADR-0048; CALIBRATION.md §5). */
+export const CALIBRATION_MAX_AGE_DAYS = 90;
+
+const DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+
+/**
+ * The notes on a calibration's age (ADR-0048), as of `today`: one past the limit, one
+ * dated in the future, otherwise none. Only notes: `calibrated` stays the record's
+ * status (ADR-0044's biconditional), and the caller gates on its own stored fittedOn.
+ */
+export function calibrationAgeNotes(request: EstimateRequest, today: string): string[] {
+  const cal = request.record.calibration;
+  if (cal.status !== 'calibrated') return [];
+  // Both are real dates: the record's is validated, and today's is checked by the caller.
+  const days = Math.round((Date.parse(today) - Date.parse(cal.fittedOn)) / 86_400_000);
+  if (days < 0) {
+    return [`calibrated on ${cal.fittedOn}, after today (${today}): check the record's date`];
+  }
+  if (days > CALIBRATION_MAX_AGE_DAYS) {
+    return [
+      `calibrated on ${cal.fittedOn}, ${days} days ago: past the ${CALIBRATION_MAX_AGE_DAYS}-day limit, recalibrate`,
+    ];
+  }
+  return [];
+}
+
+/**
+ * The estimate's notes: the calibration age first, since it's about the whole estimate,
+ * then the estimator's. The list is cut at MAX_LISTED, so a note at the end could be
+ * the one dropped. The estimator writes a handful today, but the order shouldn't
+ * depend on that.
+ */
+export function estimateNotes(
+  age: readonly string[],
+  estimator: readonly string[],
+): Listed<string> {
+  return listed([...age, ...estimator], boundText);
+}
+
+/**
+ * `today` is the UTC day (YYYY-MM-DD) the response is for: it decides the calibration
+ * age notes, so the cache key carries it too, and a cached answer never outlives it.
+ */
+export function handleEstimate(
+  request: EstimateRequest,
+  build: string,
+  today: string,
+): EstimateResponse {
   if (!BUILD.test(build)) throw new Error(`build must be 1-128 printable ASCII characters`);
+  if (!DAY.test(today) || utcDay(Date.parse(today)) !== today) {
+    throw new Error('today must be a real date, YYYY-MM-DD');
+  }
   const { machine, travel, dialect } = mapRecord(request.record);
   const program = parse(request.gcode);
   // No resolveProgram: a request is one file, so a call to another file is refused,
@@ -120,7 +177,7 @@ export function handleEstimate(request: EstimateRequest, build: string): Estimat
         reason: u.reason,
         ...(u.file !== undefined ? { file: boundText(u.file) } : {}),
       })),
-      notes: listed(e.notes, boundText),
+      notes: estimateNotes(calibrationAgeNotes(request, today), e.notes),
     },
     travel: listed(checkTravel(result.steps, travel), finding),
     diagnostics: listed(diagnostics, finding),

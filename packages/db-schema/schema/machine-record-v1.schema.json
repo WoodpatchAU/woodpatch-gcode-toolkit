@@ -27,8 +27,8 @@
     "revision": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 1,
-      "description": "The revision of version 1 the record was written for. This schema describes revision 1."
+      "maximum": 2,
+      "description": "The revision of version 1 the record was written for. This schema describes revisions 1 and 2. A record is validated strictly against its own revision: a field a later revision added is refused in an earlier one."
     },
     "id": {
       "type": "string",
@@ -550,6 +550,10 @@
               "description": "In blocks."
             }
           }
+        },
+        "rapidModel": {
+          "description": "Revision 2. How rapids move: 'coordinated', like a G1 at the rapid rate, blended with its neighbours; 'per-axis', each axis at its own speed, stopping at both ends. Only 'measured' confirms it. Absent: coordinated, and every estimate notes the assumption.",
+          "$ref": "#/$defs/RapidModel"
         }
       }
     },
@@ -722,6 +726,28 @@
       ]
     }
   },
+  "allOf": [
+    {
+      "description": "Revision 1 has no field revision 2 added.",
+      "if": {
+        "properties": {
+          "revision": {
+            "const": 1
+          }
+        },
+        "required": ["revision"]
+      },
+      "then": {
+        "properties": {
+          "planner": {
+            "not": {
+              "required": ["rapidModel"]
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "P": {
       "description": "A physical value with its provenance.",
@@ -734,6 +760,20 @@
         },
         "source": {
           "enum": ["seed", "manual", "measured", "fitted"]
+        }
+      }
+    },
+    "RapidModel": {
+      "description": "How rapids move, with its provenance. Entered or measured, never fitted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "source"],
+      "properties": {
+        "value": {
+          "enum": ["coordinated", "per-axis"]
+        },
+        "source": {
+          "enum": ["seed", "manual", "measured"]
         }
       }
     }

@@ -10,7 +10,7 @@ const p = (value: number, source = 'manual') => ({ value, source });
 const FULL = {
   format: 'woodpatch-gcode-machine',
   version: 1,
-  revision: 1,
+  revision: 2,
   id: 'test-7',
   name: 'Test router (fictional)',
   dialect: 'masso-g3-5.13',
@@ -23,7 +23,12 @@ const FULL = {
     C: { min: p(0), max: p(270), maxVelocity: p(5400), acceleration: p(270) },
   },
   rapidRate: p(15000),
-  planner: { junctionDeviation: p(0.03, 'fitted'), blockRate: p(800), lookahead: p(200) },
+  planner: {
+    junctionDeviation: p(0.03, 'fitted'),
+    blockRate: p(800),
+    lookahead: p(200),
+    rapidModel: { value: 'per-axis', source: 'manual' },
+  },
   spindle: { minRpm: p(6000), maxRpm: p(20000), spinUpSeconds: p(7), spinDownSeconds: p(6) },
   overheads: { toolChangeSeconds: p(45), programStartSeconds: p(20), pauseSeconds: p(30) },
   calibration: {
@@ -43,7 +48,7 @@ const FULL = {
 const UNUSED: readonly [RegExp, string][] = [
   [/^name$/, 'display only: not echoed (ADR-0041 echoes id, version, revision, status, hash)'],
   [
-    /\.source$/,
+    /^(?!planner\.rapidModel\.).*\.source$/,
     "provenance is the storing application's; the estimate uses values, and calibrated:false covers unconfirmed ones",
   ],
   [
@@ -63,7 +68,10 @@ const UNUSED: readonly [RegExp, string][] = [
 const FIXED: readonly [RegExp, string][] = [
   [/^format$/, 'one value only'],
   [/^version$/, 'one value only: version 1'],
-  [/^revision$/, 'revision 1 is the newest this toolkit reads, so it has no valid other value yet'],
+  [
+    /^revision$/,
+    'this record holds a revision 2 field, so 2 is its only valid revision; the echo carries it (tested below)',
+  ],
   [/^calibration\.status$/, 'it switches the calibration branch: tested below'],
 ];
 
@@ -71,6 +79,7 @@ const SWAP: Record<string, string> = {
   manual: 'measured',
   measured: 'manual',
   fitted: 'manual',
+  'per-axis': 'coordinated',
   'masso-g3-5.13': 'linuxcnc-2.9',
   '2026-10-01': '2026-10-02',
 };
@@ -152,7 +161,7 @@ describe('mapRecord', () => {
         C: { maxVelocity: 5400, acceleration: 270 },
       },
       rapidRate: 15000,
-      rapidModel: 'coordinated',
+      rapidModel: 'per-axis',
       rapidModelConfirmed: false,
       junctionDeviation: 0.03,
       blockRate: 800,
@@ -175,7 +184,7 @@ describe('mapRecord', () => {
     expect(echoRecord(FULL as MachineRecord)).toEqual({
       id: 'test-7',
       version: 1,
-      revision: 1,
+      revision: 2,
       calibration: 'calibrated',
     });
   });
@@ -192,6 +201,8 @@ describe('mapRecord', () => {
     expect(m.machine).not.toHaveProperty('rapidRate');
     expect(m.machine).not.toHaveProperty('blockRate');
     expect(m.machine).not.toHaveProperty('lookahead');
+    // Revision 1: no rapid model, so the assumption, unconfirmed.
+    expect([m.machine.rapidModel, m.machine.rapidModelConfirmed]).toEqual(['coordinated', false]);
     expect(m.machine.toolChangeSeconds).toBe(60);
     expect(m.machine.programStartSeconds).toBe(0);
     expect(m.machine.pauseSeconds).toBe(0);
@@ -200,6 +211,23 @@ describe('mapRecord', () => {
     // Uncalibrated: no factors, which the estimator reads as 1 and reports.
     expect(m.machine.calibration).toBeNull();
     expect(echoRecord(example).calibration).toBe('uncalibrated');
+  });
+
+  it('takes the rapid model from revision 2, confirmed only when measured', () => {
+    const withModel = (rapidModel: unknown) => {
+      const r = structuredClone(FULL) as unknown as { planner: Record<string, unknown> };
+      if (rapidModel === undefined) Reflect.deleteProperty(r.planner, 'rapidModel');
+      else r.planner['rapidModel'] = rapidModel;
+      expect(validateMachine(r)).toEqual([]);
+      const m = mapRecord(r as unknown as MachineRecord).machine;
+      return [m.rapidModel, m.rapidModelConfirmed];
+    };
+    // Left out: assumed coordinated, unconfirmed, so every estimate notes it.
+    expect(withModel(undefined)).toEqual(['coordinated', false]);
+    expect(withModel({ value: 'coordinated', source: 'manual' })).toEqual(['coordinated', false]);
+    expect(withModel({ value: 'per-axis', source: 'manual' })).toEqual(['per-axis', false]);
+    expect(withModel({ value: 'coordinated', source: 'measured' })).toEqual(['coordinated', true]);
+    expect(withModel({ value: 'per-axis', source: 'measured' })).toEqual(['per-axis', true]);
   });
 
   it('maps every dialect a record may name to a core profile', () => {
