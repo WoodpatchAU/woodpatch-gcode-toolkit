@@ -5,9 +5,10 @@
 // from it, its measured times and its fitted factors. This repository holds only the
 // tools. Fails, naming each path, if a tracked file looks like one of those. By NAME
 // (any case, any extension): a runs file (calibration-runs, runs.json), a generated
-// program (cal-N-...) or a fit's output (fit.json, fit.txt). By CONTENT, which survives
-// a rename: the generator's air-cut header, a measured time (measuredSeconds), a fit
-// (its format name, ADR-0049), or a machine record (its format name) in
+// program (cal-N-...), a fit's output (fit.json, fit.txt) or an acceptance's (accept.json,
+// accept.txt). By CONTENT, which survives a rename: the generator's air-cut header, a
+// measured time (measuredSeconds), a fit (its format name, ADR-0049), an acceptance
+// report (its format name, ADR-0050), or a machine record (its format name) in
 // any file but the code that defines it; and the one allowed record, the example, must
 // stay fictional (its id, its name, and every value a seed).
 //
@@ -30,6 +31,7 @@ const EXAMPLE = 'packages/db-schema/examples/example-router.json';
 const HEADER = 'CALIBRATION AIR CUT';
 const FORMAT = 'woodpatch-gcode-machine';
 const FIT_FORMAT = 'woodpatch-gcode-fit';
+const ACCEPT_FORMAT = 'woodpatch-gcode-acceptance';
 
 /**
  * Files that may NAME these things, because they define or check them: the generator
@@ -85,6 +87,10 @@ export function findPrivate(paths, read) {
       out.push(`${p}: named like a calibration fit's output`);
       continue;
     }
+    if (/^accept\.(json|txt)$/.test(base)) {
+      out.push(`${p}: named like a calibration acceptance's output`);
+      continue;
+    }
     if (p === EXAMPLE) {
       for (const why of exampleProblems(read(p))) out.push(`${p}: the example record: ${why}`);
       continue;
@@ -99,6 +105,7 @@ export function findPrivate(paths, read) {
     if (text.includes(HEADER)) out.push(`${p}: carries the calibration programs' header`);
     else if (text.includes('measuredSeconds')) out.push(`${p}: holds measured times`);
     else if (text.includes(FIT_FORMAT)) out.push(`${p}: holds a calibration fit`);
+    else if (text.includes(ACCEPT_FORMAT)) out.push(`${p}: holds a calibration acceptance`);
     else if (text.includes(FORMAT)) out.push(`${p}: holds a machine record`);
   }
   return out;

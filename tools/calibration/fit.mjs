@@ -449,7 +449,7 @@ const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** The toolkit's commit, and whether its tree had changes (5c-2 refuses a dirty fit). */
-function toolkitState() {
+export function toolkitState() {
   const git = (...args) => execFileSync('git', ['-C', REPO, ...args], { encoding: 'utf8' });
   try {
     return {
