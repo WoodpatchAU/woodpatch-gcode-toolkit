@@ -113,14 +113,29 @@ reaction at each end.
 
 ## 4. Fit, and check
 
-The fit (5c, in progress) reads the runs file and fits the record's factors (ADR-0041:
-`accelFactor`, `timeFactor`, and the junction deviation, which this controller doesn't
-publish). It refuses fewer than 5 runs, a set that can't separate the factors, and a fit
-that lands on a factor's limit. Its result goes into the machine's record, which is kept
-by the application that stores machine records, not here.
+```bash
+node tools/calibration/fit.mjs --record <record.json> --runs <calibration-runs.json> --programs <the programs' dir> --out <new private dir>
+```
 
-A calibration is accepted only against **real production jobs** (at least 5), not the
-programs it was fitted on: each within ±5% of its measured time. Those jobs are kept in
+The fit (ADR-0049) reads the runs and fits the record's factors: `timeFactor`,
+`accelFactor`, and the junction deviation, which some controllers don't publish. It uses
+the motion programs timed at 100% feed and rapid. It writes `fit.json` and `fit.txt`,
+and refuses, saying why, when:
+
+- there are fewer than 5 timed runs, or no program is timed twice;
+- the runs can't tell two factors apart;
+- a factor lands on the edge of its range;
+- a factor rests on one run. Time that program again: on most machines it's the corners
+  program, for the junction deviation;
+- the fit hangs on any one run.
+
+It also reports what it doesn't fit, for you to set in the record as measured: whether
+the overrides touch the programs they shouldn't, which rapid model fits the rapids, and
+the spindle's implied start and stop times.
+
+A fit is not a calibration. A calibration is accepted only against **real production
+jobs** (at least 5), not the programs it was fitted on: each within ±5% of its measured
+time. Those jobs are kept in
 the private fixtures repository, each with its source job recorded.
 
 ## 5. When to calibrate again

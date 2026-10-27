@@ -3450,7 +3450,7 @@ repository. A misconfiguration fails the start, loudly, rather than serving.
 **Status:** Proposed, 2026-10-25 (parcel 5c-1a). The reviewer's GO on the 5c outline,
 with five conditions; the first (router safety) and third (the private boundary) are
 met here. The fit tool, record revision 2 (`planner.rapidModel`) and a computed
-staleness come in 5c-1b.
+staleness come in 5c-1b. The fit is ADR-0049.
 
 **Context.** ADR-0043's estimator is tuned by calibration, not by hand: the record's
 `accelFactor` and `timeFactor`, and the junction deviation, which some controllers
@@ -3565,3 +3565,84 @@ the UTC day. A cached answer is computed again at most once a day. The gate move
 the consumer: when the storing application prices from estimates, it must refuse or
 flag a price built on a calibration past 90 days, from its own stored `fittedOn`, never
 by parsing this note (reviewer, 2026-10-26).
+
+## ADR-0049: Calibrating the estimator: the fit
+
+**Status:** Proposed, 2026-10-27 (parcel 5c-1c). The reviewer's GO on the design, with
+six conditions and five refinements, all met here. Follows ADR-0047 (the programs) and
+ADR-0048 (the record's revision 2).
+
+**Context.** The calibration programs (ADR-0047) are timed on the machine. Three of the
+record's values are fitted from those times: `timeFactor` and `accelFactor` (ADR-0041),
+and the planner's `junctionDeviation`, which some controllers don't publish. A fit that
+looks converged can still be wrong: two factors that trade off, a second valley, a
+factor resting on one run, or a residual below the timer's noise sold as accuracy. The
+fit has to refuse those, and say why.
+
+**Decision.**
+
+- **The tool:** `tools/calibration/fit.mjs`, given the record, the runs file and the
+  programs. Each run's program must match its SHA-256 in the runs file, and the runs
+  file must name the record's content hash. It fits only the motion programs (no
+  spindle start), at 100% feed and rapid, timed one way.
+- **The objective:** weighted least squares on ln(estimate / measured). Each run's
+  noise σ is the larger of the timer's resolution over its own time and the pooled
+  scatter of the repeats (in log units). So a short program carries only the precision
+  it has. When the misfit exceeds the noise (χ²/dof over 1), σ is scaled up by it, never
+  down. The standard errors and the valley test are then no tighter than the misfit
+  allows.
+- **The search:**
+  - `ln timeFactor` is solved exactly at each point, since it scales the whole time.
+  - `ln accelFactor` and `ln junctionDeviation` are searched on a 17 × 17 log-spaced
+    grid over the box, then refined with three sweeps of golden-section inside the best
+    node's cell.
+  - The box: accelFactor 0.25-4 (the record's range); junction deviation 0.001-1 mm.
+    Above 1 mm no planner corners, and a value there would only flatten the search.
+  - There's no randomness: the same inputs give the same bytes.
+- **It refuses:**
+  - fewer than 5 timed runs (the 3 factors + 2), or no program timed twice. The repeats
+    are what measure the noise floor;
+  - two factors that trade off. The Jacobian is taken over all three factors at the
+    optimum (timeFactor included: it trades off with accelFactor on cruise-dominated
+    programs). Any pair's |correlation| over 0.95 is refused: past it (a variance
+    inflation factor of about 10), one factor's estimate is mostly the other's. An
+    ill-conditioned matrix (over 10⁸) is refused too;
+  - a second valley: any grid node more than one step from the best with
+    Δχ² ≤ 2.3, the 68% region of two free parameters;
+  - a factor within 1% (in log) of the box's edge. It's refused, never clamped;
+  - a single informant: a program timed once, without which a factor's standard error
+    grows more than 1/√(1 − 0.9) ≈ 3.2 times (it held 90% of what the runs say about
+    the factor). "junctionDeviation rests on one run (cal-03): time it twice";
+  - a fit that hangs on one run: leaving any run out moves a factor by more than 3
+    standard errors.
+- **It warns, without refusing,** of a factor with a standard error over 25%. On a real
+  router's programs, with synthetic times, junction deviation comes out
+  at about ±55%: it moves the corners program by about 3% across its whole range. Its
+  effect on a real job is what acceptance measures.
+- **Reported, not fitted:**
+  - the override runs, as a ratio to their program's 100/100 time;
+  - the rapids' error under each rapid model, at the fitted factors;
+  - the events program's implied spin-up plus spin-down, against the record's.
+
+  A person sets these in the record, as `"measured"` (ADR-0048). Each run's
+  leave-one-out error and the grid's best five nodes are reported too.
+
+- **The output is `fit.json`, not a machine record.** It has its own format,
+  `woodpatch-gcode-fit`, version 1, so it can't be read as a record. It carries its
+  provenance: the toolkit's commit, whether the tree had changes, the record's id,
+  revision and content hash, the runs file's SHA-256, and each program's SHA-256.
+  `fit.txt` is the same for a person. Both name programs and hashes, never program
+  text. `--out` must be new, empty and outside the repository (the real path, so a
+  symlink back into the tree is refused).
+- **Only acceptance writes a calibrated record** (5c-2). A calibrated record claims
+  residuals over production jobs (ADR-0041), and can't hold a seed value. A fit's runs
+  are neither. The acceptance check reads `fit.json` with at least 5 production jobs,
+  and records `fit.json`'s SHA-256. It must refuse a `fit.json` made from a tree with
+  changes, or whose record hash isn't the record it's applied to.
+- **Private, as ADR-0047:** the guard refuses a tracked `fit.json` or `fit.txt`, and any
+  file holding the fit's format name, outside the code that defines it.
+
+**Consequences.** On short programs (about 30 s each) the fit can't separate
+accelFactor from junction deviation (correlation about −0.97 on the example). The
+generator's default 240 s target, and the tests' 120 s, can. On the router, the
+corners program is the junction deviation's only informant, so it must be timed twice.
