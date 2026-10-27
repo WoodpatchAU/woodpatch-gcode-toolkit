@@ -41,9 +41,11 @@ export const FIT_VERSION = 1;
  *   that program timed twice.
  * - LOO_SE: leaving one run out may move a factor by at most this many standard errors.
  * - AT_BOUND: a refined factor within this (in log) of the box's edge is at the bound.
- * - WEAK_SE: a factor with a standard error over this (%) is reported as weakly
- *   determined: a warning, not a refusal. Its effect on a time may be small, and the
- *   acceptance check (5c-2) measures what matters, the error on real jobs.
+ * - WEAK_SE: a factor with a standard error over this (%) is undetermined: a warning,
+ *   not a refusal. Its effect on a time may be small, and the acceptance check (5c-2)
+ *   measures what matters, the error on real jobs. But it's listed in `undetermined`,
+ *   and acceptance keeps the record's existing value for it unless the production jobs
+ *   show it matters: a ±55% value is never written into a record as "fitted".
  */
 export const RULES = {
   box: { accelFactor: [0.25, 4], junctionDeviation: [0.001, 1] },
@@ -392,12 +394,14 @@ export function fitFactors(model, runs, resolution, rules = RULES) {
   });
 
   const warnings = [];
+  const undetermined = [];
   if (se) {
     se.forEach((s, p) => {
       const e = pct(s);
       if (e > rules.weakSePercent) {
+        undetermined.push({ factor: FACTORS[p], standardErrorPercent: r6(e) });
         warnings.push(
-          `${FACTORS[p]} is weakly determined (±${r6(e)}%): its effect on these programs is small; time its program again to narrow it`,
+          `${FACTORS[p]} is undetermined (±${r6(e)}%): its effect on these programs is small. Acceptance keeps the record's value for it unless the production jobs show it matters; time its program again to narrow it`,
         );
       }
     });
@@ -416,12 +420,15 @@ export function fitFactors(model, runs, resolution, rules = RULES) {
     standardErrorPercent: se
       ? Object.fromEntries(FACTORS.map((f, p) => [f, r6(pct(se[p]))]))
       : null,
+    undetermined,
     correlations: correlations
       ? Object.fromEntries(Object.entries(correlations).map(([kk, v]) => [kk, r6(v)]))
       : null,
     condition: r6(condition),
     chi2: r6(best.chi2),
     dof,
+    // Whether the misfit scaled σ up, and by what factor (sqrt(χ²/dof), never below 1).
+    birge: { applied: scale > 1, factor: r6(Math.sqrt(scale)) },
     noise: { pooledPercent: r6(pooled === null ? null : pct(pooled)), repeatDof },
     runs: runs.map((r, i) => ({
       file: r.file,
@@ -635,7 +642,15 @@ export function summary(r) {
         .join(', ')}`,
     );
   }
-  out.push(`chi2 ${r.chi2} on ${r.dof} dof; repeat noise ${r.noise.pooledPercent ?? '-'}%`, '');
+  if (r.undetermined.length) {
+    out.push(
+      `undetermined (acceptance keeps the record's value): ${r.undetermined.map((u) => u.factor).join(', ')}`,
+    );
+  }
+  out.push(
+    `chi2 ${r.chi2} on ${r.dof} dof; repeat noise ${r.noise.pooledPercent ?? '-'}%; ${r.birge.applied ? `errors scaled up ${r.birge.factor}x for misfit` : 'no misfit scaling'}`,
+    '',
+  );
   out.push('run                      measured  estimated  error%  leave-one-out%');
   for (const x of r.runs) {
     out.push(

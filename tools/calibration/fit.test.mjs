@@ -142,12 +142,42 @@ describe('the fit, on a model with a known truth', () => {
     );
   });
 
-  it('warns, without refusing, of a weakly determined factor (the rule, at a zero tolerance)', () => {
+  it('warns of an undetermined factor, and marks it so acceptance keeps the record value (the rule, at a zero tolerance)', () => {
     const r = fit(runsOf(SET), PROGRAMS, { ...RULES, weakSePercent: 0 });
     assert.equal(r.status, 'fitted');
     assert.equal(r.warnings.length, 3);
-    assert.match(r.warnings[2], /^junctionDeviation is weakly determined/);
-    assert.deepEqual(fit(runsOf(SET)).warnings, []);
+    assert.match(r.warnings[2], /^junctionDeviation is undetermined/);
+    assert.deepEqual(
+      r.undetermined,
+      ['timeFactor', 'accelFactor', 'junctionDeviation'].map((factor) => ({
+        factor,
+        standardErrorPercent: r.standardErrorPercent[factor],
+      })),
+    );
+    const plain = fit(runsOf(SET));
+    assert.deepEqual(plain.warnings, []);
+    assert.deepEqual(plain.undetermined, []);
+  });
+
+  it('scales the errors up for misfit, never down, and says by how much', () => {
+    const check = (r) => {
+      const ratio = r.chi2 / r.dof;
+      assert.equal(r.birge.applied, ratio > 1);
+      assert.ok(
+        Math.abs(r.birge.factor - Math.sqrt(Math.max(1, ratio))) < 1e-4,
+        JSON.stringify(r.birge),
+      );
+    };
+    const good = fit(runsOf(SET));
+    check(good);
+    // Model error the repeats can't see: one program 4% slow, both its runs.
+    const runs = runsOf(SET).map((x) =>
+      x.file === 'mixed' ? { ...x, measured: Math.round(x.measured * 1.04 * 10) / 10 } : x,
+    );
+    const bad = fit(runs);
+    check(bad);
+    assert.equal(bad.birge.applied, true);
+    assert.ok(bad.birge.factor > 1.5, JSON.stringify(bad.birge));
   });
 
   it('refuses a fit that hangs on one run (the rule, at a zero tolerance)', () => {

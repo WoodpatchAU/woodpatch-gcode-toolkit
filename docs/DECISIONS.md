@@ -3590,7 +3590,7 @@ fit has to refuse those, and say why.
   scatter of the repeats (in log units). So a short program carries only the precision
   it has. When the misfit exceeds the noise (χ²/dof over 1), σ is scaled up by it, never
   down. The standard errors and the valley test are then no tighter than the misfit
-  allows.
+  allows. `fit.json`'s `birge` says whether it applied, and the factor (√(χ²/dof)).
 - **The search:**
   - `ln timeFactor` is solved exactly at each point, since it scales the whole time.
   - `ln accelFactor` and `ln junctionDeviation` are searched on a 17 × 17 log-spaced
@@ -3618,7 +3618,11 @@ fit has to refuse those, and say why.
 - **It warns, without refusing,** of a factor with a standard error over 25%. On a real
   router's programs, with synthetic times, junction deviation comes out
   at about ±55%: it moves the corners program by about 3% across its whole range. Its
-  effect on a real job is what acceptance measures.
+  effect on a real job is what acceptance measures. But it's listed in `fit.json` as
+  `undetermined`, with its standard error, and **acceptance keeps the record's existing
+  value for it** (seed or manual) unless the production jobs show it matters. Reporting
+  ±55% is honest; writing that value into a record as fitted would not be (reviewer,
+  2026-10-27).
 - **Reported, not fitted:**
   - the override runs, as a ratio to their program's 100/100 time;
   - the rapids' error under each rapid model, at the fitted factors;
@@ -3644,5 +3648,7 @@ fit has to refuse those, and say why.
 
 **Consequences.** On short programs (about 30 s each) the fit can't separate
 accelFactor from junction deviation (correlation about −0.97 on the example). The
-generator's default 240 s target, and the tests' 120 s, can. On the router, the
-corners program is the junction deviation's only informant, so it must be timed twice.
+generator's default 240 s target, and the tests' 120 s, can. So the generator now
+refuses a `--target` under 120 s: nobody times programs the fit will then refuse. On
+the router, the corners program is the junction deviation's only informant, so it must
+be timed twice.

@@ -25,8 +25,10 @@ node tools/calibration/programs.mjs --record <record.json> --out <new private di
   you'll set. It must fit the machine's travel and be clear of everything.
 - `--clearance` (default 5 mm): how far below the top of Z travel the programs work.
 - `--plunge` (default 30 mm): how far below that the plunge program goes.
-- `--target` (default 240 s): about how long each program runs. Long enough that the
-  controller's 1 s timer is under 0.5% of it.
+- `--target` (default 240 s, at least 120 s): about how long each program runs. Long
+  enough that the controller's 1 s timer is under 0.5% of it. Shorter programs can't
+  separate accelFactor from the junction deviation, so the fit would refuse them, and the
+  generator refuses a target under 120 s before anything is timed.
 - `--events`: also write the events program, which **starts the spindle**. It's off by
   default; write it only if the operator wants it run.
 
@@ -128,6 +130,11 @@ and refuses, saying why, when:
 - a factor rests on one run. Time that program again: on most machines it's the corners
   program, for the junction deviation;
 - the fit hangs on any one run.
+
+A factor it can only roughly place (a standard error over 25%) is a warning, not a
+refusal, and is marked undetermined: acceptance keeps the record's value for it unless
+the production jobs show it matters. When the runs scatter more than the repeats
+explain, it widens its standard errors to match, and says so.
 
 It also reports what it doesn't fit, for you to set in the record as measured: whether
 the overrides touch the programs they shouldn't, which rapid model fits the rapids, and

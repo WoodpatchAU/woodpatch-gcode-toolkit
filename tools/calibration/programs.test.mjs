@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  MIN_TARGET_SECONDS,
   RUNS_FILE,
   SAFETY,
   checkOut,
@@ -241,10 +242,15 @@ describe('the inputs', () => {
       { ...OPTS, plunge: 99 },
       { ...OPTS, clearance: 0 },
       { ...OPTS, target: 5 },
+      { ...OPTS, target: 119 },
       { envelopeX: Number.NaN, envelopeY: 800 },
     ]) {
       assert.throws(() => readSetup(EXAMPLE, bad), /must be a number/, JSON.stringify(bad));
     }
+  });
+
+  it('accept a target of 120 s, the shortest the fit can separate', () => {
+    assert.equal(readSetup(EXAMPLE, { ...OPTS, target: MIN_TARGET_SECONDS }).target, 120);
   });
 
   it('refuse a record that is not valid', () => {
