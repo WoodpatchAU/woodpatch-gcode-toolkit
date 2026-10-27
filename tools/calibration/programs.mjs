@@ -41,6 +41,8 @@ const server = await import(join(REPO, 'packages/server/dist/index.js'));
 export const GENERATOR_VERSION = 1;
 /** What the fit tool reads, beside the programs. Its name is in the CI guard. */
 export const RUNS_FILE = 'calibration-runs.json';
+/** The shortest --target the fit can use (ADR-0049). */
+export const MIN_TARGET_SECONDS = 120;
 
 export class ProgramsError extends Error {}
 
@@ -85,7 +87,10 @@ export function readSetup(recordText, opts) {
   const envY = positive('envelope-y', opts.envelopeY, 100, span('Y'));
   const clearance = positive('clearance', opts.clearance ?? 5, 1, span('Z') / 2);
   const plunge = positive('plunge', opts.plunge ?? 30, 5, span('Z') - clearance);
-  const target = positive('target', opts.target ?? 240, 30, 1800);
+  // Not under 120 s: on shorter programs the fit can't tell accelFactor from the
+  // junction deviation (they trade off at about -0.97 on 30 s programs) and refuses,
+  // after the machine time is spent (ADR-0049). Refused here, before anything is timed.
+  const target = positive('target', opts.target ?? 240, MIN_TARGET_SECONDS, 1800);
 
   return {
     record,
