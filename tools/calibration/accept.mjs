@@ -19,7 +19,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { FIT_FORMAT, FIT_VERSION, RULES as FIT_RULES, toolkitState } from './fit.mjs';
+import { FIT_FORMAT, FIT_VERSION, RULES as FIT_RULES, runFit, toolkitState } from './fit.mjs';
 import { ProgramsError, checkOut } from './programs.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -64,6 +64,9 @@ const JOB_PATH = /^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/){0,8}[A-Za-z0-9][A-Za-z
 const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 // The operator's name, as recorded with a --keep: printable, one line.
 const OPERATOR = /^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]{1,100}$/u;
+// The first line of the generator's safety header (programs.mjs SAFETY), in any case or
+// spacing: a job that carries it is a calibration program, whatever else changed.
+const AIR_CUT = /CALIBRATION\s+AIR\s+CUT/i;
 
 /**
  * A program's text with what a re-save can change taken out: line endings, comments
@@ -84,6 +87,46 @@ export function normalise(text) {
     )
     .filter((l) => l !== '' && l !== '%')
     .join('\n');
+}
+
+/**
+ * What a program does, not how it's written: the SHA-256 of its interpreted steps with
+ * their line numbers dropped. A CAM or controller re-post (N numbers, G01 for G1, X50.000
+ * for X50, word order, an O-number, a modal line split in two) changes the text and
+ * defeats normalise(), but not this (reviewer, #84). Two jobs with the same motion are
+ * one program; a job with a calibration program's motion is that program.
+ */
+export function motionHash(text, dialect) {
+  const steps = core.interpret(core.parse(text), { dialect }).steps.map((step) => {
+    const s = { ...step };
+    delete s.line;
+    return s;
+  });
+  return sha256(JSON.stringify(steps));
+}
+
+/**
+ * fit.json as the fit would make it on any tree: without what depends on where and when it
+ * ran (the toolkit's commit and state, Node's version), with keys sorted, as one string.
+ */
+function comparableFit(fit) {
+  const copy = JSON.parse(JSON.stringify(fit));
+  if (copy?.provenance && typeof copy.provenance === 'object') {
+    delete copy.provenance.toolkitCommit;
+    delete copy.provenance.toolkitDirty;
+    delete copy.provenance.node;
+  }
+  const sorted = (v) =>
+    Array.isArray(v)
+      ? v.map(sorted)
+      : v !== null && typeof v === 'object'
+        ? Object.fromEntries(
+            Object.keys(v)
+              .sort()
+              .map((k) => [k, sorted(v[k])]),
+          )
+        : v;
+  return JSON.stringify(sorted(copy));
 }
 
 /** Every path in the record whose source is still "seed". */
@@ -107,6 +150,7 @@ const pctOf = (estimate, measured) => (estimate / measured - 1) * 100;
  * The whole check, pure: the inputs' text and bytes in, the report (and, on a pass, the
  * candidate record's text) out. `readJob(path)` and `readProgram(file)` return Buffers.
  * `toolkit` is { commit, dirty }. `keep` is null or { field, operator, decidedOn }.
+ * `fitter` is runFit; the tests pass a stand-in so each rule can be built on purpose.
  * Throws AcceptError on input it can't use.
  */
 export function runAcceptance({
@@ -119,8 +163,19 @@ export function runAcceptance({
   toolkit,
   keep = null,
   rules = RULES,
+  fitter = runFit,
 }) {
   const refusals = [];
+  // A file that can't be read is input the check can't use, never a raw stack.
+  const reading = (read, what) => (file) => {
+    try {
+      return read(file);
+    } catch (e) {
+      throw new AcceptError(`${file}: the ${what} can't be read (${e?.code ?? e?.message ?? e})`);
+    }
+  };
+  const readJobFile = reading(readJob, 'job');
+  const readProgramFile = reading(readProgram, 'calibration program');
 
   // The record, exactly the one the fit was made from.
   const read = db.readMachine(recordText);
@@ -150,6 +205,7 @@ export function runAcceptance({
     throw new AcceptError(`fit.json's status is "${fit.status}": only a fitted fit is accepted`);
   }
   if (fit.provenance?.toolkitDirty !== false) {
+    // Absent or anything but false is a tree with changes: fail closed.
     throw new AcceptError(
       'fit.json was made from a toolkit tree with changes: fit again from a clean tree',
     );
@@ -163,28 +219,54 @@ export function runAcceptance({
     throw new AcceptError('the toolkit tree has changes: accept from a clean tree');
   }
 
-  // The runs file the fit read (its SHA-256 is in fit.json): its dates set fittedOn.
+  // The runs file the fit read (its SHA-256 is in fit.json).
   if (sha256(runsText) !== fit.provenance.runsSha256) {
     throw new AcceptError("the runs file isn't the one the fit read (its SHA-256 differs)");
   }
-  const runsFile = JSON.parse(runsText);
-  const runDates = (runsFile.runs ?? [])
-    .filter((r) => typeof r.measuredSeconds === 'number')
-    .map((r) => r.date);
-  if (runDates.some((d) => !realDate(d))) {
-    throw new AcceptError('every timed run in the runs file needs a real date (YYYY-MM-DD)');
+
+  // fit.json is a claim; the record, the runs file and the programs are the evidence. Fit
+  // again from them and use only that: an edited fit.json (no programs, a factor moved, an
+  // entry taken out of `undetermined`) can't change what acceptance checks (reviewer, #84).
+  const resolution = fit.provenance.timerResolutionSeconds;
+  if (typeof resolution !== 'number' || !(resolution > 0 && resolution <= 10)) {
+    throw new AcceptError("fit.json's timer resolution isn't a number of seconds from 0 to 10");
+  }
+  let again;
+  try {
+    again = fitter({ recordText, runsText, readProgram: readProgramFile, resolution });
+  } catch (e) {
+    if (e instanceof AcceptError || !(e instanceof ProgramsError)) throw e;
+    throw new AcceptError(`fitting again from the runs: ${e.message}`);
+  }
+  if (comparableFit(fit) !== comparableFit(again)) {
+    throw new AcceptError(
+      "fit.json isn't what the fit makes of this record, runs file and programs: fit again with this toolkit, and don't edit fit.json",
+    );
   }
 
-  // The calibration programs, raw and normalised, so no job can be one of them.
-  const calibration = (fit.provenance.programs ?? []).map(({ file, sha256: hash }) => {
+  // The timed runs' dates: the calibration's date, and the earliest a job may be timed.
+  const runsFile = JSON.parse(runsText);
+  const runDates = runsFile.runs
+    .filter((r) => r.measuredSeconds !== null && r.measuredSeconds !== undefined)
+    .map((r) => r.date);
+  if (runDates.length === 0 || runDates.some((d) => !realDate(d))) {
+    throw new AcceptError('every timed run in the runs file needs a real date (YYYY-MM-DD)');
+  }
+  const firstRun = [...runDates].sort()[0];
+
+  // The calibration programs, from the runs file (whose hash the fit checked), not from
+  // fit.json: raw, normalised and as motion, so no job can be one of them.
+  const { dialect } = server.mapRecord(record);
+  const calibration = again.provenance.programs.map(({ file, sha256: hash }) => {
     if (typeof file !== 'string' || !PLAIN_NAME.test(file)) {
-      throw new AcceptError('fit.json names a program that is not a plain file name');
+      throw new AcceptError('the runs file names a program that is not a plain file name');
     }
-    const bytes = readProgram(file);
+    const bytes = readProgramFile(file);
     if (sha256(bytes) !== hash) {
-      throw new AcceptError(`${file}: its SHA-256 isn't the one in fit.json`);
+      throw new AcceptError(`${file}: its SHA-256 isn't the one in the runs file`);
     }
-    return { file, hash, normal: sha256(normalise(bytes.toString('utf8'))) };
+    const text = bytes.toString('utf8');
+    return { file, hash, normal: sha256(normalise(text)), motion: motionHash(text, dialect) };
   });
 
   // The jobs: production programs with measured times, one method, at 100/100.
@@ -201,25 +283,32 @@ export function runAcceptance({
     if (typeof t?.file !== 'string' || !JOB_PATH.test(t.file)) {
       throw new AcceptError('a job names a file that is not a plain relative path');
     }
-    if (typeof t.measuredSeconds !== 'number' || !(t.measuredSeconds > 0)) {
+    if (!Number.isFinite(t.measuredSeconds) || !(t.measuredSeconds > 0)) {
       throw new AcceptError(`${t.file}: measuredSeconds must be a positive number of seconds`);
     }
     if (typeof t.method !== 'string' || t.method === '') {
       throw new AcceptError(`${t.file}: each timing needs its method (how it was timed)`);
     }
     if (!realDate(t.date)) throw new AcceptError(`${t.file}: date must be a real YYYY-MM-DD`);
+    if (t.date < firstRun) {
+      refusals.push(
+        `${t.file}: timed on ${t.date}, before the calibration runs (${firstRun}): it grades an earlier state of the machine; time it again`,
+      );
+    }
     if (t.overrides?.feedPercent !== 100 || t.overrides?.rapidPercent !== 100) {
       throw new AcceptError(`${t.file}: acceptance jobs are timed at 100% feed and rapid`);
     }
     let j = jobs.get(t.file);
     if (!j) {
-      const bytes = readJob(t.file);
+      const bytes = readJobFile(t.file);
       const hash = sha256(bytes);
       const text = bytes.toString('utf8');
-      j = { file: t.file, hash, text, times: [], dates: [], methods: new Set() };
+      const motion = motionHash(text, dialect);
+      j = { file: t.file, hash, text, motion, times: [], dates: [], methods: new Set() };
       j.sameAs = calibration.find(
-        (c) => c.hash === hash || c.normal === sha256(normalise(text)),
+        (c) => c.hash === hash || c.normal === sha256(normalise(text)) || c.motion === motion,
       )?.file;
+      j.airCut = AIR_CUT.test(text);
       jobs.set(t.file, j);
     }
     if (t.sha256 !== j.hash) {
@@ -239,16 +328,32 @@ export function runAcceptance({
       refusals.push(
         `${j.file} is the calibration program ${j.sameAs}: acceptance never grades the fit on its own programs`,
       );
+    } else if (j.airCut) {
+      refusals.push(
+        `${j.file} carries the calibration programs' air-cut header: acceptance never grades the fit on its own programs`,
+      );
     }
   }
-  if (list.length < rules.minJobs) {
+  // Distinct programs are distinct motion, not distinct names: one program saved as
+  // copy-1.nc … copy-5.nc is one job, and its timings are repeats under one name.
+  const byMotion = new Map();
+  for (const j of list) byMotion.set(j.motion, [...(byMotion.get(j.motion) ?? []), j.file]);
+  for (const files of byMotion.values()) {
+    if (files.length > 1) {
+      refusals.push(
+        `${files.join(', ')} are the same program (the same motion): time it under one name, and enter repeats as more timings of that file`,
+      );
+    }
+  }
+  if (byMotion.size < rules.minJobs) {
     refusals.push(
-      `${list.length} production jobs: acceptance needs at least ${rules.minJobs} distinct programs`,
+      `${byMotion.size} production jobs: acceptance needs at least ${rules.minJobs} distinct programs`,
     );
   }
 
   // The candidate: the fit's factors applied, undetermined ones kept at the record's value.
-  const undetermined = new Map((fit.undetermined ?? []).map((u) => [u.factor, u]));
+  const factors = again.factors;
+  const undetermined = new Map(again.undetermined.map((u) => [u.factor, u]));
   for (const f of ['timeFactor', 'accelFactor']) {
     if (undetermined.has(f)) {
       refusals.push(
@@ -261,7 +366,7 @@ export function runAcceptance({
   const jdUndetermined = undetermined.get('junctionDeviation');
   if (!jdUndetermined) {
     candidate.planner.junctionDeviation = {
-      value: fit.factors.junctionDeviation,
+      value: factors.junctionDeviation,
       source: 'fitted',
     };
   }
@@ -269,6 +374,11 @@ export function runAcceptance({
     if (keep.field !== 'junctionDeviation' || !jdUndetermined) {
       throw new AcceptError(
         '--keep applies only to an undetermined junctionDeviation (fit.json lists it): a field no fit measured is never kept, it is measured',
+      );
+    }
+    if (jdBefore.source !== 'seed') {
+      throw new AcceptError(
+        `--keep: junctionDeviation is not a seed (it is "${jdBefore.source}"): there is nothing to keep`,
       );
     }
     if (typeof keep.operator !== 'string' || !OPERATOR.test(keep.operator)) {
@@ -286,7 +396,7 @@ export function runAcceptance({
     const e = core.estimateTime(result, {
       ...machine,
       junctionDeviation: jd,
-      calibration: { timeFactor: fit.factors.timeFactor, accelFactor: fit.factors.accelFactor },
+      calibration: { timeFactor: factors.timeFactor, accelFactor: factors.accelFactor },
     });
     return e.complete ? e.totalMs / 1000 : null;
   };
@@ -313,7 +423,8 @@ export function runAcceptance({
 
   // An undetermined junction deviation, kept: tested, not assumed (reviewer's condition 1).
   let sensitivity = null;
-  let kept = false;
+  // Set only when a --keep passes its tests; applied only if nothing else is refused.
+  let keepable = false;
   if (jdUndetermined) {
     const seLog = Math.log(1 + jdUndetermined.standardErrorPercent / 100);
     const [lo, hi] = FIT_RULES.box.junctionDeviation;
@@ -321,8 +432,8 @@ export function runAcceptance({
     const reach = rules.sensitivitySe * seLog;
     const low = clamp(Math.exp(Math.log(jd) - reach));
     const high = clamp(Math.exp(Math.log(jd) + reach));
-    const fitLow = clamp(Math.exp(Math.log(fit.factors.junctionDeviation) - reach));
-    const fitHigh = clamp(Math.exp(Math.log(fit.factors.junctionDeviation) + reach));
+    const fitLow = clamp(Math.exp(Math.log(factors.junctionDeviation) - reach));
+    const fitHigh = clamp(Math.exp(Math.log(factors.junctionDeviation) + reach));
     const rows = graded
       .filter((g) => g.estimate !== null)
       .map((g) => ({
@@ -338,7 +449,7 @@ export function runAcceptance({
     sensitivity = {
       factor: 'junctionDeviation',
       kept: jd,
-      fitted: fit.factors.junctionDeviation,
+      fitted: factors.junctionDeviation,
       standardErrorPercent: jdUndetermined.standardErrorPercent,
       range: [r6(low), r6(high)],
       exercised,
@@ -365,12 +476,9 @@ export function runAcceptance({
           'junctionDeviation is undetermined and still a seed: keep it explicitly (--keep junctionDeviation --operator <name> --decided-on <date>), or time the corners program again',
         );
       } else if (worst <= rules.sensitivityPercent) {
-        candidate.planner.junctionDeviation = { value: jd, source: 'manual' };
-        kept = true;
+        keepable = true;
       }
     }
-  } else if (keep) {
-    throw new AcceptError('--keep: junctionDeviation was fitted, so there is nothing to keep');
   }
 
   // A calibrated record holds no seed (ADR-0041). Never relabelled quietly.
@@ -385,18 +493,21 @@ export function runAcceptance({
     meanAbsPercent: errors.length ? r6(errors.reduce((s, x) => s + x, 0) / errors.length) : null,
     maxAbsPercent: errors.length ? r6(Math.max(...errors)) : null,
   };
-  // fittedOn: the latest measurement the calibration rests on. From the data, never a clock.
-  const fittedOn = [...runDates, ...graded.flatMap((g) => g.dates)].sort().at(-1) ?? null;
+  // fittedOn: the latest calibration run the factors rest on. From the data, never a clock,
+  // and never a job's date: a mistyped 2099 must not stretch the calibration's age limit.
+  const fittedOn = [...runDates].sort().at(-1);
 
   let recordOut = null;
   let hashAfter = null;
   const unique = [...new Set(refusals)];
+  const kept = keepable && unique.length === 0;
   if (unique.length === 0) {
+    if (kept) candidate.planner.junctionDeviation = { value: jd, source: 'manual' };
     candidate.calibration = {
       status: 'calibrated',
       fittedOn,
-      timeFactor: fit.factors.timeFactor,
-      accelFactor: fit.factors.accelFactor,
+      timeFactor: factors.timeFactor,
+      accelFactor: factors.accelFactor,
       residuals,
     };
     recordOut = `${JSON.stringify(candidate, null, 2)}\n`;
@@ -433,8 +544,8 @@ export function runAcceptance({
       method: methods[0] ?? null,
     },
     factors: {
-      timeFactor: fit.factors.timeFactor,
-      accelFactor: fit.factors.accelFactor,
+      timeFactor: factors.timeFactor,
+      accelFactor: factors.accelFactor,
       junctionDeviation: {
         value: candidate.planner.junctionDeviation.value,
         source: candidate.planner.junctionDeviation.source,
@@ -504,17 +615,28 @@ export function summary(r) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  const opt = (name) => {
-    const i = args.indexOf(name);
-    return i === -1 ? undefined : args[i + 1];
-  };
+  const USAGE =
+    'usage: accept.mjs --record <record.json> --fit <fit.json> --runs <calibration-runs.json> --programs <dir> --jobs <timings.json> --jobs-root <dir> --out <new dir> [--keep junctionDeviation --operator <name> --decided-on <YYYY-MM-DD>]';
+  const NEED = ['--record', '--fit', '--runs', '--programs', '--jobs', '--jobs-root', '--out'];
+  const KEEP_FLAGS = ['--keep', '--operator', '--decided-on'];
   try {
-    const need = ['--record', '--fit', '--runs', '--programs', '--jobs', '--jobs-root', '--out'];
-    if (need.some((n) => !opt(n))) {
-      throw new AcceptError(
-        'usage: accept.mjs --record <record.json> --fit <fit.json> --runs <calibration-runs.json> --programs <dir> --jobs <timings.json> --jobs-root <dir> --out <new dir> [--keep junctionDeviation --operator <name> --decided-on <YYYY-MM-DD>]',
-      );
+    // Every flag once, each with its value: a repeated flag or a stray one is a mistake to
+    // stop on, not to guess at.
+    const opts = new Map();
+    const args = process.argv.slice(2);
+    for (let i = 0; i < args.length; i += 2) {
+      const [name, value] = [args[i], args[i + 1]];
+      if (![...NEED, ...KEEP_FLAGS].includes(name)) throw new AcceptError(`${name}?\n${USAGE}`);
+      if (opts.has(name)) throw new AcceptError(`${name} is given twice`);
+      if (value === undefined || value.startsWith('--')) {
+        throw new AcceptError(`${name} needs a value`);
+      }
+      opts.set(name, value);
+    }
+    const opt = (name) => opts.get(name);
+    if (NEED.some((n) => !opts.has(n))) throw new AcceptError(USAGE);
+    if (!opts.has('--keep') && KEEP_FLAGS.some((n) => opts.has(n))) {
+      throw new AcceptError('--operator and --decided-on go with --keep, and only with it');
     }
     const out = checkOut(opt('--out'));
     const root = opt('--jobs-root');
@@ -534,9 +656,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       keep,
     });
     mkdirSync(out, { recursive: true });
-    writeFileSync(join(out, 'accept.json'), `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
-    writeFileSync(join(out, 'accept.txt'), summary(report), { flag: 'wx' });
+    // accept.json last: an "accepted" report never exists without its record.json.
     if (recordOut) writeFileSync(join(out, 'record.json'), recordOut, { flag: 'wx' });
+    writeFileSync(join(out, 'accept.txt'), summary(report), { flag: 'wx' });
+    writeFileSync(join(out, 'accept.json'), `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
     process.stdout.write(summary(report));
     process.exit(report.status === 'accepted' ? 0 : 1);
   } catch (e) {

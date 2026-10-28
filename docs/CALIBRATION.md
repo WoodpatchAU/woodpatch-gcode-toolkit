@@ -151,10 +151,14 @@ node tools/calibration/accept.mjs --record <record.json> --fit <fit.json> --runs
 
 The acceptance check (ADR-0050) estimates each job with the fitted factors, and writes a
 **candidate** calibrated record only if every job is within ±5%. The storing
-application adopts the candidate through its own flow. It refuses, saying why, when:
+application adopts the candidate through its own flow. It fits again from the record,
+the runs and the programs (about half a minute), and refuses a `fit.json` that isn't
+what that fit makes: don't edit it. It refuses, saying why, when:
 
-- there are fewer than 5 distinct jobs, or a job is one of the calibration programs,
-  even saved again;
+- there are fewer than 5 distinct jobs. The same program under two names counts once,
+  even re-exported: time it under one name, and enter repeats as more timings of it;
+- a job is one of the calibration programs, even saved again or re-posted by CAM;
+- a job was timed before the calibration runs: time it again;
 - a job is outside ±5%, or its repeat timings disagree by more than 5%;
 - a value is still a seed (`"source": "seed"`). Measure it, and enter it as
   `"measured"`: time a tool change, for example;
@@ -169,7 +173,8 @@ recorded as `"manual"`, never as fitted.
 ## 5. When to calibrate again
 
 - The controller's settings change (velocities, accelerations, firmware).
-- The machine record gets a new revision.
+- The machine record's values change (a machine edit). Its `revision` is the schema's,
+  not the content's: the content hash is what changes.
 - After 90 days: the calibration is then stale, and estimates say so.
 
 ## Results
