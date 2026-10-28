@@ -3570,7 +3570,7 @@ by parsing this note (reviewer, 2026-10-26).
 
 **Status:** Proposed, 2026-10-27 (parcel 5c-1c). The reviewer's GO on the design, with
 six conditions and five refinements, all met here. Follows ADR-0047 (the programs) and
-ADR-0048 (the record's revision 2).
+ADR-0048 (the record's revision 2). The acceptance check is ADR-0050.
 
 **Context.** The calibration programs (ADR-0047) are timed on the machine. Three of the
 record's values are fitted from those times: `timeFactor` and `accelFactor` (ADR-0041),
@@ -3652,3 +3652,142 @@ generator's default 240 s target, and the tests' 120 s, can. So the generator no
 refuses a `--target` under 120 s: nobody times programs the fit will then refuse. On
 the router, the corners program is the junction deviation's only informant, so it must
 be timed twice.
+
+## ADR-0050: Calibrating the estimator: acceptance on production jobs
+
+**Status:** Proposed, 2026-10-28 (parcel 5c-2). The reviewer's GO on the outline, with a
+ruling on `--keep` and five conditions, all met here. Revised after review: two holes
+closed (distinct programs; `fit.json` trusted past its evidence) and the reviewer's
+rulings on `fittedOn` and `--keep` applied. The record's identity and the adoption
+conditions are settled with the storing application. Two details of adoption are still
+being confirmed with it ([DECISION PENDING], below). Follows ADR-0049.
+
+**Context.** A fit (ADR-0049) is graded only on the programs it was fitted to, so it
+can't show that the estimator is right on real work. ADR-0041 makes a calibrated record
+claim residuals over production jobs, and forbids a seed value in one. So something has
+to check the fit on real jobs, and refuse to relabel what nobody measured.
+
+**Decision.**
+
+- **The tool:** `tools/calibration/accept.mjs`. It takes the uncalibrated record,
+  `fit.json`, the runs file the fit read, the calibration programs, and a timings file of
+  production jobs (the fixtures' `timings` shape, each entry with its file's SHA-256,
+  method, date and overrides).
+- **`fit.json` is a claim; the record, the runs and the programs are the evidence.** The
+  tool fits again from them, and refuses unless `fit.json` is exactly what that fit makes
+  (everything but the toolkit's commit and state and Node's version). It then uses only
+  its own result: the factors, the undetermined list, and the calibration programs, which
+  come from the runs file. So an edited `fit.json` can't empty the program list (which
+  would switch off the check below), move a factor, or take the junction deviation out of
+  `undetermined` to write it as fitted. Fitting again takes about half a minute.
+- **It refuses its inputs outright** when:
+  - `fit.json` isn't a fitted `woodpatch-gcode-fit` v1, doesn't say its tree was clean
+    (absent counts as changes), names another record's hash, or isn't what the fit makes;
+  - the toolkit's own tree has changes;
+  - the runs file isn't the one the fit read, or a timed run has no real date;
+  - a file can't be read, a job's bytes don't match its SHA-256, a measured time isn't a
+    finite positive number, a job isn't at 100% feed and rapid, the jobs mix timing
+    methods, or a job's path isn't plain and relative;
+  - on the command line: a flag given twice, an unknown flag, or `--operator` or
+    `--decided-on` without `--keep`.
+- **It grades** each job with exactly the values the candidate record will hold. A job
+  timed more than once is averaged. It refuses:
+  - fewer than 5 distinct production programs. Distinct means distinct **motion**: the
+    SHA-256 of the interpreted steps, line numbers dropped. Two files with the same motion
+    (a re-export, a "-v2" copy) are refused by name: time it under one name, and enter
+    repeats as more timings of that file;
+  - any job more than ±5% off its measured time;
+  - a job whose repeat timings spread past 5%, where the spread is the full range
+    (max − min) over the mean. Stricter than a half-width, deliberately: a timing that
+    varies that much can't decide a ±5% question (reviewer's condition 5);
+  - a job that is one of the calibration programs: by raw bytes, after normalising
+    (line endings, comments, whitespace, blank lines, case), or by motion, which also
+    catches a CAM or controller re-post (N numbers, `G01`, `X50.000`, word order, an
+    O-number, a split modal line). A job carrying the generator's `CALIBRATION AIR CUT`
+    header is refused too (condition 4);
+  - a job timed before the earliest calibration run: it grades an earlier state of the
+    machine (reviewer's ruling).
+- **Undetermined factors** (the fit's `undetermined`):
+  - An undetermined `timeFactor` or `accelFactor` is refused. An uncalibrated record has
+    no value of them to keep.
+  - An undetermined junction deviation keeps the record's value, and is tested, not
+    assumed. Every job is estimated again at the kept value's ±2 SE, in log space,
+    clamped to the fit's box (condition 1). The report shows both ends for each job, and
+    a move at either end counts. If any job moves more than 1%, it matters for this
+    work: refused, and the corners program is timed again. If the kept value lies
+    outside the fit's own ±2 SE range, the runs place it elsewhere: refused.
+- **Seeds are never relabelled quietly** (ADR-0041; the reviewer's ruling).
+  - `--keep junctionDeviation` turns a kept seed into `"manual"`, only when acceptance
+    exercises it (some job's estimate moves at all) and it doesn't matter (at most 1%).
+    It needs `--operator` and `--decided-on`. `accept.json` records them, with the
+    sensitivity table that justified it, only when the whole check passes. A refused
+    run reports no `--keep`, and the value stays a seed.
+  - `--keep` on a junction deviation that isn't a seed is refused: there's nothing to
+    keep. On a fitted one, likewise. It applies to nothing else.
+  - A seed no job exercises has no evidence either way, so it's refused: it must be
+    measured.
+  - Any other seed left in the record is refused, by path: measure it and enter it as
+    `"measured"`. On the router, that's the tool-change time.
+- **On a pass, it writes three files**, `accept.json` last, so an accepted report never
+  exists without its record.
+  - `record.json`: the candidate. A fitted junction deviation gets source `"fitted"`.
+    `calibration` gets `status: "calibrated"`, the factors, `residuals` (jobs, mean and
+    max absolute error), and `fittedOn`. The record is read back through `readMachine`
+    before it's written, so the tool can't emit a record the schema refuses.
+  - `fittedOn` is the latest date among the fit's timed runs: the date the factors rest
+    on. Never the clock (condition 2), and never a job's date, so a mistyped 2099 can't
+    stretch the calibration's age limit (reviewer's ruling).
+  - `accept.json`: the provenance (the toolkit's commit, the record hash before and
+    after, the SHA-256s of `fit.json`, the runs and the jobs), every job's numbers, the
+    sensitivity table and any `--keep`. It records `node: process.version`, so its bytes
+    depend on the Node version, deliberately: it says what produced it. `record.json`
+    doesn't, so the candidate's hash doesn't.
+  - `accept.txt`: the same, for a person.
+
+  On a refusal, only `accept.json` and `accept.txt` are written, with status `refused`.
+
+- **The record's identity.** `id` and `revision` are unchanged. `revision` is the
+  **schema** revision (ADR-0041: "a recalibrated machine keeps both"); the content hash
+  (the JCS SHA-256 every estimate echoes) is what tells records apart. **Same `id` and
+  `revision` with a different hash is the normal recalibration case**, so nothing may
+  key a stored quote, or anything else, on (`id`, `revision`) alone: it keys on the hash.
+  Settled with the reviewer and the storing application, which keeps each record it
+  adopts as an immutable version keyed by its hash, and calls those versions, not
+  revisions, so ADR-0041's word keeps one meaning.
+- **A candidate, not a calibration.** The toolkit proposes; the storing application
+  adopts, through its own flow (ADR-0041). The candidate goes to the private fixtures
+  repository, and from there to that flow. The conditions of adoption, agreed with the
+  storing application:
+  - **It refuses a stale candidate.** The candidate's "before" hash (`hashBefore` in
+    `accept.json`) must be the version currently in effect, checked under a lock so two
+    adoptions can't race. A condition of adoption, not a nice-to-have: without it, a
+    candidate made from an older record could replace a newer one.
+  - It refuses a candidate whose own SHA-256 isn't `accept.json`'s `hashAfter`.
+  - It refuses a candidate that changes anything but the calibration. Kinematics, the
+    spindle and overheads are machine edits, not a calibration.
+  - A named person adopts it, who must be a current user of that application, and an
+    append-only audit entry records who and when, the hashes before, of the candidate and
+    as adopted, and `accept.json`'s SHA-256.
+  - That application may hold a version back for sign-off (say, a time factor far from
+    1. and never price on it until approved. Approving it is refused if a newer version
+       has taken effect since.
+- **[DECISION PENDING: two details, put to the storing application]**
+  - **`calibration.status` in the record.** The schema allows only `"uncalibrated"` and
+    `"calibrated"`, and only `"calibrated"` may carry the factors, `fittedOn` and the
+    residuals. So the candidate must say `"calibrated"`. A held-back or pending state is
+    the storing application's, on its version, never a value in the record (the schema
+    would refuse it). The adopted record should then be the candidate byte for byte, and
+    its hash `hashAfter`; a difference is a signal, not the normal case.
+  - **What counts as "the calibration".** A calibration changes the `calibration` block
+    and `planner.junctionDeviation` (fitted, or a kept seed made `"manual"`), and nothing
+    else. The "changes anything but the calibration" refusal must allow exactly those.
+- **Private, as ADR-0047:** `--out` goes outside the repository. The guard refuses a
+  tracked `accept.json` or `accept.txt`, and any file holding
+  `woodpatch-gcode-acceptance`. The candidate record is caught as a machine record.
+
+**Consequences.** No calibrated record exists without at least 5 real, distinct jobs
+within ±5%, and without every seed either measured, or kept by a named person on
+evidence that it doesn't matter. A machine whose controller hides its junction deviation
+can be calibrated without one, as long as its work doesn't depend on it. The timings
+file must say how each job was timed, so the fixtures' entries gain a `method` field.
+Acceptance fits again, so it takes about as long as the fit.

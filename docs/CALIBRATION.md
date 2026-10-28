@@ -142,13 +142,39 @@ the spindle's implied start and stop times.
 
 A fit is not a calibration. A calibration is accepted only against **real production
 jobs** (at least 5), not the programs it was fitted on: each within ±5% of its measured
-time. Those jobs are kept in
-the private fixtures repository, each with its source job recorded.
+time. Those jobs are kept in the private fixtures repository, each with its source job
+recorded.
+
+```bash
+node tools/calibration/accept.mjs --record <record.json> --fit <fit.json> --runs <calibration-runs.json> --programs <the programs' dir> --jobs <timings.json> --jobs-root <dir> --out <new private dir>
+```
+
+The acceptance check (ADR-0050) estimates each job with the fitted factors, and writes a
+**candidate** calibrated record only if every job is within ±5%. The storing
+application adopts the candidate through its own flow. It fits again from the record,
+the runs and the programs (about half a minute), and refuses a `fit.json` that isn't
+what that fit makes: don't edit it. It refuses, saying why, when:
+
+- there are fewer than 5 distinct jobs. The same program under two names counts once,
+  even re-exported: time it under one name, and enter repeats as more timings of it;
+- a job is one of the calibration programs, even saved again or re-posted by CAM;
+- a job was timed before the calibration runs: time it again;
+- a job is outside ±5%, or its repeat timings disagree by more than 5%;
+- a value is still a seed (`"source": "seed"`). Measure it, and enter it as
+  `"measured"`: time a tool change, for example;
+- the fit couldn't place the junction deviation and it matters for these jobs (some job
+  moves more than 1% across its uncertainty). Time the corners program again.
+
+If the junction deviation couldn't be placed and doesn't matter for these jobs, the
+record's value can be kept by a named person:
+`--keep junctionDeviation --operator <name> --decided-on <YYYY-MM-DD>`. It's then
+recorded as `"manual"`, never as fitted.
 
 ## 5. When to calibrate again
 
 - The controller's settings change (velocities, accelerations, firmware).
-- The machine record gets a new revision.
+- The machine record's values change (a machine edit). Its `revision` is the schema's,
+  not the content's: the content hash is what changes.
 - After 90 days: the calibration is then stale, and estimates say so.
 
 ## Results
