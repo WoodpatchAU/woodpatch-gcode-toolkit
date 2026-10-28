@@ -252,7 +252,10 @@ describe('the HTTP layer', () => {
     expect(a.status).toBe(200);
     expect([b.status, code(b)]).toEqual([503, 'SERVER_BUSY']);
     const waited = s.logs.map((l) => JSON.parse(l)).find((l) => l.code === 'SERVER_BUSY');
-    expect(waited.queueMs).toBeGreaterThanOrEqual(50);
+    // It waited the queue timeout, not nothing. Not to the millisecond: Node arms the
+    // timer from the event loop's cached clock, which can be a few ms stale, while the
+    // wait is measured with Date.now(), so a 50 ms timeout can log 49 (seen in CI).
+    expect(waited.queueMs).toBeGreaterThanOrEqual(40);
   });
 
   it('answers any throw with INTERNAL and its fixed message only', async () => {
