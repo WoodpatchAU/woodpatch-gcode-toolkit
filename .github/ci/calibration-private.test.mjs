@@ -15,6 +15,7 @@ const files = {
   'fixtures/synthetic/ok-ij-arcs.ngc': 'G2 X1 I1\n',
   'tools/calibration/programs.mjs': 'CALIBRATION AIR CUT measuredSeconds',
   'tools/calibration/fit.mjs': 'woodpatch-gcode-fit measuredSeconds',
+  'tools/calibration/accept.mjs': 'woodpatch-gcode-acceptance measuredSeconds',
   'docs/CALIBRATION.md': 'calibration-runs.json measuredSeconds',
 };
 const read = (p) => files[p] ?? '';
@@ -41,6 +42,9 @@ it('refuses each kind of private calibration file, renamed or not', () => {
     'notes/fit.json': '{}',
     'notes/FIT.TXT': '',
     'notes/router-fit-2026.json': '{"format": "woodpatch-gcode-fit"}',
+    'notes/accept.json': '{}',
+    'notes/Accept.TXT': '',
+    'notes/router-acceptance.json': '{"format": "woodpatch-gcode-acceptance"}',
   };
   const hits = findPrivate(Object.keys(bad), (p) => bad[p]);
   assert.equal(hits.length, Object.keys(bad).length, hits.join('\n'));
