@@ -3791,3 +3791,81 @@ evidence that it doesn't matter. A machine whose controller hides its junction d
 can be calibrated without one, as long as its work doesn't depend on it. The timings
 file must say how each job was timed, so the fixtures' entries gain a `method` field.
 Acceptance fits again, so it takes about as long as the fit.
+
+## ADR-0051: Publishing the packages to npm
+
+**Status:** Accepted, 2026-11-08. The operator's decisions on scope, authentication,
+versioning and who releases; the release workflow's shape cleared in review before it
+was written.
+
+**Context.** The applications that build on the toolkit consume `@woodpatch/gcode-svelte` (and
+through it the core, viewer and editor) as ordinary npm dependencies, pinned to an exact
+version (ADR-0030). Nothing published them. A publish credential is the most valuable
+thing CI can hold: whoever has one can ship code under our name to everyone who installs
+the packages, and stealing publish tokens through build-time dependency code is a known
+attack.
+
+**Decision.**
+
+- **Scope and packages.** `@woodpatch` (an npm organisation). Four packages:
+  `gcode-core`, `gcode-viewer`, `gcode-editor`, `gcode-svelte`. The estimate server and
+  the db schema stay `"private": true` and never publish; the pack check asserts it.
+- **One version for all four.** A changesets `fixed` group: they always release together,
+  at the same version, so an application pins one number. The first release is 0.1.0, and
+  they stay below 1.0 until an application has used them in earnest.
+- **Versioning is a PR.** `pnpm changeset version` bumps the versions and writes the
+  changelogs, in an ordinary reviewed PR, merged like any other. No bot.
+- **Releasing is by hand.** `.github/workflows/release.yml` (`release-npm`) runs only on
+  `workflow_dispatch`, from `main`, started by a listed releaser (the operator), and
+  holds for approval in the `npm-release` environment. The environment's required
+  reviewer and its main-only deployment-branch rule are enforced by GitHub, outside the
+  workflow file: they are the real gate. The workflow's own ref and actor checks refuse
+  early and cheaply. It also requires CI's `checks`, `reuse` and `provenance` jobs to have
+  passed on the commit. **Dry run by default.**
+- **Two jobs; the credential never meets dependency code.** The `build` job (read-only,
+  no environment, no secrets) installs, builds, tests and packs, and passes the four
+  tarballs to `publish` as job outputs: base64, in parts, as `release-server.yml` does
+  (ADR-0046). There is no artifact action (ADR-0006). The `publish` job is the only one
+  with `id-token: write`, and the only one with the environment and so its secret. It
+  checks out nothing and runs nothing from the repository or its dependencies: a
+  hash-pinned Node (CI's, kept equal by a test) and a hash-pinned npm, both pinned **in the
+  workflow** and checked before extraction, plus base-system tools by absolute path. It
+  verifies the bundle's SHA-256, that it holds exactly the four tarballs, and each
+  tarball's SHA-256 and npm integrity, then publishes in dependency order.
+- **Trusted publishing (OIDC), with provenance.** npm accepts a publish only from this
+  repository's `release.yml` in the `npm-release` environment, with no long-lived token,
+  and records which commit and workflow built each version. It needs npm 11.5.1 or later;
+  Node 22 bundles npm 10, so the publish job pins npm 11 on its own. Moving CI to Node 24
+  would remove that, as a separate change.
+- **The first publish of each package needs a token.** npm attaches a trusted publisher
+  only to a package that already exists. For that one run, a granular token (publish
+  only, `@woodpatch` only, a one-day expiry) is set as the environment's
+  `NPM_BOOTSTRAP_TOKEN`. npm reads it from the environment; it is never written to disk,
+  and the run logs that it was used, and for which packages. Afterwards the trusted
+  publishers are attached, the secret is deleted, and each package is set to refuse
+  tokens altogether ("require two-factor authentication and disallow tokens"). That
+  leaves trusted publishing as the only way to publish. RELEASING.md has the steps.
+- **Re-runs are safe.** A version already on npm is skipped, and reported as skipped, only
+  if the registry's integrity is exactly this tarball's. Any other copy refuses the run.
+  `pnpm pack` is reproducible, so a re-run makes the same tarballs. Publishing the
+  placeholder version 0.0.0 is refused.
+- **What ships is an allowlist.** `scripts/check-pack.mjs` packs every package and checks
+  the tarballs themselves, on every PR and again in `build`:
+  - each file list matches a committed allowlist (`scripts/pack-manifests/`) exactly;
+  - nothing on a denylist (`.npmrc`, `.env*`, fixtures, tests, server or db files);
+  - the packed `package.json`: right name, the lockstep version, MIT, public with
+    provenance, no `workspace:` range and no install-time lifecycle script;
+  - LICENSE and NOTICE as the root's, and the notice on every entry point;
+  - no source map with an absolute source, and no build path in any other file.
+- CI shellchecks the release workflow's scripts, and a test keeps its shape: no actions,
+  `permissions: {}` at the top, the credential only in `publish`, and the pins.
+
+**Consequences.** Releasing takes the operator: start the run, approve it. A compromised
+build-time dependency can tamper with what `build` packs, but can't publish it: the pack
+check and the review of the run stand between, and it never holds a credential. Source
+maps (with their sources embedded) ship, so the four tarballs are about 340 kB, and the
+bundle is about 464,000 of the 480,000 base64 characters the job outputs allow. When the
+packages outgrow that, the build fails loudly, and the way forward is a decision: drop
+the declaration maps (which point at sources the packages don't ship), split the outputs
+across two build jobs, or stop shipping source maps. Not an artifact action, which would
+be an exception to ADR-0006.

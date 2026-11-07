@@ -2,6 +2,14 @@
   "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
   "changelog": "@changesets/cli/changelog",
   "commit": false,
+  "fixed": [
+    [
+      "@woodpatch/gcode-core",
+      "@woodpatch/gcode-viewer",
+      "@woodpatch/gcode-editor",
+      "@woodpatch/gcode-svelte"
+    ]
+  ],
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",

@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
+# SPDX-License-Identifier: MIT
+#
+# Every file this package's npm tarball may hold, and must hold (ADR-0051). Checked by
+# scripts/check-pack.mjs; regenerate with --write, and review the difference.
+package/LICENSE
+package/NOTICE
+package/README.md
+package/package.json
+package/src/GcodeEditor.svelte
+package/src/GcodeViewer.svelte
+package/src/GcodeWorkbench.svelte
+package/src/index.d.ts
+package/src/index.js
+package/src/worker.d.ts
+package/src/worker.js
