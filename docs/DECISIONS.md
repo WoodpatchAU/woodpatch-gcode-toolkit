@@ -3822,6 +3822,10 @@ attack.
   workflow file: they are the real gate. The workflow's own ref and actor checks refuse
   early and cheaply. It also requires CI's `checks`, `reuse` and `provenance` jobs to have
   passed on the commit. **Dry run by default.**
+- **The environment must already be protected.** GitHub creates a missing environment on
+  first use with no protection at all, so `build` reads `npm-release`'s settings and
+  refuses unless it has a required reviewer, admins can't bypass it, and its only
+  deployment rule is the branch `main`.
 - **Two jobs; the credential never meets dependency code.** The `build` job (read-only,
   no environment, no secrets) installs, builds, tests and packs, and passes the four
   tarballs to `publish` as job outputs: base64, in parts, as `release-server.yml` does
@@ -3863,9 +3867,10 @@ attack.
 **Consequences.** Releasing takes the operator: start the run, approve it. A compromised
 build-time dependency can tamper with what `build` packs, but can't publish it: the pack
 check and the review of the run stand between, and it never holds a credential. Source
-maps (with their sources embedded) ship, so the four tarballs are about 340 kB, and the
-bundle is about 464,000 of the 480,000 base64 characters the job outputs allow. When the
-packages outgrow that, the build fails loudly, and the way forward is a decision: drop
-the declaration maps (which point at sources the packages don't ship), split the outputs
-across two build jobs, or stop shipping source maps. Not an artifact action, which would
-be an exception to ADR-0006.
+maps (with their sources embedded) ship, for consumers' debugging; declaration maps don't,
+as they point at sources the packages don't ship. The four tarballs are about 325 kB, so
+the bundle is about 438,000 of the 480,000 base64 characters the job outputs allow, and
+every pack check logs the figure. When the packages outgrow it, the build fails loudly,
+and the way forward is to split the outputs across two build jobs (each job has its own
+limit, and the second pack must reproduce the first's hashes). Not an artifact action,
+which would be an exception to ADR-0006.

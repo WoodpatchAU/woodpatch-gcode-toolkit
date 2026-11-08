@@ -49,6 +49,8 @@ jobs:
     permissions:
       contents: read
       checks: read
+      # To read the npm-release environment's settings (the next step but one).
+      actions: read
     outputs:
       summary: ${{ steps.pack.outputs.summary }}
       sha256: ${{ steps.pack.outputs.sha256 }}
@@ -70,6 +72,28 @@ jobs:
             *" $TRIGGERING_ACTOR "*) ;;
             *) echo "::error::$TRIGGERING_ACTOR may not start a release" >&2; exit 1 ;;
           esac
+      - name: The npm-release environment exists and is protected
+        # GitHub creates a missing environment on first use, with NO protection, so a
+        # dispatch before its settings are in place would run without the real gate.
+        # Refuse unless it already exists with a required reviewer, admins unable to
+        # bypass, and exactly one deployment rule: the branch main (RELEASING.md).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base="repos/${GITHUB_REPOSITORY}/environments/npm-release"
+          gh api "$base" > environment.json ||
+            { echo "::error::the npm-release environment doesn't exist yet (RELEASING.md, Once)" >&2; exit 1; }
+          gh api "$base/deployment-branch-policies" > policies.json
+          ok="$(jq -r '
+            ([.protection_rules[] | select(.type == "required_reviewers") | .reviewers | length] | add // 0) > 0
+            and .can_admins_bypass == false
+            and .deployment_branch_policy.custom_branch_policies == true
+            and .deployment_branch_policy.protected_branches == false' environment.json)"
+          rules="$(jq -r '[.branch_policies[] | "\(.type):\(.name)"] | join(",")' policies.json)"
+          if [ "$ok" != true ] || [ "$rules" != branch:main ]; then
+            echo "::error::npm-release isn't protected as RELEASING.md says (reviewers, no admin bypass, deploys from main only; rules: $rules)" >&2
+            exit 1
+          fi
       - name: The commit passed CI on main
         env:
           GH_TOKEN: ${{ github.token }}
@@ -173,7 +197,7 @@ jobs:
             *) echo "::error::$TRIGGERING_ACTOR may not start a release" >&2; exit 1 ;;
           esac
           case "$DRY_RUN" in true | false) ;; *) echo "::error::dry_run is '$DRY_RUN'" >&2; exit 1 ;; esac
-          printf '%s' "$SHA256" | grep -Eqx '[0-9a-f]{64}'
+          grep -Eqx '[0-9a-f]{64}' <<< "$SHA256"
 
           work="$RUNNER_TEMP/publish"
           mkdir "$work" && cd "$work"
@@ -201,7 +225,7 @@ jobs:
           i=0
           for p in $order; do
             i=$((i + 1))
-            sed -n "${i}p" summary | grep -Eqx "@woodpatch/gcode-$p ([0-9]+\.[0-9]+\.[0-9]+) woodpatch-gcode-$p-\1\.tgz [0-9a-f]{64} sha512-[A-Za-z0-9+/]{86}==" ||
+            grep -Eqx "@woodpatch/gcode-$p ([0-9]+\.[0-9]+\.[0-9]+) woodpatch-gcode-$p-\1\.tgz [0-9a-f]{64} sha512-[A-Za-z0-9+/]{86}==" <<< "$(sed -n "${i}p" summary)" ||
               { echo "::error::summary line $i isn't gcode-$p's" >&2; exit 1; }
           done
           [ "$(cut -d' ' -f2 summary | sort -u | wc -l)" -eq 1 ] ||

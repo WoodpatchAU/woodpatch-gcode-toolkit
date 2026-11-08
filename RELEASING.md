@@ -19,6 +19,9 @@ Settings › Environments › `npm-release`:
   `main`. ("Protected branches only" doesn't see repository rulesets, so it would let
   every branch through.)
 
+Until these are in place, a release run refuses at its first steps: GitHub would
+otherwise create the environment on first use with no protection at all.
+
 ## Each release
 
 1. **Version PR.** On a branch from `main`, run `pnpm changeset version`. Check the four
