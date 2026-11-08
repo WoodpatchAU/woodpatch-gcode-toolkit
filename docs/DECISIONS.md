@@ -2831,7 +2831,8 @@ exactly. `@woodpatch/gcode-db`'s machine record maps onto `TravelLimits` in the 
 
 ## ADR-0043: The machining-time estimator
 
-**Status:** Accepted, 2026-10-23. The reviewer's GO on the outline (decisions a-f, with
+**Status:** Accepted, 2026-10-23; **amended by ADR-0052** (how arcs are planned: (c)
+below). The reviewer's GO on the outline (decisions a-f, with
 conditions), and the storing application owner's view on (f). Parcel 5b. Its inputs are ADR-0041's
 machine record and its output follows ADR-0041's contract.
 
@@ -2851,7 +2852,8 @@ says what it doesn't know, and is tuned by calibration (5c), not by hand.
   - A move's top speed is its feed, capped by each axis's maximum velocity projected onto
     it. Its acceleration is each axis's limit projected onto it, the tightest, times the
     calibration's accelFactor.
-  - **Arcs are one segment each (c)**, at their true length, with the centripetal limit
+  - _Superseded by ADR-0052: arcs are planned in pieces._ **Arcs are one segment each
+    (c)**, at their true length, with the centripetal limit
     sqrt(a * r) and their tangents at each end for the junctions. Controllers tessellate
     arcs and slow at the chord junctions, so this is **optimistic on arc-dense programs**.
     The calibration's timeFactor absorbs it, and 5c's residual report splits arc-heavy
@@ -3874,3 +3876,58 @@ every pack check logs the figure. When the packages outgrow it, the build fails 
 and the way forward is to split the outputs across two build jobs (each job has its own
 limit, and the second pack must reproduce the first's hashes). Not an artifact action,
 which would be an exception to ADR-0006.
+
+## ADR-0052: Arcs are planned in pieces, each with its own limits
+
+**Status:** Accepted, 2026-11-08. The reviewer's GO on the outline, with one correction
+(the centripetal cap takes the normal's shares), folded in. Amends ADR-0043 (c).
+
+**Context.** ADR-0043 planned each arc as one segment. One segment has one set of
+limits, so every axis in the arc's plane was charged its worst case (a share of 1) along
+the whole arc: its speed was capped by the slowest plane axis's velocity, and its
+acceleration by the slowest's acceleration. On a machine with a slow Z, a G18 arc that
+runs from level to vertical was capped at Z's limits even where X carries the motion.
+ADR-0043 expected arcs to come out optimistic. On a timed production job of over a
+thousand such arcs they came out about 20% pessimistic: worse than any other error the
+calibration has found, and invisible to a fit on the calibration programs, which hold few
+arcs out of the plane.
+
+**Decision.**
+
+- **Pieces.** An arc is planned as pieces of at most `ARC_PIECE_DEGREES` (2 degrees),
+  at least one, at most 1800 (past that, the pieces grow). A helix shares its rise out
+  evenly; a spiral (a tolerated radius mismatch) its radius change.
+- **Each piece's limits are its own, and never optimistic.** Each axis's share is maxed
+  over the piece, in closed form (the larger end, or 1 if the piece passes that
+  component's peak):
+  - the **tangent's** shares give the piece's speed cap (each axis's velocity over its
+    share) and its acceleration (each axis's acceleration over its share), the tightest;
+  - the **normal's** shares, the in-plane direction towards the centre, give the
+    centripetal cap `sqrt(a * r)`, with `a` each axis's acceleration over its share. At
+    the level end of a G18 arc the tangent is on X but the centripetal load is on Z.
+  - Each axis's full acceleration bounds the tangential and the centripetal parts on its
+    own; they aren't summed. That is how a controller plans them, and the timed jobs
+    agree.
+- **No corners inside an arc.** Its pieces meet tangentially, so the junction between
+  them is uncapped and the pieces' own caps bind; a boundary never dips below both. The
+  arc's entry and exit junctions are as before.
+- **Blocks, not pieces.** The look-ahead window counts program blocks, and the block-rate
+  floor applies to the arc as a whole (a shortfall is added to its last piece): the
+  controller's limits are per G-code block, and pieces are only a planning device.
+- **Why 2 degrees.** Taking each piece's worst case, the estimate converges from above.
+  On a synthetic level-to-vertical G18 arc (R35, 88 degrees, F5400, Z at 3000 mm/min and
+  300 mm/s²), against 0.1-degree chords: 5-degree pieces 1.8% over, 2-degree 0.7%,
+  1-degree 0.3%. The tests pin the 2-degree figure within 1% of fine chords.
+
+**Consequences.**
+
+- On the timed arc-dense production job, the estimate moves from about 20% over to
+  about 1% under. Linear-only jobs are unchanged. On the calibration programs, the arcs
+  program's misfit falls from +2.2% to +1.7%, and the fit's chi-squared from 36.5 to
+  22.7. The figures are aggregates; the jobs and their times stay private (ADR-0047).
+- An XY arc on equal axes, at a feed that binds throughout, is unchanged (the golden
+  value is unchanged). A circle on equal axes runs faster between axis crossings, where
+  the centripetal load is shared by both axes.
+- A one-piece arc is no longer charged a share of 1 on both plane axes, only the share
+  it reaches: slightly faster than before, never faster than a fine-chord plan.
+- A long arc is up to 1800 segments for the planner; it stays linear in their number.
