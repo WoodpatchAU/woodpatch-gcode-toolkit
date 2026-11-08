@@ -47,7 +47,10 @@ it('uses no actions anywhere (ADR-0006)', () => {
 
 it('build: read-only, no environment, no secrets', () => {
   const b = code(build);
-  assert.match(b, /permissions:\n\s+contents: read\n\s+checks: read\n\s+outputs:/);
+  assert.match(
+    b,
+    /permissions:\n\s+contents: read\n\s+checks: read\n(\s+#.*\n)*\s+actions: read\n\s+outputs:/,
+  );
   assert.doesNotMatch(b, /id-token|environment:|secrets\./);
 });
 
@@ -98,6 +101,15 @@ it('both jobs refuse anything but main and the releasers', () => {
     assert.ok(job.includes('refs/heads/main'));
     assert.ok(job.includes('$TRIGGERING_ACTOR'));
   }
+});
+
+it('build refuses an unprotected or missing environment', () => {
+  const b = code(build);
+  assert.ok(b.includes('environments/npm-release'));
+  assert.ok(b.includes('required_reviewers') && b.includes('can_admins_bypass == false'));
+  assert.ok(b.includes('branch:main'));
+  // Before the checkout: refused before anything is installed.
+  assert.ok(b.indexOf('environments/npm-release') < b.indexOf('git checkout'));
 });
 
 it('dry run by default', () => {

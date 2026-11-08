@@ -251,6 +251,16 @@ function main(argv) {
   }
 
   if (failures.length) return report(failures);
+  // The release workflow passes the tarballs between jobs as base64 job outputs, which
+  // hold about 480,000 characters (ADR-0051). Logged on every run, so growth shows.
+  const bytes = PUBLIC.reduce(
+    (n, name) =>
+      n + readFileSync(join(out, lines.find((l) => l.startsWith(`${name} `)).split(' ')[2])).length,
+    0,
+  );
+  console.error(
+    `Tarballs: ${bytes} bytes, about ${Math.ceil((bytes + 512 * (PUBLIC.length + 3)) / 3) * 4} base64 characters of the release job's 480000.`,
+  );
   const summary = `${lines.join('\n')}\n`;
   process.stdout.write(summary);
   if (args.summary) writeFileSync(args.summary, summary);

@@ -7,17 +7,11 @@ package/LICENSE
 package/NOTICE
 package/README.md
 package/dist/diagnostics.d.ts
-package/dist/diagnostics.d.ts.map
 package/dist/fold.d.ts
-package/dist/fold.d.ts.map
 package/dist/highlight.d.ts
-package/dist/highlight.d.ts.map
 package/dist/index.d.ts
-package/dist/index.d.ts.map
 package/dist/index.js
 package/dist/index.js.map
 package/dist/sync.d.ts
-package/dist/sync.d.ts.map
 package/dist/tokens.d.ts
-package/dist/tokens.d.ts.map
 package/package.json
