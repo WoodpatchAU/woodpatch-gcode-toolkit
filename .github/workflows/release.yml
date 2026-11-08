@@ -311,7 +311,12 @@ jobs:
               "$node" "$npm_cli" publish "./t/$file" --access public --dry-run
               echo "| $name@$v | dry run: would publish |" >> "$GITHUB_STEP_SUMMARY"
             else
-              "$node" "$npm_cli" publish "./t/$file" --access public --provenance
+              if ! "$node" "$npm_cli" publish "./t/$file" --access public --provenance; then
+                if [ -z "${NPM_BOOTSTRAP_TOKEN:-}" ]; then
+                  echo "::error::npm refused $name@$v. Check its trusted publisher on npmjs.com: one no publish has validated expires 48 h after it's created, and must be created again (RELEASING.md, The first release through trusted publishing)" >&2
+                fi
+                exit 1
+              fi
               echo "| $name@$v | published, with provenance |" >> "$GITHUB_STEP_SUMMARY"
             fi
           done < summary
