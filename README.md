@@ -65,6 +65,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm licence:packages   # MIT notice present in every built package and minified bundle
+node scripts/check-pack.mjs --out /tmp/packs   # npm tarballs against their allowlists (ADR-0051)
 reuse lint              # every file carries copyright + licence information
 ```
 

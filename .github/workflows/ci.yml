@@ -95,6 +95,13 @@ jobs:
           pnpm --filter @woodpatch/gcode-playground lighthouse
       - name: Licence notice survives into packages and minified bundles
         run: pnpm licence:packages
+      - name: npm tarballs hold exactly their allowlists; the release workflow keeps its shape (ADR-0051)
+        # On every PR, so a package that would publish wrongly fails here, not on release day.
+        run: |
+          node --test scripts/check-pack.test.mjs .github/ci/release-workflow.test.mjs
+          node scripts/check-pack.mjs --out "$RUNNER_TEMP/packs"
+          node .github/ci/workflow-scripts.mjs .github/workflows/release.yml "$RUNNER_TEMP/release-scripts"
+          shellcheck -s bash "$RUNNER_TEMP"/release-scripts/*.sh
       - name: Parity ledger (every difference from upstream explained, ADR-0025)
         run: node tools/parity.mjs --check
       - name: Performance budget (ADR-0014)

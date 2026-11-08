@@ -1,0 +1,293 @@
+# SPDX-FileCopyrightText: 2026 Promotional Notions Pty Ltd trading as Woodpatch House & Garden
+# SPDX-License-Identifier: MIT
+#
+# Publishes @woodpatch/gcode-core, -viewer, -editor and -svelte to npm (ADR-0051).
+# Run by hand only (Actions › release-npm › Run workflow), from main, by the operator, and
+# approved again in the `npm-release` environment. Dry run by default. RELEASING.md has
+# the steps.
+#
+# Two jobs, so that no dependency's code ever runs where the publish credential is
+# (the shape of release-server.yml):
+#   build    read-only. Installs, builds, tests and packs, checks the tarballs against
+#            their committed allowlists (scripts/check-pack.mjs), and passes them on as
+#            job outputs (base64, in parts). `uses:` steps are banned (ADR-0006), so
+#            there is no artifact action.
+#   publish  the `npm-release` environment, and the only `id-token: write`. Checks out
+#            nothing and runs no repository or dependency code: a hash-pinned Node and
+#            a hash-pinned npm (pinned HERE, never trusted from a download), base-system
+#            tools by absolute path, on a fresh runner. Publishes with provenance, through
+#            npm trusted publishing (OIDC). The one bootstrap token for a package's
+#            first-ever publish is an environment secret, so it exists only here.
+name: release-npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: check and pack everything, publish nothing'
+        type: boolean
+        default: true
+
+# Nothing by default; each job asks for exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: release-npm
+  cancel-in-progress: false
+
+env:
+  # Who may start a release. Defence in depth: the real gate is the environment's
+  # required reviewer, which GitHub enforces outside this file.
+  RELEASERS: chrisgrulau
+  # The CI jobs that must have passed on the commit being released.
+  REQUIRED_CHECKS: checks reuse provenance
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      summary: ${{ steps.pack.outputs.summary }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      part0: ${{ steps.pack.outputs.part0 }}
+      part1: ${{ steps.pack.outputs.part1 }}
+      part2: ${{ steps.pack.outputs.part2 }}
+      part3: ${{ steps.pack.outputs.part3 }}
+      part4: ${{ steps.pack.outputs.part4 }}
+    steps:
+      - name: Refuse anything but main, started by a releaser
+        # First, before any download: a refusal costs nothing.
+        env:
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::releases run from main only, not $GITHUB_REF" >&2; exit 1
+          fi
+          case " $RELEASERS " in
+            *" $TRIGGERING_ACTOR "*) ;;
+            *) echo "::error::$TRIGGERING_ACTOR may not start a release" >&2; exit 1 ;;
+          esac
+      - name: The commit passed CI on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.app.slug == "github-actions") | "\(.name) \(.conclusion)"' > runs
+          for c in $REQUIRED_CHECKS; do
+            grep -qx "$c success" runs ||
+              { echo "::error::CI job '$c' hasn't passed on ${GITHUB_SHA}" >&2; cat runs >&2; exit 1; }
+          done
+      - name: Checkout
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach "${GITHUB_SHA}"
+      - name: Toolchain (Node + pnpm, hash-pinned)
+        run: .github/ci/setup-toolchain.sh
+      - name: Install, build and test
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm typecheck
+          pnpm test
+          node --test scripts/check-pack.test.mjs .github/ci/release-workflow.test.mjs
+      - name: The licence notice survives into packages and bundles
+        run: pnpm licence:packages
+      - name: Pack, check against the allowlists, and pass on
+        id: pack
+        run: |
+          out="$RUNNER_TEMP/packs"
+          node scripts/check-pack.mjs --out "$out" --summary "$RUNNER_TEMP/SUMMARY"
+          cd "$out"
+          # One uncompressed tar of the four tarballs (each already gzipped), sorted and
+          # owner-free so the same tarballs always make the same bundle.
+          cut -d' ' -f3 "$RUNNER_TEMP/SUMMARY" | LC_ALL=C sort > names
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mode=go-w --mtime=@0 \
+            -cf "$RUNNER_TEMP/bundle.tar" -T names
+          sha="$(sha256sum "$RUNNER_TEMP/bundle.tar" | cut -d' ' -f1)"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          { echo 'summary<<EOF_SUMMARY'; cat "$RUNNER_TEMP/SUMMARY"; echo 'EOF_SUMMARY'; } >> "$GITHUB_OUTPUT"
+          # A job's outputs hold up to 1 MB in all, counted as UTF-16: about 500 k
+          # characters of base64. Five parts of 96 kB, with the summary and the hash.
+          # Outgrowing this fails here, loudly; the way forward is ADR-0051's, not an
+          # artifact action.
+          base64 -w0 "$RUNNER_TEMP/bundle.tar" > b64
+          size="$(wc -c < b64)"
+          echo "bundle: $size base64 characters of 480000"
+          [ "$size" -le 480000 ] ||
+            { echo "::error::the packages have outgrown the job outputs (ADR-0051)" >&2; exit 1; }
+          split -b 96000 -d -a 1 b64 part
+          for i in 0 1 2 3 4; do
+            if [ -f "part$i" ]; then echo "part$i=$(cat "part$i")"; else echo "part$i="; fi >> "$GITHUB_OUTPUT"
+          done
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The real gate: GitHub holds this job for the environment's required reviewer, and
+    # the environment deploys from main only. Its secret exists only in this job.
+    environment: npm-release
+    # The only grant: an OIDC token, which npm exchanges for a publish (trusted
+    # publishing) and sigstore uses to sign the provenance. No checkout, so no contents.
+    permissions:
+      id-token: write
+    env:
+      # Pinned here, checked before anything is extracted. NODE_* must equal
+      # .github/ci/setup-toolchain.sh's (release-workflow.test.mjs). npm >= 11.5.1 is
+      # what trusted publishing needs; Node 22 bundles npm 10.
+      NODE_VERSION: 22.23.4
+      NODE_SHA256: 1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
+      NPM_VERSION: 11.21.1
+      NPM_SHA512: sha512-YTzL6QBEJXyHcTu0JiUc7RKMp+mzlJtl7rGLmERaXUQeFHIMc9atdr6G9M9C8vDWbv40epoTQAzNL2/PtZVDhQ==
+    steps:
+      - name: Check and publish (pinned Node and npm, base-system tools only)
+        env:
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SUMMARY: ${{ needs.build.outputs.summary }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+          PART0: ${{ needs.build.outputs.part0 }}
+          PART1: ${{ needs.build.outputs.part1 }}
+          PART2: ${{ needs.build.outputs.part2 }}
+          PART3: ${{ needs.build.outputs.part3 }}
+          PART4: ${{ needs.build.outputs.part4 }}
+          # Set only for a package's first-ever publish, then deleted (RELEASING.md).
+          NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin
+          for t in /usr/bin/curl /usr/bin/tar /usr/bin/sha256sum /usr/bin/base64 /usr/bin/openssl /usr/bin/xz; do
+            [ -x "$t" ] || { echo "::error::$t missing" >&2; exit 1; }
+          done
+
+          # The guards again, from here: nothing the build job ran can vouch for them.
+          [ "$GITHUB_REF" = refs/heads/main ] ||
+            { echo "::error::releases run from main only" >&2; exit 1; }
+          case " $RELEASERS " in
+            *" $TRIGGERING_ACTOR "*) ;;
+            *) echo "::error::$TRIGGERING_ACTOR may not start a release" >&2; exit 1 ;;
+          esac
+          case "$DRY_RUN" in true | false) ;; *) echo "::error::dry_run is '$DRY_RUN'" >&2; exit 1 ;; esac
+          printf '%s' "$SHA256" | grep -Eqx '[0-9a-f]{64}'
+
+          work="$RUNNER_TEMP/publish"
+          mkdir "$work" && cd "$work"
+
+          # ── Node and npm, each checked against the hash pinned above ──
+          curl -fsSLo node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
+          echo "${NODE_SHA256}  node.tar.xz" | sha256sum -c --quiet -
+          tar -xJf node.tar.xz --no-same-owner
+          nodedir="$work/node-v${NODE_VERSION}-linux-x64/bin"
+          node="$nodedir/node"
+          curl -fsSLo npm.tgz "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz"
+          got="sha512-$(openssl dgst -sha512 -binary npm.tgz | base64 -w0)"
+          [ "$got" = "$NPM_SHA512" ] || { echo "::error::npm ${NPM_VERSION} doesn't match its pinned hash" >&2; exit 1; }
+          mkdir npm && tar -xzf npm.tgz -C npm --no-same-owner
+          npm_cli="$work/npm/package/bin/npm-cli.js"
+          [ "$("$node" "$npm_cli" --version)" = "$NPM_VERSION" ]
+          # npm may spawn `node`: the pinned one, first on PATH. Not its bundled npm 10:
+          # npm is always run as "$node" "$npm_cli".
+          export PATH="$nodedir:/usr/bin:/bin"
+
+          # ── The summary: exactly four lines, in publish order, one version ──
+          order='core viewer editor svelte'
+          printf '%s\n' "$SUMMARY" | sed '/^$/d' > summary
+          [ "$(wc -l < summary)" -eq 4 ] || { echo "::error::the summary isn't four lines" >&2; exit 1; }
+          i=0
+          for p in $order; do
+            i=$((i + 1))
+            sed -n "${i}p" summary | grep -Eqx "@woodpatch/gcode-$p ([0-9]+\.[0-9]+\.[0-9]+) woodpatch-gcode-$p-\1\.tgz [0-9a-f]{64} sha512-[A-Za-z0-9+/]{86}==" ||
+              { echo "::error::summary line $i isn't gcode-$p's" >&2; exit 1; }
+          done
+          [ "$(cut -d' ' -f2 summary | sort -u | wc -l)" -eq 1 ] ||
+            { echo "::error::the four versions differ" >&2; exit 1; }
+          version="$(head -n1 summary | cut -d' ' -f2)"
+          if [ "$DRY_RUN" = false ] && [ "$version" = 0.0.0 ]; then
+            echo "::error::0.0.0 is the unreleased placeholder: run the version PR first (RELEASING.md)" >&2; exit 1
+          fi
+
+          # ── The bundle: its hash, then exactly the four tarballs, plain files ──
+          printf '%s%s%s%s%s' "$PART0" "$PART1" "$PART2" "$PART3" "$PART4" > b64
+          [ -s b64 ]
+          if grep -Eqvx '[A-Za-z0-9+/]*=*' b64; then echo "::error::the bundle isn't base64" >&2; exit 1; fi
+          base64 -d b64 > bundle.tar
+          echo "${SHA256}  bundle.tar" | sha256sum -c --quiet -
+          tar -tf bundle.tar --quoting-style=escape | LC_ALL=C sort > actual
+          cut -d' ' -f3 summary | LC_ALL=C sort > expected
+          if ! cmp -s expected actual; then
+            echo "::error::the bundle isn't exactly the four tarballs" >&2
+            diff expected actual >&2 || true
+            exit 1
+          fi
+          tar -tvf bundle.tar --numeric-owner --quoting-style=escape | while read -r perms _ _ _ _ path; do
+            case "$perms" in
+              *[sStT]*) echo "::error::$path has a setuid, setgid or sticky bit" >&2; exit 1 ;;
+              -*) ;;
+              *) echo "::error::$path isn't a plain file" >&2; exit 1 ;;
+            esac
+          done
+          mkdir t && tar -xf bundle.tar -C t --no-same-owner
+          while read -r name v file sha integ; do
+            echo "${sha}  t/${file}" | sha256sum -c --quiet -
+            [ "sha512-$(openssl dgst -sha512 -binary "t/$file" | base64 -w0)" = "$integ" ] ||
+              { echo "::error::$file's integrity isn't the summary's" >&2; exit 1; }
+          done < summary
+
+          # ── npm's configuration: a file of our own, nothing inherited ──
+          # The token, when set, is referenced, never written: npm expands ${...} itself.
+          : > npmrc
+          if [ -n "${NPM_BOOTSTRAP_TOKEN:-}" ]; then
+            # shellcheck disable=SC2016 # literal: npm expands it, so it never touches disk
+            printf '%s\n' '//registry.npmjs.org/:_authToken=${NPM_BOOTSTRAP_TOKEN}' > npmrc
+            echo "::warning::the bootstrap token is set: in use for $(cut -d' ' -f1 summary | tr '\n' ' ')(delete it after this run, RELEASING.md)"
+          fi
+          export NPM_CONFIG_USERCONFIG="$work/npmrc" NPM_CONFIG_GLOBALCONFIG="$work/npmrc-global"
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          export NPM_CONFIG_CACHE="$work/cache" NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
+          export NPM_CONFIG_IGNORE_SCRIPTS=true NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false NPM_CONFIG_AUDIT=false
+
+          # ── Publish in dependency order. A version already on npm is skipped only if
+          # it is byte-for-byte this tarball; any other copy refuses the whole run. ──
+          {
+            echo "### npm release ${version}$([ "$DRY_RUN" = true ] && echo ' (dry run)')"
+            echo
+            echo '| package | result |'
+            echo '|---|---|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          while read -r name v file sha integ; do
+            enc="$(printf '%s' "$name" | sed 's|/|%2f|')"
+            code="$(curl -sS -o meta.json -w '%{http_code}' "https://registry.npmjs.org/${enc}")"
+            reg=''
+            case "$code" in
+              404) ;;
+              200)
+                reg="$("$node" -e '
+                  const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+                  const v = m.versions && m.versions[process.argv[2]];
+                  process.stdout.write(v && v.dist && v.dist.integrity ? v.dist.integrity : "");
+                ' meta.json "$v")"
+                ;;
+              *) echo "::error::the registry answered $code for $name" >&2; exit 1 ;;
+            esac
+            if [ -n "$reg" ]; then
+              if [ "$reg" = "$integ" ]; then
+                echo "$name@$v: already on npm, identical: skipped"
+                echo "| $name@$v | skipped: already published, identical |" >> "$GITHUB_STEP_SUMMARY"
+                continue
+              fi
+              echo "::error::$name@$v is on npm with a DIFFERENT tarball ($reg): refusing" >&2; exit 1
+            fi
+            # "./": a bare "t/x.tgz" is GitHub shorthand to npm (user/repo), and it clones it.
+            if [ "$DRY_RUN" = true ]; then
+              "$node" "$npm_cli" publish "./t/$file" --access public --dry-run
+              echo "| $name@$v | dry run: would publish |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              "$node" "$npm_cli" publish "./t/$file" --access public --provenance
+              echo "| $name@$v | published, with provenance |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done < summary
