@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { ARC_PIECE_DEGREES, arcPieceShares } from './estimate.js';
 import {
   estimateTime,
   interpret,
@@ -100,15 +101,17 @@ describe('estimateTime: motion', () => {
     expect(est('G1 X100 F6000\nG1 X0\n').knownMs).toBe(Math.floor(expected * 1000 + 0.5));
   });
 
-  it('a circle runs at its centripetal limit', () => {
-    // r 10: sqrt(500 * 10) = 70.7 mm/s, below the 100 mm/s feed.
-    const v = Math.sqrt(500 * 10);
+  it('a circle slows to its centripetal limit only where it crosses an axis', () => {
+    // r 10, 500 mm/s² per axis, feed 100 mm/s. Where the centripetal acceleration lies
+    // along one axis, sqrt(500 * 10) = 70.7 mm/s; at 45 degrees each axis carries
+    // 1/sqrt(2) of it, so 84.1 mm/s. The circle runs between the two (ADR-0043).
     const L = 2 * Math.PI * 10;
     const r = est('G0 X-10\nG1 F6000\nG2 X-10 Y0 I10 J0\n');
-    // The rapid blends in at the 90-degree corner speed; the circle ends at rest.
     const vj = junctionSpeed(u(-1, 0), u(0, 1), 500, 0.02);
-    const arcOnly = segmentTime(L, vj, 0, v, 500);
-    expect(r.cutMs).toBe(Math.floor(arcOnly * 1000 + 0.5));
+    const slowest = segmentTime(L, vj, 0, Math.sqrt(500 * 10), 500);
+    const fastest = L / Math.sqrt((500 * 10) / Math.SQRT1_2);
+    expect(r.cutMs).toBeLessThan(slowest * 1000);
+    expect(r.cutMs).toBeGreaterThan(fastest * 1000);
   });
 
   it('a block-rate floor slows dense tiny segments', () => {
@@ -523,4 +526,134 @@ describe('estimateTime: performance', () => {
     const machine = m({ lookahead: 200 });
     expect(time(big, machine) / time(small, machine)).toBeLessThan(16 * 4);
   }, 60_000);
+});
+
+describe('estimateTime: arcs in pieces (ADR-0043)', () => {
+  /** A router-like machine: fast X and Y, a slow Z (velocity and acceleration). */
+  const ROUTER = m({
+    axes: {
+      X: { maxVelocity: 20_000, acceleration: 1800 },
+      Y: { maxVelocity: 20_000, acceleration: 1200 },
+      Z: { maxVelocity: 3000, acceleration: 300 },
+    },
+  });
+  /** G-code for an arc approximated by `deg`-degree chords, for comparison. */
+  const chords = (cx: number, cz: number, r: number, from: number, to: number, deg: number) => {
+    const n = Math.max(1, Math.ceil(Math.abs(to - from) / deg));
+    const out: string[] = [];
+    for (let k = 1; k <= n; k++) {
+      const t = ((from + ((to - from) * k) / n) * Math.PI) / 180;
+      // ZX plane: the angle runs from Z towards X.
+      out.push(`G1 X${(cx + r * Math.sin(t)).toFixed(5)} Z${(cz + r * Math.cos(t)).toFixed(5)}`);
+    }
+    return out.join('\n');
+  };
+
+  it('pieces are at most ARC_PIECE_DEGREES', () => {
+    expect(ARC_PIECE_DEGREES).toBe(2);
+  });
+
+  it("each piece's shares are never below the tangent's and the normal's anywhere in it", () => {
+    fc.assert(
+      fc.property(
+        fc.double({ min: -20, max: 20, noNaN: true }),
+        fc.double({ min: 0, max: 0.5, noNaN: true }),
+        fc.double({ min: 0.05, max: 1, noNaN: true }),
+        (lo, width, f) => {
+          const hi = lo + width;
+          const s = arcPieceShares(lo, hi, f);
+          for (let i = 0; i <= 64; i++) {
+            const t = lo + (width * i) / 64;
+            const tol = 1e-12;
+            expect(s.tangent[0] + tol).toBeGreaterThanOrEqual(f * Math.abs(Math.sin(t)));
+            expect(s.tangent[1] + tol).toBeGreaterThanOrEqual(f * Math.abs(Math.cos(t)));
+            expect(s.normal[0] + tol).toBeGreaterThanOrEqual(Math.abs(Math.cos(t)));
+            expect(s.normal[1] + tol).toBeGreaterThanOrEqual(Math.abs(Math.sin(t)));
+          }
+          // And tight: the max is attained at an end or a peak inside.
+          const ends = [lo, hi].map((t) => Math.abs(Math.sin(t)));
+          expect(s.tangent[0] / f).toBeGreaterThanOrEqual(Math.max(...ends) - 1e-12);
+        },
+      ),
+    );
+  });
+
+  it('a G18 roundover arc runs fast where X carries it: well under the old whole-arc-at-Z figure', () => {
+    // R35 from level (top) to near vertical (88.4 degrees), F5400: a roundover stroke.
+    const src = 'G18 G90 G0 X88 Y0 Z0\nG1 F5400\nG3 X122.98571 Z-34 I0 K-35\n';
+    const r = est(src, ROUTER);
+    const L = 35 * Math.acos(1 / 35);
+    // The whole arc at Z's 50 mm/s is what the one-limit-set model gave; X's 90 mm/s
+    // (the feed) is the bound from below.
+    expect(r.cutMs).toBeLessThan((L / 50) * 1000);
+    expect(r.cutMs).toBeGreaterThan((L / 90) * 1000);
+  });
+
+  it('agrees with fine chords of the same arc (within 1%), and coarse chords only add corners', () => {
+    const head = 'G18 G90 G0 X88 Y0 Z0\nG1 F5400\n';
+    const arc = est(head + 'G3 X122.98571 Z-34 I0 K-35\n', ROUTER).cutMs;
+    const toDeg = (Math.acos(1 / 35) * 180) / Math.PI;
+    const fine = est(head + chords(88, -35, 35, 0, toDeg, 0.5) + '\n', ROUTER).cutMs;
+    const coarse = est(head + chords(88, -35, 35, 0, toDeg, 10) + '\n', ROUTER).cutMs;
+    expect(Math.abs(arc - fine) / fine).toBeLessThan(0.01);
+    expect(coarse).toBeGreaterThan(arc);
+  });
+
+  it('the centripetal cap uses the NORMAL: at the level end of a G18 arc the load is on Z', () => {
+    // r 2, the first 10 degrees from the top: the tangent is on X, the normal on Z.
+    // Z's acceleration 100 caps the speed at about sqrt(100 * 2) = 14 mm/s; give Z
+    // plenty and the same arc runs at the 100 mm/s feed.
+    const src = 'G18 G90 G1 X0 Y0 Z0 F6000\nG2 X0.34730 Z-0.03038 I0 K-2\n';
+    const fast = { maxVelocity: 20_000, acceleration: 5000 };
+    const slowZ = m({ axes: { X: fast, Y: fast, Z: { maxVelocity: 3000, acceleration: 100 } } });
+    const quickZ = m({ axes: { X: fast, Y: fast, Z: { maxVelocity: 3000, acceleration: 5000 } } });
+    const L = 2 * ((10 * Math.PI) / 180);
+    expect(est(src, slowZ).cutMs).toBeGreaterThanOrEqual(
+      Math.floor((L / Math.sqrt(100 * 2)) * 1000),
+    );
+    expect(est(src, quickZ).cutMs).toBeLessThan(est(src, slowZ).cutMs);
+  });
+
+  it('a piece boundary never dips: a long arc at a low feed runs at the feed throughout', () => {
+    // r 100, 90 degrees, 10 mm/s: 45 pieces, each capped far above the feed.
+    const L = (Math.PI / 2) * 100;
+    const r = est('G1 X0 Y0 F600\nG2 X100 Y-100 I0 J-100\n');
+    // Only the start and stop ramps (0.01 s each at 500 mm/s²) add to L / v.
+    const t = r.cutMs / 1000;
+    expect(t).toBeGreaterThanOrEqual(L / 10);
+    expect(t).toBeLessThan(L / 10 + 0.05);
+  });
+
+  it('an XY arc on equal axes at a binding feed is unchanged by the pieces', () => {
+    // The golden program's arcs: F2400, r 25, 500 mm/s²: the feed binds throughout.
+    const L = Math.PI * 25;
+    const r = est('G1 X0 Y0 F2400\nG2 X0 Y50 I0 J25\n');
+    expect(r.cutMs).toBe(Math.floor(segmentTime(L, 0, 0, 40, 500) * 1000 + 0.5));
+  });
+
+  it('look-ahead counts blocks: an arc is one, however many pieces', () => {
+    const circle = 'G1 X-10 Y0 F6000\nG2 X-10 Y0 I10 J0\n';
+    expect(est(circle, m({ lookahead: 1 })).cutMs).toBe(est(circle).cutMs);
+  });
+
+  it('the block-rate floor is per arc, not per piece', () => {
+    // A full circle is 180 pieces; at 0.1 blocks/s, one block takes 10 s, not 1800 s.
+    const circle = 'G2 X0 Y0 I10 J0 F6000\n';
+    expect(est(circle, m({ blockRate: 0.1 })).cutMs).toBe(10_000);
+  });
+
+  it('a helix: never faster than the same circle flat, and its rise counts on Z', () => {
+    const flat = est('G1 X0 Y0 F3000\nG2 X0 Y0 I10 J0\n').cutMs;
+    const helix = est('G1 X0 Y0 F3000\nG2 X0 Y0 Z-20 I10 J0\n').cutMs;
+    expect(helix).toBeGreaterThan(flat);
+  });
+
+  it('a many-turn helix stays bounded (pieces capped) and finite', () => {
+    const t0 = Date.now();
+    const r = est('G1 X0 Y0 F3000\nG2 X0 Y0 Z-100 I5 J0 P100\n');
+    expect(Date.now() - t0).toBeLessThan(2000);
+    const L = Math.hypot(100 * 2 * Math.PI * 5, 100);
+    expect(r.cutMs).toBeGreaterThanOrEqual(Math.floor((L / 50) * 1000));
+    expect(r.complete).toBe(true);
+  });
 });

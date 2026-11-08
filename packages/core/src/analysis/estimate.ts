@@ -138,6 +138,11 @@ interface Segment {
   readonly fixed: number | null;
   /** The planner must be at rest before this segment (a stop between). */
   stopBefore: boolean;
+  /**
+   * The program block (G-code move) it belongs to. An arc's pieces share one: look-ahead
+   * and the block-rate floor count blocks, not pieces.
+   */
+  readonly block: number;
 }
 
 const DIM = AXES.length;
@@ -305,6 +310,7 @@ export function estimateTime(
   let spindleOn = false;
   let rpm: number | null = null;
   let segments: Segment[] = [];
+  let block = 0; // the program block each segment belongs to
   let stopPending = true; // the program starts at rest
 
   const unknown = (step: Step, reason: UnknownReason): void => {
@@ -352,16 +358,19 @@ export function estimateTime(
       case 'arc': {
         // A per-rev feed needs a turning spindle: stopped, its last speed doesn't count.
         const rpmNow = spindleOn ? rpm : null;
-        const seg = segmentOf(step, machine, axisLimit, accelFactor, rpmNow, tool, unknown);
-        if (seg === null) {
+        const segs = segmentOf(step, machine, axisLimit, accelFactor, rpmNow, tool, block, unknown);
+        if (segs === null) {
           stop();
           continue;
         }
-        if (seg === 'empty') continue;
-        seg.stopBefore = stopPending;
-        stopPending = seg.fixed !== null; // a fixed-time move ends at rest
-        if (seg.fixed !== null) seg.stopBefore = true;
-        segments.push(seg);
+        if (segs === 'empty') continue;
+        block++;
+        for (const seg of segs) {
+          seg.stopBefore = stopPending;
+          stopPending = seg.fixed !== null; // a fixed-time move ends at rest
+          if (seg.fixed !== null) seg.stopBefore = true;
+          segments.push(seg);
+        }
         break;
       }
       case 'dwell':
@@ -444,7 +453,91 @@ export function estimateTime(
   };
 }
 
-/** The segment for a motion step, 'empty' for a zero-length one, or null if unknown. */
+/**
+ * Arcs are planned in pieces of at most this sweep (ADR-0043, amended): each piece has
+ * its own limits, so an arc runs fast where its fast axis carries it and slows only
+ * where a slow one does. Degrees, because the error in a piece's limits depends only on
+ * the angle it sweeps, never on the radius. Each piece takes its worst case, so the
+ * estimate converges from above: on a G18 roundover stroke (R35, 88 degrees, F5400, a
+ * slow Z), 5-degree pieces are 1.8% over 0.1-degree chords, 2-degree 0.7%, 1-degree
+ * 0.3% (the tests pin the 2-degree figure).
+ */
+export const ARC_PIECE_DEGREES = 2;
+/** At most this many pieces per arc (a 10-turn helix); past it, the pieces grow. */
+const ARC_MAX_PIECES = 1800;
+
+/** The largest |sin| over [lo, hi]: 1 if the interval holds a peak, else an end's. */
+function maxAbsSin(lo: number, hi: number): number {
+  if (Math.ceil((lo - Math.PI / 2) / Math.PI) <= Math.floor((hi - Math.PI / 2) / Math.PI)) return 1;
+  return Math.max(Math.abs(Math.sin(lo)), Math.abs(Math.sin(hi)));
+}
+
+/** The largest |cos| over [lo, hi]: 1 if the interval holds a peak, else an end's. */
+function maxAbsCos(lo: number, hi: number): number {
+  if (Math.ceil(lo / Math.PI) <= Math.floor(hi / Math.PI)) return 1;
+  return Math.max(Math.abs(Math.cos(lo)), Math.abs(Math.cos(hi)));
+}
+
+/**
+ * The share of an arc piece's speed and of its centripetal acceleration that each axis
+ * carries, maxed over the piece (so a piece's limits are never optimistic anywhere in
+ * it). Angles are measured from the plane's first axis towards its second. `f` is the
+ * in-plane part of the speed (1 for a flat arc, less on a helix).
+ * Exported for the tests, which check it against sampling.
+ */
+export function arcPieceShares(
+  lo: number,
+  hi: number,
+  f: number,
+): {
+  readonly tangent: readonly [number, number];
+  readonly normal: readonly [number, number];
+} {
+  // The tangent is (-sin, cos) and the normal (towards the centre) is (-cos, -sin).
+  return {
+    tangent: [f * maxAbsSin(lo, hi), f * maxAbsCos(lo, hi)],
+    normal: [maxAbsCos(lo, hi), maxAbsSin(lo, hi)],
+  };
+}
+
+/** The feed as a speed (mm/s), a fixed time, or null (recorded as unknown). */
+function feedOf(
+  step: Extract<Step, { kind: 'linear' | 'arc' }>,
+  rpm: number | null,
+  unknown: (s: Step, r: UnknownReason) => void,
+): { readonly v: number } | { readonly fixed: number } | null {
+  const feed = step.feed;
+  if (feed === null || feed.mode === 'unspecified') {
+    unknown(step, 'FEED_UNSPECIFIED');
+    return null;
+  }
+  let v: number;
+  if (feed.mode === 'inverse-time') {
+    if (!(feed.perMinute > 0)) {
+      unknown(step, 'FEED_ZERO');
+      return null;
+    }
+    return { fixed: 60 / feed.perMinute };
+  } else if (feed.mode === 'per-revolution') {
+    if (rpm === null || !(rpm > 0)) {
+      unknown(step, 'RPM_UNKNOWN');
+      return null;
+    }
+    v = (feed.mmPerRevolution * rpm) / 60;
+  } else {
+    v = feed.mmPerMinute / 60;
+  }
+  if (!(v > 0)) {
+    unknown(step, 'FEED_ZERO');
+    return null;
+  }
+  return { v };
+}
+
+/**
+ * The segments for a motion step (one, or an arc's pieces), 'empty' for a zero-length
+ * one, or null if its time is unknown. All of them carry the step's block number.
+ */
 function segmentOf(
   step: Extract<Step, { kind: 'linear' | 'arc' }>,
   machine: EstimateMachine,
@@ -452,60 +545,23 @@ function segmentOf(
   accelFactor: number,
   rpm: number | null,
   tool: number | null,
+  block: number,
   unknown: (s: Step, r: UnknownReason) => void,
-): Segment | 'empty' | null {
-  const d = vector(step.from, step.to);
-  let length: number;
-  let u0: Float64Array;
-  let u1: Float64Array;
-  let radius = Infinity;
-  if (step.kind === 'linear') {
-    length = norm(d);
-    if (length < EPS) return 'empty';
-    u0 = d.map((x) => x / length);
-    u1 = u0;
-  } else {
-    const [a1, a2] = PLANE_AXES[step.plane];
-    const normal = normalOf(step.plane);
-    const planar = (Math.abs(step.sweep) * (step.radius + step.endRadius)) / 2;
-    const dn = step.to[normal] - step.from[normal];
-    length = Math.sqrt(planar * planar + dn * dn);
-    if (length < EPS) return 'empty';
-    radius = Math.min(step.radius, step.endRadius);
-    const tangent = (p: Position): Float64Array => {
-      const r1 = p[a1] - step.centre[a1];
-      const r2 = p[a2] - step.centre[a2];
-      const r = Math.sqrt(r1 * r1 + r2 * r2) || 1;
-      const sign = step.sweep >= 0 ? 1 : -1;
-      const u = new Float64Array(DIM);
-      u[AXES.indexOf(a1)] = ((-r2 / r) * sign * planar) / length;
-      u[AXES.indexOf(a2)] = ((r1 / r) * sign * planar) / length;
-      u[AXES.indexOf(normal)] = dn / length;
-      return u;
-    };
-    u0 = tangent(step.from);
-    u1 = tangent(step.to);
-  }
+): Segment[] | 'empty' | null {
+  if (step.kind === 'arc')
+    return arcSegments(step, axisLimit, accelFactor, rpm, tool, block, unknown);
 
-  // Per-axis limits projected onto the move: the tightest wins. Each axis's share of
-  // the motion: on a line, its component of the direction; on an arc, the plane axes
-  // take up to the whole in-plane speed as the direction turns, the normal its part.
-  const share = new Float64Array(DIM);
-  if (step.kind === 'linear') {
-    for (let i = 0; i < DIM; i++) share[i] = Math.abs(u0[i] as number);
-  } else {
-    const [a1, a2] = PLANE_AXES[step.plane];
-    const n = AXES.indexOf(normalOf(step.plane));
-    const along = Math.abs(u0[n] as number);
-    const planarShare = Math.sqrt(Math.max(0, 1 - along * along));
-    share[AXES.indexOf(a1)] = planarShare;
-    share[AXES.indexOf(a2)] = planarShare;
-    share[n] = along;
-  }
+  const d = vector(step.from, step.to);
+  const length = norm(d);
+  if (length < EPS) return 'empty';
+  const u0 = d.map((x) => x / length);
+
+  // Per-axis limits projected onto the move: each axis's share is its component of the
+  // direction, and the tightest limit wins.
   let vAxis = Infinity;
   let aAxis = Infinity;
   for (let i = 0; i < DIM; i++) {
-    const sh = share[i] as number;
+    const sh = Math.abs(u0[i] as number);
     if (sh < EPS) continue;
     const lim = axisLimit(AXES[i] as Axis);
     if (!lim) {
@@ -520,14 +576,15 @@ function segmentOf(
     line: step.line,
     file: step.file,
     tool,
+    block,
     length,
     u0,
-    u1,
+    u1: u0,
     accel: aAxis,
     stopBefore: false,
   };
 
-  if (step.kind === 'linear' && step.rapid) {
+  if (step.rapid) {
     if (machine.rapidModel === 'per-axis') {
       // Each axis at its own speed, from rest to rest: the slowest decides.
       let t = 0;
@@ -544,42 +601,120 @@ function segmentOf(
           segmentTime(dist, 0, 0, lim.maxVelocity / 60, lim.acceleration * accelFactor),
         );
       }
-      return { ...base, rapid: true, vmax: Infinity, fixed: t };
+      return [{ ...base, rapid: true, vmax: Infinity, fixed: t }];
     }
     const rate = machine.rapidRate !== undefined ? machine.rapidRate / 60 : Infinity;
-    return { ...base, rapid: true, vmax: Math.min(rate, vAxis), fixed: null };
+    return [{ ...base, rapid: true, vmax: Math.min(rate, vAxis), fixed: null }];
   }
 
-  // A feed move. Its feed as a speed, or a fixed time, or unknown.
-  const feed = step.feed;
-  if (feed === null || feed.mode === 'unspecified') {
-    unknown(step, 'FEED_UNSPECIFIED');
+  const feed = feedOf(step, rpm, unknown);
+  if (feed === null) return null;
+  if ('fixed' in feed) return [{ ...base, rapid: false, vmax: Infinity, fixed: feed.fixed }];
+  return [{ ...base, rapid: false, vmax: Math.min(feed.v, vAxis), fixed: null }];
+}
+
+/**
+ * An arc as pieces of at most ARC_PIECE_DEGREES. Each piece's speed cap and acceleration
+ * come from the axes' shares of its TANGENT, maxed over the piece; its centripetal cap,
+ * sqrt(a * r), from their shares of its NORMAL, since the centripetal acceleration acts
+ * towards the centre (on a G18 arc's near-level end the tangent is on X but the load is
+ * on Z). Each axis's full acceleration bounds each kind on its own; they aren't summed,
+ * as the controller plans them separately. Pieces of one arc meet tangentially, so the
+ * planner puts no corner between them. A helix shares its rise out evenly.
+ */
+function arcSegments(
+  step: Extract<Step, { kind: 'arc' }>,
+  axisLimit: (a: Axis) => EstimateAxis | undefined,
+  accelFactor: number,
+  rpm: number | null,
+  tool: number | null,
+  block: number,
+  unknown: (s: Step, r: UnknownReason) => void,
+): Segment[] | 'empty' | null {
+  const [a1, a2] = PLANE_AXES[step.plane];
+  const normal = normalOf(step.plane);
+  const i1 = AXES.indexOf(a1);
+  const i2 = AXES.indexOf(a2);
+  const iN = AXES.indexOf(normal);
+  const planarAll = (Math.abs(step.sweep) * (step.radius + step.endRadius)) / 2;
+  const dnAll = step.to[normal] - step.from[normal];
+  if (Math.sqrt(planarAll * planarAll + dnAll * dnAll) < EPS) return 'empty';
+
+  const lims: (EstimateAxis | undefined)[] = [axisLimit(a1), axisLimit(a2), axisLimit(normal)];
+  if (!lims[0] || !lims[1] || (Math.abs(dnAll) >= EPS && !lims[2])) {
+    unknown(step, 'AXIS_NOT_DESCRIBED');
     return null;
   }
-  let v: number;
-  if (feed.mode === 'inverse-time') {
-    if (!(feed.perMinute > 0)) {
-      unknown(step, 'FEED_ZERO');
-      return null;
+  const [l1, l2, lN] = lims;
+
+  const feed = feedOf(step, rpm, unknown);
+  if (feed === null) return null;
+
+  const theta0 = Math.atan2(step.from[a2] - step.centre[a2], step.from[a1] - step.centre[a1]);
+  const sign = step.sweep >= 0 ? 1 : -1;
+  const radiusAt = (t: number): number => step.radius + (step.endRadius - step.radius) * t;
+  const n =
+    'fixed' in feed
+      ? 1 // a fixed-time move isn't planned: one piece
+      : Math.min(
+          ARC_MAX_PIECES,
+          Math.max(1, Math.ceil(Math.abs(step.sweep) / ((ARC_PIECE_DEGREES * Math.PI) / 180))),
+        );
+  const dTheta = step.sweep / n;
+  const dn = dnAll / n;
+
+  const out: Segment[] = [];
+  for (let k = 0; k < n; k++) {
+    const ta = theta0 + dTheta * k;
+    const tb = theta0 + dTheta * (k + 1);
+    const planar = (Math.abs(dTheta) * (radiusAt(k / n) + radiusAt((k + 1) / n))) / 2;
+    const length = Math.sqrt(planar * planar + dn * dn);
+    if (length < EPS) continue;
+    const f = planar / length;
+    const tangent = (theta: number): Float64Array => {
+      const u = new Float64Array(DIM);
+      u[i1] = -Math.sin(theta) * sign * f;
+      u[i2] = Math.cos(theta) * sign * f;
+      u[iN] = dn / length;
+      return u;
+    };
+    const base = {
+      line: step.line,
+      file: step.file,
+      tool,
+      block,
+      length,
+      u0: tangent(ta),
+      u1: tangent(tb),
+      rapid: false,
+      stopBefore: false,
+    };
+    if ('fixed' in feed) {
+      out.push({ ...base, accel: Infinity, vmax: Infinity, fixed: feed.fixed });
+      continue;
     }
-    return { ...base, rapid: false, vmax: Infinity, fixed: 60 / feed.perMinute };
-  } else if (feed.mode === 'per-revolution') {
-    if (rpm === null || !(rpm > 0)) {
-      unknown(step, 'RPM_UNKNOWN');
-      return null;
-    }
-    v = (feed.mmPerRevolution * rpm) / 60;
-  } else {
-    v = feed.mmPerMinute / 60;
+    const sh = arcPieceShares(Math.min(ta, tb), Math.max(ta, tb), f);
+    const along = Math.abs(dn) / length;
+    let vAxis = Infinity;
+    let aTan = Infinity;
+    let aCent = Infinity;
+    const take = (lim: EstimateAxis, tShare: number, nShare: number): void => {
+      const a = lim.acceleration * accelFactor;
+      if (tShare >= EPS) {
+        vAxis = Math.min(vAxis, lim.maxVelocity / 60 / tShare);
+        aTan = Math.min(aTan, a / tShare);
+      }
+      // The centripetal acceleration is (f v)^2 / r, towards the centre: in the plane.
+      if (nShare >= EPS) aCent = Math.min(aCent, a / (nShare * f * f));
+    };
+    take(l1 as EstimateAxis, sh.tangent[0], sh.normal[0]);
+    take(l2 as EstimateAxis, sh.tangent[1], sh.normal[1]);
+    if (along >= EPS) take(lN as EstimateAxis, along, 0);
+    const r = Math.min(radiusAt(k / n), radiusAt((k + 1) / n));
+    const vmax = Math.min(feed.v, vAxis, Math.sqrt(aCent * r));
+    out.push({ ...base, accel: aTan, vmax, fixed: null });
   }
-  if (!(v > 0)) {
-    unknown(step, 'FEED_ZERO');
-    return null;
-  }
-  let vmax = Math.min(v, vAxis);
-  // An arc's centripetal limit.
-  if (step.kind === 'arc') vmax = Math.min(vmax, Math.sqrt(aAxis * radius));
-  return { ...base, rapid: false, vmax, fixed: null };
+  return out.length > 0 ? out : 'empty';
 }
 
 /**
@@ -625,8 +760,12 @@ function planChain(list: readonly Segment[], machine: EstimateMachine): [Segment
       const s = list[i] as Segment;
       P[i + 1] = (P[i] as number) + (s.fixed === null ? 2 * s.accel * s.length : 0);
     }
+    // The window is L BLOCKS from junction j's block: an arc's pieces are one block.
+    let end = 0;
     for (let j = 1; j < n; j++) {
-      const end = Math.min(n, j + L);
+      const until = (list[j] as Segment).block + L;
+      if (end < j) end = j;
+      while (end < n && (list[end] as Segment).block < until) end++;
       const stopWithin = Math.sqrt(Math.max(0, (P[end] as number) - (P[j] as number)));
       cap[j] = Math.min(cap[j] as number, stopWithin);
     }
@@ -648,15 +787,24 @@ function planChain(list: readonly Segment[], machine: EstimateMachine): [Segment
     v[j + 1] = Math.min(v[j + 1] as number, reach);
   }
 
+  // The block-rate floor is per BLOCK: an arc's pieces together take at least 1/blockRate,
+  // any shortfall added to its last piece, so a long arc isn't slowed piece by piece.
   const floor =
     machine.blockRate !== undefined && machine.blockRate > 0 ? 1 / machine.blockRate : 0;
+  let blockTime = 0;
   for (let j = 0; j < n; j++) {
     const s = list[j] as Segment;
-    const t =
+    let t =
       s.fixed !== null
         ? s.fixed
         : segmentTime(s.length, v[j] as number, v[j + 1] as number, s.vmax, s.accel);
-    out.push([s, Math.max(t, floor)]);
+    blockTime += t;
+    const last = j === n - 1 || (list[j + 1] as Segment).block !== s.block;
+    if (last) {
+      if (blockTime < floor) t += floor - blockTime;
+      blockTime = 0;
+    }
+    out.push([s, t]);
   }
   return out;
 }
