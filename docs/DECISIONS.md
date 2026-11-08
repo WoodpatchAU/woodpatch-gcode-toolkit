@@ -3845,10 +3845,14 @@ attack.
   only to a package that already exists. For that one run, a granular token (publish
   only, `@woodpatch` only, a one-day expiry) is set as the environment's
   `NPM_BOOTSTRAP_TOKEN`. npm reads it from the environment; it is never written to disk,
-  and the run logs that it was used, and for which packages. Afterwards the trusted
-  publishers are attached, the secret is deleted, and each package is set to refuse
-  tokens altogether ("require two-factor authentication and disallow tokens"). That
-  leaves trusted publishing as the only way to publish. RELEASING.md has the steps.
+  and the run logs that it was used, and for which packages. Afterwards the secret is
+  deleted and each package is set to refuse tokens altogether ("require two-factor
+  authentication and disallow tokens"), which leaves trusted publishing as the only way
+  to publish. npm deletes a trusted-publisher setup 48 hours after it's created unless a
+  publish validates it, so the setups are attached immediately before the next release,
+  not at the bootstrap; that release validates them and binds them to this repository.
+  A refused publish through trusted publishing says so in the log. RELEASING.md has the
+  steps.
 - **Re-runs are safe.** A version already on npm is skipped, and reported as skipped, only
   if the registry's integrity is exactly this tarball's. Any other copy refuses the run.
   `pnpm pack` is reproducible, so a re-run makes the same tarballs. Publishing the
@@ -3862,7 +3866,9 @@ attack.
   - LICENSE and NOTICE as the root's, and the notice on every entry point;
   - no source map with an absolute source, and no build path in any other file.
 - CI shellchecks the release workflow's scripts, and a test keeps its shape: no actions,
-  `permissions: {}` at the top, the credential only in `publish`, and the pins.
+  `permissions: {}` at the top, the credential only in `publish`, the pins, and **no
+  Actions cache in either job** (a poisoned cache has reached a release job's token
+  elsewhere; npm's cache is a fresh directory in the run).
 
 **Consequences.** Releasing takes the operator: start the run, approve it. A compromised
 build-time dependency can tamper with what `build` packs, but can't publish it: the pack

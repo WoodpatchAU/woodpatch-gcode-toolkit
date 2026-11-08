@@ -112,6 +112,22 @@ it('build refuses an unprotected or missing environment', () => {
   assert.ok(b.indexOf('environments/npm-release') < b.indexOf('git checkout'));
 });
 
+it('no Actions cache in either job, nor in the toolchain it installs', () => {
+  // A poisoned cache has reached a release job's OIDC token elsewhere (ADR-0051).
+  for (const [what, text] of [
+    ['release.yml', code(WF)],
+    ['setup-toolchain.sh', code(TOOLCHAIN)],
+  ]) {
+    assert.doesNotMatch(
+      text,
+      /actions\/cache|ACTIONS_CACHE|ACTIONS_RUNTIME|cache-dependency|^\s*cache:/m,
+      what,
+    );
+  }
+  // npm's own cache is a fresh directory in the run, never a shared one.
+  assert.match(code(publish), /NPM_CONFIG_CACHE="\$work\/cache"/);
+});
+
 it('dry run by default', () => {
   assert.match(head, /dry_run:\n(\s+[a-z]+:.*\n)*?\s+default: true\n/);
 });
