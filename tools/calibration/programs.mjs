@@ -60,7 +60,7 @@ export const SAFETY = [
   "This program doesn't replace the operator's judgement at the machine.",
 ];
 
-const num = (v) => {
+export const num = (v) => {
   const r = Math.round(v * 1000) / 1000;
   return Object.is(r, -0) ? '0' : String(r);
 };
@@ -271,7 +271,7 @@ function bodies(s) {
 }
 
 /** A comment line: G-code comments can't nest, so inner brackets become square. */
-const comment = (t) => `(${t.replaceAll('(', '[').replaceAll(')', ']')})`;
+export const comment = (t) => `(${t.replaceAll('(', '[').replaceAll(')', ']')})`;
 
 function text(s, p, repeats) {
   const lines = [

@@ -3937,3 +3937,54 @@ arcs out of the plane.
 - A one-piece arc is no longer charged a share of 1 on both plane axes, only the share
   it reaches: slightly faster than before, never faster than a fine-chord plan.
 - A long arc is up to 1800 segments for the planner; it stays linear in their number.
+
+## ADR-0053: Calibration programs in the vertical planes
+
+**Status:** Accepted, 2026-11-08. The reviewer's GO on the outline, with four safety
+conditions folded in (M1-M4 below). Extends ADR-0047.
+
+**Context.** ADR-0047's programs never move Z together with X or Y: Z moves only on G53
+lines, alone, so where Z goes never depends on the work offset the operator sets. That
+keeps them safe, but it means they can't test an arc in G18 or G19, nor a straight move
+in X and Z together. Those are exactly what timed jobs disagreed on: the arc model
+(ADR-0052) out of the XY plane, and steep XZ line segments that ran as if Z accelerated
+more slowly than its setting.
+
+**Decision.**
+
+- **A separate command and set.** `tools/calibration/programs-planes.mjs` writes
+  `cal-v-01` to `cal-v-11`, with its own checker. The relaxed rules can't reach the first
+  set, whose programs are byte for byte as before (a test pins their hashes).
+- **The programs set their own offset, so Z still never depends on the operator's.**
+  Each sets G54.1 P100: X and Y copied from G54 with `G10 L20.1 P100 X0 Y0` (Masso:
+  the active offset plus the value), and Z0 at the safe height in machine coordinates
+  with `G10 L20 P100 Z<safe>` (Masso: the value). On LinuxCNC, L20 means something
+  else, so the command refuses any dialect that doesn't read G10 as Masso does.
+- **M1, M2: checked with nothing moving.** The spindle goes to the safe height (G53) and
+  to G54 X0 Y0, the program sets P100 and selects it, and an M0 stops it there. Where the
+  spindle already is should read X0 Y0 Z0 in work coordinates, and the safe height in
+  machine Z. A wrong G10, in X, Y or Z, is caught before anything moves under it.
+- **M3: feed only.** Under P100 every move is G1, G2 or G3, so the first lap's low feed
+  override governs all of them. The only rapid is the final G53 return to the safe
+  height.
+- **M4: the state is restored.** Each program opens with `G21 G90 G17 G94 G54` and closes
+  with `G53 G0 Z<safe>`, `G17 G54`, so the plane and offset are the operator's again. The
+  header says what to run if one is stopped part-way.
+- **What the checker holds**, on the written G-code read back:
+  - the prologue and epilogue exactly, in order;
+  - every point within the slab (safe height to `--plunge` below) and the envelope, and
+    each arc's whole circle too, so a bulge can't leave the slab while its chord stays in;
+  - no feed above the slowest axis it moves;
+  - no segment over 667 blocks/s (what cal-05 ran without slowing), so the fit can't
+    mistake the block rate for Z's acceleration;
+  - plain feed moves only in the body.
+- **The programs.** In each plane: arcs (quarters from level to vertical, semicircles,
+  full circles; radii 3, 7 and up to 14 mm; two feeds, the same in every plane), the
+  same paths as lines at a chord tolerance of 0.01 mm (CAM-like), and again at 0.002 mm
+  (the densest likely). In ZX and YZ also steep lines at 15, 45 and 75 degrees.
+- **Timed by stopwatch**, from cycle start after the M0 to the end: the operator's wait is
+  not machine time, and the estimate counts an M0 as nothing.
+
+**Consequences.** The machine's G10 is checked by the operator at each run, until it has
+been confirmed on the machine. The programs overwrite G54.1 P100, so a machine that uses
+it for real work can't run them as they are. CALIBRATION.md §4a has the steps.
