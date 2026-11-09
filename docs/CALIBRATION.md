@@ -170,6 +170,48 @@ record's value can be kept by a named person:
 `--keep junctionDeviation --operator <name> --decided-on <YYYY-MM-DD>`. It's then
 recorded as `"manual"`, never as fitted.
 
+## 4a. The planes programs: arcs and lines in XY, ZX and YZ
+
+A second set, for what the first can't see: how the arc model (ADR-0052) holds out of the
+XY plane, and how fast Z really accelerates when it moves together with X or Y
+(ADR-0053).
+
+```bash
+node tools/calibration/programs-planes.mjs --record <record.json> --out <new private dir> --envelope-x <mm> --envelope-y <mm>
+```
+
+The options are the same as in §1. It writes eleven programs, `cal-v-01` to `cal-v-11`,
+about four minutes each:
+
+| plane    | arcs     | the same paths as lines, 0.01 mm | the same, 0.002 mm (the densest) | steep lines |
+| -------- | -------- | -------------------------------- | -------------------------------- | ----------- |
+| XY (G17) | cal-v-01 | cal-v-02                         | cal-v-03                         |             |
+| ZX (G18) | cal-v-04 | cal-v-05                         | cal-v-06                         | cal-v-07    |
+| YZ (G19) | cal-v-08 | cal-v-09                         | cal-v-10                         | cal-v-11    |
+
+- The arcs are quarters (level to vertical, the shape of a roundover), semicircles and
+  full circles, at radii of 3 mm, 7 mm and up to 14 mm, and at half and all of the
+  slowest axis's speed. Every plane uses the same shapes and feeds, so the planes compare.
+- The line programs are the same paths as short straight moves, as CAM writes them. No
+  move asks for more blocks per second than cal-05 has already run without slowing.
+- **These programs move Z together with X or Y**, which the first set never does. They
+  only work on a controller that reads G10 as Masso does; the tool refuses any other.
+
+**Before each one**, as well as §2:
+
+1. The programs **set work offset G54.1 P100**, overwriting it every run.
+2. They move through the whole envelope from the safe height down to `--plunge` below it.
+   Clear that whole slab of clamps and stock, not just the surface.
+3. At the start, each program sets the offset and stops at an **M0**, with nothing moved.
+   Check the readouts: the WORK position must show **X0 Y0 Z0**, and the MACHINE Z the
+   safe height. If any differs, stop the program: the controller set the offset wrongly.
+4. If you stop a program part-way, the machine may be left in G54.1 P100 and in G18 or
+   G19. Run `G17 G54` before any other job (the next calibration program does it too).
+
+**Time each one by stopwatch**, from pressing cycle start after the M0 to the end of the
+program. The M0's wait is yours, and the estimate counts it as nothing. The runs file
+asks for the stopwatch method, so the whole set is timed one way.
+
 ## 5. When to calibrate again
 
 - The controller's settings change (velocities, accelerations, firmware).
