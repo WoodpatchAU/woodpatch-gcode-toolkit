@@ -26,6 +26,7 @@ package/dist/interp/cycles.d.ts
 package/dist/interp/flow.d.ts
 package/dist/interp/index.d.ts
 package/dist/interp/interpret.d.ts
+package/dist/interp/planes.d.ts
 package/dist/interp/rules.d.ts
 package/dist/interp/types.d.ts
 package/dist/path/index.d.ts

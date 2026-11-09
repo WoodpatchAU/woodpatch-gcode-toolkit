@@ -22,7 +22,8 @@
 
 import { arcPoint, cardinalFractions, startAngle } from '../path/path.js';
 import type { Diagnostic } from '../syntax/types.js';
-import { AXES, type Axis, type Plane, type Step } from '../interp/types.js';
+import { PLANE_AXES } from '../interp/planes.js';
+import { AXES, type Axis, type Step } from '../interp/types.js';
 
 /** One axis's travel, in machine coordinates. */
 export interface AxisTravel {
@@ -35,12 +36,6 @@ export type TravelLimits = Partial<Readonly<Record<Axis, AxisTravel>>>;
 
 /** Rounding slack, so a move exactly to a limit never warns. */
 const EPS = 1e-6;
-
-const PLANE_AXES: Readonly<Record<Plane, readonly Axis[]>> = {
-  XY: ['X', 'Y'],
-  ZX: ['Z', 'X'],
-  YZ: ['Y', 'Z'],
-};
 
 const unit = (a: Axis): string => (a === 'A' || a === 'B' || a === 'C' ? 'deg' : 'mm');
 const num = (v: number): string => String(Math.round(v * 1000) / 1000);
@@ -113,7 +108,9 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
     // unknown shift (id 0), and where incremental moves from it are measured.
     if (first) {
       first = false;
-      const uncertainAtStart = frame?.compensated ? PLANE_AXES[frame.compensated] : [];
+      const uncertainAtStart: readonly Axis[] = frame?.compensated
+        ? PLANE_AXES[frame.compensated]
+        : [];
       for (const a of AXES) {
         if (uncertainAtStart.includes(a)) continue;
         prev.set(a, { pinned: false, id: 0 });
@@ -125,7 +122,7 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
       prev.clear();
       continue;
     }
-    const uncertain = frame.compensated ? PLANE_AXES[frame.compensated] : [];
+    const uncertain: readonly Axis[] = frame.compensated ? PLANE_AXES[frame.compensated] : [];
     if (uncertain.length > 0) compensatedSkipped = true;
 
     // An arc's extremes along the way, machine coordinates (X, Y, Z). They count only
@@ -162,7 +159,8 @@ export function checkTravel(steps: readonly Step[], travel: TravelLimits): Diagn
       // Only the plane's axes: along a helix's axis the path runs straight between its
       // ends, so its interior adds nothing, and its frames needn't match the plane's.
       const k = a === 'X' ? 0 : a === 'Y' ? 1 : a === 'Z' ? 2 : -1;
-      const inPlane = step.kind === 'arc' && PLANE_AXES[step.plane].includes(a);
+      const inPlane =
+        step.kind === 'arc' && (PLANE_AXES[step.plane] as readonly Axis[]).includes(a);
       if (k >= 0 && inPlane) for (const p of interior) values.push(p[k] as number);
 
       for (const v of values) {
