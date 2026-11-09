@@ -20,11 +20,11 @@
  * speeds use only square roots (correctly rounded everywhere).
  */
 
+import { PLANE_AXES, PLANE_NORMAL } from '../interp/planes.js';
 import {
   AXES,
   type Axis,
   type InterpretResult,
-  type Plane,
   type Position,
   type Step,
 } from '../interp/types.js';
@@ -146,17 +146,7 @@ interface Segment {
 }
 
 const DIM = AXES.length;
-const PLANE_AXES: Readonly<Record<Plane, readonly [Axis, Axis]>> = {
-  XY: ['X', 'Y'],
-  ZX: ['Z', 'X'],
-  YZ: ['Y', 'Z'],
-};
 const EPS = 1e-12;
-
-/** The axis an arc's plane is normal to. */
-function normalOf(plane: Plane): Axis {
-  return plane === 'XY' ? 'Z' : plane === 'ZX' ? 'Y' : 'X';
-}
 
 function vector(from: Position, to: Position): Float64Array {
   const d = new Float64Array(DIM);
@@ -632,7 +622,7 @@ function arcSegments(
   unknown: (s: Step, r: UnknownReason) => void,
 ): Segment[] | 'empty' | null {
   const [a1, a2] = PLANE_AXES[step.plane];
-  const normal = normalOf(step.plane);
+  const normal = PLANE_NORMAL[step.plane];
   const i1 = AXES.indexOf(a1);
   const i2 = AXES.indexOf(a2);
   const iN = AXES.indexOf(normal);

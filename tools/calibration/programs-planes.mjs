@@ -38,7 +38,9 @@ import { fileURLToPath } from 'node:url';
 import {
   checkOut,
   comment,
+  GENERATOR_VERSION,
   num,
+  originRange,
   ProgramsError,
   readSetup,
   RUNS_FILE,
@@ -241,7 +243,8 @@ export function planesText(s, p, repeats) {
     ...planesHeader(s),
     ...SAFETY,
     `Work origin: X0 Y0 at the envelope's corner. Every XY point stays within X0-${num(s.envX)} Y0-${num(s.envY)}.`,
-    `Record ${s.record.id} revision ${s.record.revision}, content hash ${s.hash.slice(0, 12)}. Planes set. Body x${repeats}.`,
+    originRange(s),
+    `Record ${s.record.id} revision ${s.record.revision}, content hash ${s.hash.slice(0, 12)}. Planes set. Generator v${GENERATOR_VERSION}. Body x${repeats}.`,
   ].map(comment);
   const lines = [...head, ...prologue(s)];
   lines.push(pl.g);

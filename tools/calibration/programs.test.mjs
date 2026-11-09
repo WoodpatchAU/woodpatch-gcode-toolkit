@@ -13,12 +13,14 @@ import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  MIN_ENVELOPE,
   MIN_TARGET_SECONDS,
   RUNS_FILE,
   SAFETY,
   checkOut,
   checkProgram,
   generatePrograms,
+  originRange,
   readSetup,
   runsTemplate,
 } from './programs.mjs';
@@ -304,5 +306,28 @@ describe('the inputs', () => {
     assert.equal(bad.status, 1);
     assert.match(bad.stderr, /--plunge/);
     rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('the envelope and the work origin', () => {
+  it('refuses an envelope side under MIN_ENVELOPE, before generating anything', () => {
+    for (const o of [
+      { envelopeX: MIN_ENVELOPE - 1, envelopeY: 800 },
+      { envelopeX: 1000, envelopeY: MIN_ENVELOPE - 1 },
+    ]) {
+      assert.throws(() => readSetup(EXAMPLE, o), /--envelope-. must be a number from 220/);
+    }
+  });
+  it('generates, and passes the checks, at exactly MIN_ENVELOPE', () => {
+    const s = readSetup(EXAMPLE, { envelopeX: MIN_ENVELOPE, envelopeY: MIN_ENVELOPE });
+    assert.equal(generatePrograms(s, { events: true }).length, 7);
+  });
+  it("prints where G54 may sit for the envelope to fit the machine's travel", () => {
+    const s = readSetup(EXAMPLE, OPTS);
+    const line = originRange(s);
+    assert.match(line, /^Set G54 X0 Y0 at machine X-?\d/);
+    const want = `X${s.travel.X.max - s.envX}`;
+    assert.ok(line.includes(want), `${line} names ${want}`);
+    for (const p of generatePrograms(s)) assert.ok(p.gcode.includes(`(${line})`), p.name);
   });
 });

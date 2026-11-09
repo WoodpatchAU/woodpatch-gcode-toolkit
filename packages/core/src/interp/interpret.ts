@@ -11,6 +11,7 @@ import { arcFromCentre, arcFromRadius } from './arcs.js';
 import { buildFlowIndex, type FlowIndex, type FlowOp, type SubDefinition } from './flow.js';
 import { LINUXCNC_INTERPRETER_RULES, type InterpreterRules } from './rules.js';
 import { cycleOps, type CycleCode } from './cycles.js';
+import { PLANE_AXES } from './planes.js';
 import {
   AXES,
   DEFAULT_LIMITS,
@@ -64,11 +65,6 @@ const KNOWN_LETTERS = new Set('GMFSTXYZABCIJKRPQLHDN'.split(''));
 /** Group-0 codes that consume the line's axis words, suspending group-1 motion. */
 const AXIS_GROUP0 = new Set(['10', '28', '30', '52', '92']);
 
-const PLANE_AXES: Readonly<Record<Plane, readonly [Axis, Axis]>> = {
-  XY: ['X', 'Y'],
-  ZX: ['Z', 'X'],
-  YZ: ['Y', 'Z'],
-};
 const OFFSET_LETTER: Readonly<Record<Axis, string>> = {
   X: 'I',
   Y: 'J',

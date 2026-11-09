@@ -6,12 +6,11 @@
 // refuses a hand-written program that breaks each rule.
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { generatePrograms, readSetup } from './programs.mjs';
+import { readSetup } from './programs.mjs';
 import {
   BLOCK_RATE_GUARD,
   OFFSET_P,
@@ -95,20 +94,8 @@ describe('the planes programs', () => {
     }
   });
 
-  it('cal-01 to cal-07 are byte for byte what they were before this set', () => {
-    const pinned = {
-      'cal-01-rapids': 'af41dfe9cb92c8fb1978ffb07d6fa8eecc4d496c7a22828d1dd17383ff886388',
-      'cal-02-feeds': 'c9b62e83ed75567cd043fdf56a942c59ddfcc8fa90458aa8461f3b9499e3534a',
-      'cal-03-corners': '2d1f68969274de8fcff6df190b42080ed3c0f5046e825f72e47087d6adc51c02',
-      'cal-04-arcs': '11d70d71ba5b2b5a24ea041b4b12a64fc9393ce5dbf3efc3ebb534984fe84ede',
-      'cal-05-polyline': '29030787202d9641514fc3e644cd01b2399553ed477b688c91f913b1a82c1b32',
-      'cal-06-plunge': '6087c39873559d3799b3d6c86a53bd3c5c3ab674054f87ee64e8cc7349fba804',
-      'cal-07-events': '158dc40247a09931b8e999ef4d29a32b3087c47fe70c45e528166a751ef4a024',
-    };
-    for (const p of generatePrograms(s, { events: true })) {
-      assert.equal(createHash('sha256').update(p.gcode).digest('hex'), pinned[p.name], p.name);
-    }
-  });
+  // That cal-01 to cal-07 are unchanged by this set was pinned here by hash. The
+  // version-to-output table in generator-version.test.mjs now covers both sets.
 
   it('asks for stopwatch times, from cycle start after the M0, for the whole set', () => {
     const t = planesRunsTemplate(s, programs);

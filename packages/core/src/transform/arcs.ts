@@ -3,7 +3,8 @@
 
 import type { Dialect } from '../dialect/profiles.js';
 import { interpret } from '../interp/interpret.js';
-import type { ModalState, Plane, Step } from '../interp/types.js';
+import { PLANE_AXES, PLANE_NORMAL } from '../interp/planes.js';
+import type { ModalState, Step } from '../interp/types.js';
 import { arcPoint, chordsNeeded, startAngle } from '../path/path.js';
 import { editLine, parse, type LineEdit } from '../syntax/program.js';
 import type { Diagnostic, Line, Program, WordToken } from '../syntax/types.js';
@@ -46,12 +47,6 @@ export interface ArcsOptions {
   readonly assume?: Units | undefined;
 }
 
-/** The plane's axes, in word order (X, Y, Z), with its normal last. */
-const PLANE_AXES: Readonly<Record<Plane, readonly [Axis3, Axis3, Axis3]>> = {
-  XY: ['X', 'Y', 'Z'],
-  ZX: ['Z', 'X', 'Y'],
-  YZ: ['Y', 'Z', 'X'],
-};
 const ORDER: readonly Axis3[] = ['X', 'Y', 'Z'];
 /** Words an arc line may carry besides its own: anything else is refused. */
 const ARC_WORDS = new Set(['X', 'Y', 'Z', 'I', 'J', 'K', 'R', 'P']);
@@ -385,7 +380,8 @@ function chordLines(
 ): { count: number; lines: string[]; outOfRange?: boolean } {
   const count = chordsNeeded(arc, o.sagitta);
   if (!Number.isFinite(count) || count > MAX_CHORDS_PER_ARC) return { count, lines: [] };
-  const [a, b, normal] = PLANE_AXES[arc.plane];
+  const [a, b] = PLANE_AXES[arc.plane];
+  const normal = PLANE_NORMAL[arc.plane];
   const helical = arc.to[normal] !== arc.from[normal];
   const axes = ORDER.filter((x) => x === a || x === b || (helical && x === normal));
   const work = (p: Record<Axis3, number>, x: Axis3) => (p[x] - arc.offset[x]) * o.k;
