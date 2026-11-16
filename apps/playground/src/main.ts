@@ -23,6 +23,7 @@ import {
 } from '@woodpatch/gcode-viewer';
 import { loadIfCurrent } from './fresh.js';
 import { installStats } from './stats.js';
+import { installStockPanel } from './stock.js';
 import { renderSummary } from './summary.js';
 import { installTransformPanel } from './transforms.js';
 
@@ -175,10 +176,20 @@ async function reload(): Promise<void> {
   const buildMs = performance.now() - t1;
   plan.setProgram(program);
   recordLoad?.(ms, buildMs);
-  const hidden = showDiagnostics(editor, program.diagnostics);
-  renderDiagnostics(program.diagnostics);
+  shown = program;
+  stock.programChanged(); // re-checks the stock against this path: it calls showAll
   renderSummary($('summary'), program.summary, goToLine);
-  renderStats(program, doc.lines, ms, hidden);
+  renderStats(program, doc.lines, ms, hiddenCount);
+}
+
+/** The program shown now, and its diagnostics with the stock check's after them. */
+let shown: LoadedProgram | null = null;
+let hiddenCount = 0;
+function showAll(): void {
+  if (!shown) return;
+  const all = [...shown.diagnostics, ...stock.collisions()];
+  hiddenCount = showDiagnostics(editor, all);
+  renderDiagnostics(all);
 }
 
 function renderStats(p: LoadedProgram, lines: number, ms: number, hidden: number): void {
@@ -315,6 +326,22 @@ document.addEventListener(
   },
   { capture: true },
 );
+
+// The stock panel (ADR-0054): boxes on the table, and rapids that reach into them.
+const stock = installStockPanel({
+  setStock: (items) => viewer.setStock(items),
+  showCollisions: (lines) => viewer.showCollisions(lines),
+  program: () => shown,
+  collisionsChanged: showAll,
+});
+
+// Measurements on the 3D view: the path's box, its lengths and corners.
+const measure = $<HTMLButtonElement>('measure');
+measure.addEventListener('click', () => {
+  const on = measure.getAttribute('aria-pressed') !== 'true';
+  measure.setAttribute('aria-pressed', String(on));
+  viewer.showDimensions(on);
+});
 
 // The transform panel (parcel 4e, ADR-0038).
 const panel = installTransformPanel(

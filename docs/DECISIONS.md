@@ -4029,7 +4029,24 @@ operator knows where the stock is.
   counting the rest. Like the travel check, the message gives numbers, the line and the
   shape's own name, never program text.
 
-**Consequences.** The viewer and playground (next) let the operator place boxes, show
-them, and list these warnings. A tool that isn't a straight cylinder (a holder wider than
+**In the viewer and playground:**
+
+- `GcodeViewer.setStock` draws each visible box with translucent faces and solid edges,
+  and the views frame it with the path. `showCollisions(lines)` draws those lines on top
+  in their own colour, through the stock. `stockCollisions` runs `checkStockMoves` on a
+  loaded path, so a page re-checks as the stock changes without loading the program
+  again. Vertex 0, the assumed start, is treated as the core treats it.
+- `showDimensions(on)` draws the box round the drawn path, dashed, with dimension lines
+  for X, Y and Z and the lowest and highest corners' coordinates. The labels are DOM
+  elements (three's CSS2DRenderer, set with textContent) over the canvas, created the
+  first time measurements are shown.
+- The Svelte `GcodeViewer` passes `stock`, `collisions` and `dimensions` through.
+- The playground's Stock panel adds, edits, hides and deletes boxes, can add a box round
+  the path, and takes the tool radius. It keeps the stock in localStorage and saves and
+  loads it as JSON. A loaded file is untrusted: capped at 64 KB, at most 50 boxes, and
+  every field checked before use. Collisions join the diagnostics list. A Measure button
+  toggles the measurements.
+
+**Consequences.** The operator can place boxes, show them, and see these warnings. A tool that isn't a straight cylinder (a holder wider than
 the cutter, say) isn't modelled. Give the larger radius if it matters. Other shapes,
 rotation, and a feed move rubbing the stock at the wrong depth are left for later.

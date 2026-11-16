@@ -19,6 +19,7 @@ SPDX-License-Identifier: MIT
     GcodeViewer,
     LoadedProgram,
     PickEvent,
+    StockItem,
     View2DOptions,
     ViewerOptions,
     ViewName,
@@ -33,6 +34,12 @@ SPDX-License-Identifier: MIT
     view?: ViewName;
     /** A source line to highlight in both views, or null. */
     highlightLine?: number | null;
+    /** Stock on the table (3D view): boxes, each with its own visibility and colour. */
+    stock?: readonly StockItem[];
+    /** Source lines drawn in the collision colour (3D view), e.g. from `stockCollisions`. */
+    collisions?: readonly number[];
+    /** Show the path's measurements (3D view): its box, lengths and corners. */
+    dimensions?: boolean;
     /** A click on the path: the segment and its source line. */
     onpick?: (e: PickEvent) => void;
     /** Options for the 3D view (palette, line width). Read once, when it's created. */
@@ -49,6 +56,9 @@ SPDX-License-Identifier: MIT
     mode = '3d',
     view = 'iso',
     highlightLine = null,
+    stock = [],
+    collisions = [],
+    dimensions = false,
     onpick,
     options3d,
     options2d,
@@ -138,6 +148,15 @@ SPDX-License-Identifier: MIT
   });
   $effect(() => {
     v2?.highlightLine(highlightLine);
+  });
+  $effect(() => {
+    v3?.setStock(stock);
+  });
+  $effect(() => {
+    v3?.showCollisions(collisions);
+  });
+  $effect(() => {
+    v3?.showDimensions(dimensions);
   });
   $effect(() => {
     v3?.setView(view);

@@ -25,6 +25,8 @@ export {
 export { ProgramLoader, type WorkerLike } from './client.js';
 export { loadProgram, transferables, type LoadOptions, type LoadedProgram } from './program.js';
 export { buildSegments, DEFAULT_PALETTE, type Palette, type SegmentBuffers } from './geometry.js';
+export { stockBounds, type StockItem } from './overlays.js';
+export { stockCollisions } from './stock.js';
 export { buildLineIndex, type LineIndex } from './lineIndex.js';
 export { fitDistance, gridSpec, VIEW_DIRECTIONS, type ViewName } from './view.js';
 export type { LoadRequest, LoadResponse } from './worker.js';

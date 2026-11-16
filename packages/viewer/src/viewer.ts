@@ -15,7 +15,15 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { buildSegments, DEFAULT_PALETTE, type Palette } from './geometry.js';
+import {
+  buildDimensions,
+  buildStock,
+  disposeGroup,
+  stockBounds,
+  type StockItem,
+} from './overlays.js';
 import { buildLineIndex, type LineIndex } from './lineIndex.js';
 import type { LoadedProgram } from './program.js';
 import {
@@ -76,6 +84,7 @@ export class GcodeViewer {
   private readonly pathMaterial: LineMaterial;
   private readonly highlightMaterial: LineMaterial;
   private readonly ghostMaterial: LineMaterial;
+  private readonly collisionMaterial: LineMaterial;
   private readonly observer: ResizeObserver;
   private readonly raycaster = new Raycaster();
   private readonly pickListeners = new Set<(e: PickEvent) => void>();
@@ -87,6 +96,14 @@ export class GcodeViewer {
   /** The program's centre, the scene's origin: positions are relative to it. */
   private origin: readonly [number, number, number] = [0, 0, 0];
   private grid: GridHelper | null = null;
+  private stockItems: readonly StockItem[] = [];
+  private stock: Group | null = null;
+  private dimensionsOn = false;
+  private dimensions: Group | null = null;
+  /** Created the first time measurements are shown: their labels are DOM elements. */
+  private labels: CSS2DRenderer | null = null;
+  private collisionLines: readonly number[] = [];
+  private collisions: LineSegments2 | null = null;
   private index: LineIndex | null = null;
   private program: LoadedProgram | null = null;
   private radius = 100;
@@ -129,6 +146,12 @@ export class GcodeViewer {
       opacity: 0.35,
       depthWrite: false,
     });
+    this.collisionMaterial = new LineMaterial({
+      linewidth: options.highlightWidth ?? 4,
+      color: this.palette.collision,
+      worldUnits: false,
+      depthTest: false, // a collision inside the stock must show through it
+    });
     this.raycaster.params.Line2 = { threshold: options.pickRadius ?? 6 };
 
     const el = this.renderer.domElement;
@@ -157,7 +180,46 @@ export class GcodeViewer {
     this.origin = seg.origin;
     this.buildGhost();
     this.placeGrid(seg.origin);
+    // Everything placed relative to the scene's origin moves with it.
+    this.buildStock();
+    this.buildDimensions();
+    this.buildCollisions();
     this.setView('iso');
+  }
+
+  /**
+   * The stock on the table (ADR-0054): boxes in the path's coordinates, each with its
+   * own visibility, colour and opacity. Replaces any previous stock; the views frame
+   * the visible stock along with the path. Kept across `setProgram`.
+   */
+  setStock(items: readonly StockItem[]): void {
+    if (this.disposed) return;
+    this.stockItems = [...items];
+    this.buildStock();
+    this.requestRender();
+  }
+
+  /**
+   * Draws these source lines' segments on top, in the collision colour: the rapids
+   * that reach into the stock, say (from `stockCollisions`). An empty list clears
+   * them. Kept across `setProgram` (for the new program's lines): recompute them.
+   */
+  showCollisions(lines: readonly number[]): void {
+    if (this.disposed) return;
+    this.collisionLines = [...lines];
+    this.buildCollisions();
+    this.requestRender();
+  }
+
+  /**
+   * Shows or hides the measurements: a box round the path, with its length along X,
+   * Y and Z and the coordinates of its lowest and highest corners.
+   */
+  showDimensions(on: boolean): void {
+    if (this.disposed) return;
+    this.dimensionsOn = on;
+    this.buildDimensions();
+    this.requestRender();
   }
 
   /**
@@ -216,7 +278,10 @@ export class GcodeViewer {
   setView(view: ViewName): void {
     if (this.disposed) return;
     // Everything shown, the ghost included, about the scene's origin (the program's centre).
-    const b = unionBox(this.program?.bounds.all, this.ghostProgram?.bounds.all);
+    const b = unionBox(
+      unionBox(this.program?.bounds.all, this.ghostProgram?.bounds.all),
+      stockBounds(this.stockItems),
+    );
     this.radius = Math.max(1, b ? coverRadius(b, this.origin) : Math.hypot(100, 100, 10) / 2);
     const [dx, dy, dz] = VIEW_DIRECTIONS[view];
     const d = fitDistance(this.radius, this.camera.fov, this.camera.aspect);
@@ -242,6 +307,8 @@ export class GcodeViewer {
     this.pathMaterial.resolution.set(w, h);
     this.highlightMaterial.resolution.set(w, h);
     this.ghostMaterial.resolution.set(w, h);
+    this.collisionMaterial.resolution.set(w, h);
+    this.labels?.setSize(w, h);
     this.requestRender();
   }
 
@@ -257,6 +324,10 @@ export class GcodeViewer {
     this.controls.dispose();
     this.disposePath();
     this.highlight?.geometry.dispose();
+    this.collisions?.geometry.dispose();
+    if (this.stock) disposeGroup(this.stock);
+    if (this.dimensions) disposeGroup(this.dimensions);
+    this.labels?.domElement.remove();
     this.grid?.dispose(); // geometry AND material
     this.pathMaterial.dispose();
     this.highlightMaterial.dispose();
@@ -280,6 +351,7 @@ export class GcodeViewer {
       this.frame = 0;
       const t0 = performance.now();
       this.renderer.render(this.scene, this.camera);
+      this.labels?.render(this.scene, this.camera);
       if (this.renderListeners.size === 0) return;
       const info: RenderInfo = {
         ms: performance.now() - t0,
@@ -306,6 +378,64 @@ export class GcodeViewer {
     );
     this.ghost.renderOrder = -1;
     this.world.add(this.ghost);
+  }
+
+  private buildStock(): void {
+    if (this.stock) disposeGroup(this.stock);
+    this.stock = null;
+    if (this.stockItems.length === 0) return;
+    this.stock = buildStock(this.stockItems, this.origin, this.palette.stock);
+    this.world.add(this.stock);
+  }
+
+  private buildDimensions(): void {
+    if (this.dimensions) disposeGroup(this.dimensions);
+    this.dimensions = null;
+    const b = this.program?.bounds.all;
+    if (!this.dimensionsOn || !b) return;
+    if (!this.labels) {
+      // Labels are DOM elements over the canvas, so the container must position them.
+      this.labels = new CSS2DRenderer();
+      const el = this.labels.domElement;
+      el.style.position = 'absolute';
+      el.style.inset = '0';
+      el.style.pointerEvents = 'none';
+      if (getComputedStyle(this.container).position === 'static') {
+        this.container.style.position = 'relative';
+      }
+      this.container.appendChild(el);
+      this.labels.setSize(
+        Math.max(1, this.container.clientWidth),
+        Math.max(1, this.container.clientHeight),
+      );
+    }
+    this.dimensions = buildDimensions(b, this.origin, this.palette.dimension);
+    this.world.add(this.dimensions);
+  }
+
+  private buildCollisions(): void {
+    if (this.collisions) {
+      this.world.remove(this.collisions);
+      this.collisions.geometry.dispose();
+      this.collisions = null;
+    }
+    if (!this.path || !this.index || this.collisionLines.length === 0) return;
+    const runs = [...new Set(this.collisionLines)].flatMap((l) => this.index?.segmentsOf(l) ?? []);
+    if (runs.length === 0) return;
+    const src = (this.path.geometry as LineSegmentsGeometry).getAttribute('instanceStart');
+    const array = (src as unknown as { data: { array: Float32Array } }).data.array;
+    const count = runs.reduce((n, [a, b]) => n + (b - a), 0);
+    const pos = new Float32Array(count * 6);
+    let o = 0;
+    for (const [a, b] of runs) {
+      pos.set(array.subarray(a * 6, b * 6), o);
+      o += (b - a) * 6;
+    }
+    const geometry = new LineSegmentsGeometry();
+    geometry.setPositions(pos);
+    this.collisions = new LineSegments2(geometry, this.collisionMaterial);
+    this.collisions.renderOrder = 2;
+    this.world.add(this.collisions);
   }
 
   private disposeGhost(): void {
