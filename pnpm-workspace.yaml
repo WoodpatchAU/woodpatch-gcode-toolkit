@@ -24,3 +24,9 @@ overrides:
   launch-editor: ^2.14.2
   # GHSA-xjj6 (High DoS, fixed in 8.12.2): reached through jsdom. Dev and CI only.
   undici: ^8.12.2
+  # GHSA-mrhx-c7xc-m3w5 (High memory exhaustion, fixed in 4.6.6): reached through
+  # lighthouse > puppeteer-core > chromium-bidi, the playground's performance budget.
+  # Dev and CI only. chromium-bidi asks for ^3.24; its later releases moved to ^4.6.5.
+  zod: ^4.6.6
+  # GHSA-g3hv-75wg-m249 (Medium DoS, fixed in 11.0.1): reached through eslint. Dev only.
+  minimatch: ^11.0.1
