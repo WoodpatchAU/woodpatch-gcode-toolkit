@@ -4,6 +4,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   checkStock,
+  checkStockMoves,
   interpret,
   parse,
   rapidHitsBox,
@@ -136,6 +137,20 @@ describe('checkStock: which rapids reach into the stock', () => {
     // Round the block at 10 mm: in front, beside, then down beside it and along.
     const src = 'G0 X-10 Y-10 Z5\nG0 Z-15\nG0 X110\nG0 Y60\nG0 X-10\nG0 Y-10\n';
     expect(check(src, [BLOCK], { toolRadius: 8 })).toEqual([]);
+  });
+});
+
+describe('checkStockMoves: the same check on moves from anywhere', () => {
+  it('gives what checkStock gives on the same program', () => {
+    const src = 'G0 X-10 Y25 Z5\nG0 Z-5\nG0 X110\nG1 X50 F500\nG0 X-10 Y25 Z-5\n';
+    const steps = interpret(parse(src)).steps;
+    const moves = steps.flatMap((s) =>
+      s.kind === 'linear' || s.kind === 'arc'
+        ? [{ rapid: s.kind === 'linear' && s.rapid, from: s.from, to: s.to, line: s.line }]
+        : [],
+    );
+    expect(checkStockMoves(moves, [BLOCK])).toEqual(checkStock(steps, [BLOCK]));
+    expect(lines(checkStockMoves(moves, [BLOCK]))).toEqual([3, 5]);
   });
 });
 

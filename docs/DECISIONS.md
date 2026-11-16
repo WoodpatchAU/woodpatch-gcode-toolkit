@@ -4022,6 +4022,9 @@ operator knows where the stock is.
 - **The first move's start is the interpreter's assumption**, not a real place, so only
   where that move ends is checked, unless the caller interpreted from the machine's real
   start and says so (`startKnown`).
+- **`checkStockMoves` takes plain moves** (from, to, whether a rapid, the line), so a
+  caller holding only a drawn path, like the playground, runs the same check.
+  `checkStock` is that check on the interpreter's steps.
 - **One warning per rapid**, naming the first box it meets, up to a cap (100), then one
   counting the rest. Like the travel check, the message gives numbers, the line and the
   shape's own name, never program text.

@@ -23,10 +23,12 @@ export {
 } from './estimate.js';
 export {
   checkStock,
+  checkStockMoves,
   rapidHitsBox,
   validateStock,
   type StockBox,
   type StockCheckOptions,
+  type StockMove,
   type StockShape,
   type Xyz,
 } from './stock.js';

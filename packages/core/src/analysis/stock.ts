@@ -158,6 +158,18 @@ export function rapidHitsBox(
 }
 
 /**
+ * One straight move or arc, as the stock check needs it: where it starts and ends and
+ * whether it's a rapid. The first move in a sequence is the program's first motion.
+ */
+export interface StockMove {
+  readonly rapid: boolean;
+  readonly from: Xyz;
+  readonly to: Xyz;
+  readonly line: number;
+  readonly file?: string;
+}
+
+/**
  * Checks a program's rapids (from `interpret`) against the stock. Returns one warning
  * per rapid that reaches into a shape (the first shape it meets, in the order given),
  * up to `maxReports`, then one more counting the rest. Throws on invalid shapes or
@@ -165,6 +177,32 @@ export function rapidHitsBox(
  */
 export function checkStock(
   steps: readonly Step[],
+  shapes: readonly StockShape[],
+  options: StockCheckOptions = {},
+): Diagnostic[] {
+  function* moves(): Generator<StockMove> {
+    for (const s of steps) {
+      if (s.kind === 'linear' || s.kind === 'arc') {
+        yield {
+          rapid: s.kind === 'linear' && s.rapid,
+          from: s.from,
+          to: s.to,
+          line: s.line,
+          ...(s.file !== undefined ? { file: s.file } : {}),
+        };
+      }
+    }
+  }
+  return checkStockMoves(moves(), shapes, options);
+}
+
+/**
+ * `checkStock` on moves from anywhere: a drawn path, say, where the interpreter's
+ * steps aren't to hand. Arcs can be given as `rapid: false` moves (they never are
+ * rapids); only the first move's position in the sequence matters for them.
+ */
+export function checkStockMoves(
+  moves: Iterable<StockMove>,
   shapes: readonly StockShape[],
   options: StockCheckOptions = {},
 ): Diagnostic[] {
@@ -179,11 +217,10 @@ export function checkStock(
   if (shapes.length === 0) return out;
   let extra = 0;
   let first = true;
-  for (const step of steps) {
-    if (step.kind !== 'linear' && step.kind !== 'arc') continue;
+  for (const step of moves) {
     const isFirst = first;
     first = false;
-    if (step.kind !== 'linear' || !step.rapid) continue;
+    if (!step.rapid) continue;
     const to: Xyz = step.to;
     // The first move's start is the interpreter's assumption unless the caller says
     // it's real: otherwise only where it ends is a known place.
