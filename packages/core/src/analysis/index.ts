@@ -21,3 +21,12 @@ export {
   type EstimateUnknown,
   type UnknownReason,
 } from './estimate.js';
+export {
+  checkStock,
+  rapidHitsBox,
+  validateStock,
+  type StockBox,
+  type StockCheckOptions,
+  type StockShape,
+  type Xyz,
+} from './stock.js';
