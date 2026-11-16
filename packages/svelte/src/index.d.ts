@@ -6,4 +6,4 @@
 export { default as GcodeEditor } from './GcodeEditor.svelte';
 export { default as GcodeViewer } from './GcodeViewer.svelte';
 export { default as GcodeWorkbench } from './GcodeWorkbench.svelte';
-export type { LoadedProgram, PickEvent, ViewName } from '@woodpatch/gcode-viewer';
+export type { LoadedProgram, PickEvent, StockItem, ViewName } from '@woodpatch/gcode-viewer';

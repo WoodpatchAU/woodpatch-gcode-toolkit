@@ -30,6 +30,15 @@ const fx = vi.hoisted(() => {
     setView(v: string) {
       this.calls.push(['setView', v]);
     }
+    setStock(items: unknown) {
+      this.calls.push(['setStock', items]);
+    }
+    showCollisions(lines: unknown) {
+      this.calls.push(['showCollisions', lines]);
+    }
+    showDimensions(on: boolean) {
+      this.calls.push(['showDimensions', on]);
+    }
     fit() {
       this.calls.push(['fit']);
     }
@@ -165,6 +174,37 @@ describe('GcodeViewer', () => {
     app = undefined;
     expect(v3?.named('dispose')).toHaveLength(1);
     expect(v2?.named('dispose')).toHaveLength(1);
+  });
+
+  it('passes stock, collisions and measurements to the 3D view, and their changes', async () => {
+    const { GcodeViewer } = await import('./index.js');
+    const box = {
+      kind: 'box' as const,
+      id: 'b',
+      name: 'Block',
+      min: { X: 0, Y: 0, Z: -20 },
+      size: { X: 100, Y: 50, Z: 20 },
+    };
+    const props = $state({
+      program: program('a') as LoadedProgram | null,
+      stock: [{ shape: box }],
+      collisions: [3] as number[],
+      dimensions: false,
+    });
+    app = mount(GcodeViewer, { target, props });
+    await settle();
+    const [v3] = views('3d');
+    expect(v3?.named('setStock')).toEqual([['setStock', props.stock]]);
+    expect(v3?.named('showCollisions')).toEqual([['showCollisions', props.collisions]]);
+    expect(v3?.named('showDimensions')).toEqual([['showDimensions', false]]);
+
+    props.dimensions = true;
+    props.stock = [{ shape: box, visible: false }];
+    props.collisions = [];
+    flushSync();
+    expect(v3?.named('showDimensions').at(-1)).toEqual(['showDimensions', true]);
+    expect(v3?.named('setStock').at(-1)).toEqual(['setStock', props.stock]);
+    expect(v3?.named('showCollisions').at(-1)).toEqual(['showCollisions', []]);
   });
 
   it('creates nothing if unmounted before the viewer package has loaded', async () => {

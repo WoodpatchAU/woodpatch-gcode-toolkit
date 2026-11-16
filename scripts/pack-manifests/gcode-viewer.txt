@@ -12,8 +12,10 @@ package/dist/index.d.ts
 package/dist/index.js
 package/dist/index.js.map
 package/dist/lineIndex.d.ts
+package/dist/overlays.d.ts
 package/dist/plane.d.ts
 package/dist/program.d.ts
+package/dist/stock.d.ts
 package/dist/view.d.ts
 package/dist/view2d.d.ts
 package/dist/viewer.d.ts

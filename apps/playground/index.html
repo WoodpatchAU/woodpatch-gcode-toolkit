@@ -49,6 +49,14 @@ SPDX-License-Identifier: MIT
         <button data-view="right">Right</button>
         <button data-view="plan" title="2D plan (XY). Click again to fit.">2D</button>
       </span>
+      <button
+        id="measure"
+        type="button"
+        aria-pressed="false"
+        title="Show the path's measurements in 3D"
+      >
+        Measure
+      </button>
       <span id="status" class="status" role="status" aria-live="polite"></span>
     </header>
     <main class="panes">
@@ -140,6 +148,31 @@ SPDX-License-Identifier: MIT
               <button id="save-gcode" type="button">Save G-code</button>
             </div>
           </form>
+        </details>
+        <details id="stock-box" class="transform-box">
+          <summary>Stock<span id="stock-count"></span></summary>
+          <div class="transform stock">
+            <p class="stock-help">
+              Boxes on the table, in the program's coordinates: the lowest corner, then the length
+              (X), width (Y) and height (Z). Rapids that reach into a shown box are marked on the
+              path and listed with the diagnostics.
+            </p>
+            <label
+              >Tool radius (mm)
+              <input id="stock-radius" type="number" min="0" max="1000" step="any" value="0"
+            /></label>
+            <ol id="stock-list" class="stock-list" aria-label="Stock boxes"></ol>
+            <div class="actions">
+              <button id="stock-add" type="button">Add box</button>
+              <button id="stock-fit" type="button">Box round the path</button>
+              <button id="stock-export" type="button">Save stock</button>
+              <label class="file">
+                Load stock…
+                <input id="stock-import" type="file" accept=".json,application/json" />
+              </label>
+            </div>
+            <p id="stock-msg" class="transform-status" role="status" aria-live="polite"></p>
+          </div>
         </details>
         <section id="editor" class="editor" aria-label="G-code"></section>
       </div>

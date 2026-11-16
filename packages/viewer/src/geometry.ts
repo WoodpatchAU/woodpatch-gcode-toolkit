@@ -14,6 +14,12 @@ export interface Palette {
   readonly ghost: number;
   readonly grid: number;
   readonly background: number;
+  /** Stock shapes (ADR-0054), unless a shape has its own colour. */
+  readonly stock: number;
+  /** Rapids that reach into the stock, drawn on top. */
+  readonly collision: number;
+  /** The measurements: the box round the path, its dimension lines and labels. */
+  readonly dimension: number;
 }
 
 export const DEFAULT_PALETTE: Palette = Object.freeze({
@@ -24,6 +30,9 @@ export const DEFAULT_PALETTE: Palette = Object.freeze({
   ghost: 0x5b8def,
   grid: 0xff7f2a,
   background: 0x1b1b1f,
+  stock: 0xc8a165,
+  collision: 0xff3df5,
+  dimension: 0x8fd3ff,
 });
 
 /**

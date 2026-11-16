@@ -140,6 +140,42 @@ button:hover:not(:disabled) {
   gap: 0.4rem;
   align-items: center;
 }
+/* The stock panel (ADR-0054): the transform panel's look, one card per box. */
+.stock-help {
+  margin: 0;
+  color: var(--muted);
+}
+.stock-list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stock-item {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.3rem;
+  border: 1px solid var(--line);
+}
+.stock-head,
+.stock-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.5rem;
+  align-items: center;
+}
+.stock-head input[type='text'] {
+  flex: 1;
+  min-width: 6rem;
+}
+.stock-row > span {
+  width: 3rem;
+  color: var(--muted);
+}
+.stock input[aria-invalid='true'] {
+  outline: 1px solid #e5534b;
+}
 .recipe {
   margin: 0;
   padding-left: 1.4rem;
