@@ -81,7 +81,9 @@ stop.
 4. **Then set the work origin** (G54 X0 Y0) at the envelope's corner, so the whole
    envelope is inside the machine's travel. The header names the machine-coordinate range
    G54 X0 Y0 may take for that: the travel check reads the program with a zero work
-   offset, so only the operator can check the real one. An origin set before homing moves with the
+   offset, so only the operator can check the real one. The range is computed from the
+   envelope, so it holds only while no program leaves [0, envelope] on X or Y, rapids
+   and arc bulges included; `extent.test.mjs` checks that for both sets. An origin set before homing moves with the
    homing. The work Z doesn't matter: Z only moves in machine coordinates. **Soft limits
    on.**
 5. **Check the safe height in MDI:** `G53 G0 Z<safe>` (the header gives it) shows that
