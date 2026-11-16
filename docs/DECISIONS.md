@@ -3988,3 +3988,48 @@ more slowly than its setting.
 **Consequences.** The machine's G10 is checked by the operator at each run, until it has
 been confirmed on the machine. The programs overwrite G54.1 P100, so a machine that uses
 it for real work can't run them as they are. CALIBRATION.md §4a has the steps.
+
+## ADR-0054: Stock, and rapids that reach into it
+
+**Status:** Accepted, 2026-11-17 (the operator's request; outline to review the same day).
+
+**Context.** On some jobs the spindle can't rise above the work. The machine's highest Z
+is below the workpiece's top, so every travel has to go round it. A preview that draws
+the path alone can't show that a rapid goes straight through the stock. Only the
+operator knows where the stock is.
+
+**Decision.**
+
+- **Stock is shapes the caller supplies**, in the coordinates the path is drawn in:
+  positions as interpreted, which are G54's when no work offsets are supplied. The stock
+  is fixed to the table, so a G92 or G55 shift moves the program, not the stock.
+- **Boxes only for now:** square to the axes, placed by the lowest corner, sized along
+  X, Y and Z. `StockShape` is a tagged union (`kind: 'box'`) so that cylinders, spheres
+  and other prisms can join it without breaking callers. `validateStock` names what's
+  wrong, and `checkStock` refuses invalid shapes rather than guessing.
+- **Only rapids are flagged** (`STOCK_RAPID_COLLISION`). A feed move into stock is
+  cutting, which is the point.
+- **The tool is a vertical cylinder of the given radius, from its tip upwards.** A rapid
+  collides where, at some point along it, the tip is below a box's top and the tool's
+  circle overlaps the footprint. That includes passing under a box, because the shank
+  would go through it. The test is exact:
+  - clip the move to the part where the tip is below the top;
+  - minimise the footprint's signed distance along it, which is convex, so a ternary
+    search finds the minimum;
+  - compare that with the radius.
+    Touching is not a collision, so a bit parked against the stock stays quiet. The radius
+    defaults to 0, the centre line, because a program doesn't say what cutter it uses.
+- **The first move's start is the interpreter's assumption**, not a real place, so only
+  where that move ends is checked, unless the caller interpreted from the machine's real
+  start and says so (`startKnown`).
+- **`checkStockMoves` takes plain moves** (from, to, whether a rapid, the line), so a
+  caller holding only a drawn path, like the playground, runs the same check.
+  `checkStock` is that check on the interpreter's steps.
+- **One warning per rapid**, naming the first box it meets, up to a cap (100), then one
+  counting the rest. Like the travel check, the message gives numbers, the line and the
+  shape's own name, never program text.
+
+**Consequences.** The viewer and playground (next) let the operator place boxes, show
+them, and list these warnings. A tool that isn't a straight cylinder (a holder wider than
+the cutter, say) isn't modelled. Give the larger radius if it matters. Other shapes,
+rotation, and a feed move rubbing the stock at the wrong depth are left for later.
